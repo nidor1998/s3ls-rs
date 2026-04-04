@@ -174,6 +174,63 @@ pub fn sort_entries(
     });
 }
 
+pub fn format_entry_json(entry: &ListEntry) -> String {
+    match entry {
+        ListEntry::CommonPrefix(prefix) => {
+            let mut map = serde_json::Map::new();
+            map.insert("common_prefix".to_string(), serde_json::Value::String(prefix.clone()));
+            serde_json::to_string(&map).unwrap()
+        }
+        ListEntry::Object(obj) => {
+            let mut map = serde_json::Map::new();
+            map.insert("key".to_string(), serde_json::Value::String(obj.key().to_string()));
+            map.insert("size".to_string(), serde_json::json!(obj.size()));
+            map.insert(
+                "last_modified".to_string(),
+                serde_json::Value::String(obj.last_modified().to_rfc3339()),
+            );
+            map.insert("e_tag".to_string(), serde_json::Value::String(obj.e_tag().to_string()));
+            if let Some(sc) = obj.storage_class() {
+                map.insert("storage_class".to_string(), serde_json::Value::String(sc.to_string()));
+            }
+            if let Some(algo) = obj.checksum_algorithm() {
+                map.insert(
+                    "checksum_algorithm".to_string(),
+                    serde_json::Value::String(algo.to_string()),
+                );
+            }
+            if let Some(ctype) = obj.checksum_type() {
+                map.insert(
+                    "checksum_type".to_string(),
+                    serde_json::Value::String(ctype.to_string()),
+                );
+            }
+            if let Some(vid) = obj.version_id() {
+                map.insert("version_id".to_string(), serde_json::Value::String(vid.to_string()));
+                map.insert("is_latest".to_string(), serde_json::json!(obj.is_latest()));
+            }
+            serde_json::to_string(&map).unwrap()
+        }
+        ListEntry::DeleteMarker {
+            key,
+            version_id,
+            last_modified,
+            is_latest,
+        } => {
+            let mut map = serde_json::Map::new();
+            map.insert("key".to_string(), serde_json::Value::String(key.clone()));
+            map.insert("delete_marker".to_string(), serde_json::json!(true));
+            map.insert("version_id".to_string(), serde_json::Value::String(version_id.clone()));
+            map.insert(
+                "last_modified".to_string(),
+                serde_json::Value::String(last_modified.to_rfc3339()),
+            );
+            map.insert("is_latest".to_string(), serde_json::json!(*is_latest));
+            serde_json::to_string(&map).unwrap()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,5 +359,36 @@ mod tests {
         sort_entries(&mut entries, &SortField::Size, false, false);
         assert_eq!(entries[0].key(), "logs/");
         assert_eq!(entries[1].key(), "a.txt");
+    }
+
+    #[test]
+    fn format_ndjson_object() {
+        let entry = make_entry("readme.txt", 1234, 2024, 1);
+        let json = format_entry_json(&entry);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["key"], "readme.txt");
+        assert_eq!(parsed["size"], 1234);
+    }
+
+    #[test]
+    fn format_ndjson_common_prefix() {
+        let entry = ListEntry::CommonPrefix("logs/".to_string());
+        let json = format_entry_json(&entry);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["common_prefix"], "logs/");
+    }
+
+    #[test]
+    fn format_ndjson_delete_marker() {
+        let entry = ListEntry::DeleteMarker {
+            key: "deleted.txt".to_string(),
+            version_id: "v1".to_string(),
+            last_modified: chrono::Utc::now(),
+            is_latest: true,
+        };
+        let json = format_entry_json(&entry);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["key"], "deleted.txt");
+        assert_eq!(parsed["delete_marker"], true);
     }
 }
