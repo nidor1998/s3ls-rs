@@ -64,66 +64,115 @@ pub struct CLIArgs {
     )]
     pub target: String,
 
-    // -- General --
+    // -----------------------------------------------------------------------
+    // General options
+    // -----------------------------------------------------------------------
+    /// List all objects recursively (enables parallel listing)
     #[arg(short = 'r', long, env, default_value_t = false, help_heading = "General")]
     pub recursive: bool,
 
+    /// List all versions including delete markers
     #[arg(long, env = "LIST_ALL_VERSIONS", default_value_t = false, help_heading = "General")]
     pub all_versions: bool,
 
-    // -- Filtering --
+    // -----------------------------------------------------------------------
+    // Filtering options
+    // -----------------------------------------------------------------------
+    /// List only objects whose key matches this regex
     #[arg(long, env, value_parser = value_parser::regex::parse_regex, help_heading = "Filtering")]
     pub filter_include_regex: Option<String>,
 
+    /// Skip objects whose key matches this regex
     #[arg(long, env, value_parser = value_parser::regex::parse_regex, help_heading = "Filtering")]
     pub filter_exclude_regex: Option<String>,
 
-    #[arg(long, env, help_heading = "Filtering",
-        long_help = "List only objects modified before the given time (RFC 3339 format).\nExample: 2023-02-19T12:00:00Z")]
+    /// List only objects modified before this time
+    #[arg(
+        long,
+        env,
+        help_heading = "Filtering",
+        long_help = "List only objects modified before the given time (RFC 3339 format).\nExample: 2023-02-19T12:00:00Z"
+    )]
     pub filter_mtime_before: Option<DateTime<Utc>>,
 
-    #[arg(long, env, help_heading = "Filtering",
-        long_help = "List only objects modified at or after the given time (RFC 3339 format).\nExample: 2023-02-19T12:00:00Z")]
+    /// List only objects modified at or after this time
+    #[arg(
+        long,
+        env,
+        help_heading = "Filtering",
+        long_help = "List only objects modified at or after the given time (RFC 3339 format).\nExample: 2023-02-19T12:00:00Z"
+    )]
     pub filter_mtime_after: Option<DateTime<Utc>>,
 
-    #[arg(long, env, value_parser = value_parser::human_bytes::check_human_bytes, help_heading = "Filtering",
-        long_help = "List only objects smaller than the given size.\nSupported suffixes: KB, KiB, MB, MiB, GB, GiB, TB, TiB")]
+    /// List only objects smaller than this size
+    #[arg(
+        long,
+        env,
+        value_parser = value_parser::human_bytes::check_human_bytes,
+        help_heading = "Filtering",
+        long_help = "List only objects smaller than the given size.\nSupported suffixes: KB, KiB, MB, MiB, GB, GiB, TB, TiB"
+    )]
     pub filter_smaller_size: Option<String>,
 
-    #[arg(long, env, value_parser = value_parser::human_bytes::check_human_bytes, help_heading = "Filtering",
-        long_help = "List only objects larger than or equal to the given size.\nSupported suffixes: KB, KiB, MB, MiB, GB, GiB, TB, TiB")]
+    /// List only objects larger than or equal to this size
+    #[arg(
+        long,
+        env,
+        value_parser = value_parser::human_bytes::check_human_bytes,
+        help_heading = "Filtering",
+        long_help = "List only objects larger than or equal to the given size.\nSupported suffixes: KB, KiB, MB, MiB, GB, GiB, TB, TiB"
+    )]
     pub filter_larger_size: Option<String>,
 
     /// Comma-separated list of storage classes to include
-    #[arg(long, env, value_delimiter = ',', help_heading = "Filtering")]
+    #[arg(
+        long,
+        env,
+        value_delimiter = ',',
+        help_heading = "Filtering",
+        long_help = "List only objects whose storage class is in the given list.\nMultiple classes can be separated by commas.\n\nExample: --storage-class STANDARD,GLACIER,DEEP_ARCHIVE"
+    )]
     pub storage_class: Option<Vec<String>>,
 
-    // -- Sort --
+    // -----------------------------------------------------------------------
+    // Sort options
+    // -----------------------------------------------------------------------
+    /// Sort results by field: key, size, or date
     #[arg(long, value_enum, help_heading = "Sort")]
     pub sort: Option<SortField>,
 
+    /// Reverse the sort order
     #[arg(long, default_value_t = false, help_heading = "Sort")]
     pub reverse: bool,
 
-    // -- Display --
+    // -----------------------------------------------------------------------
+    // Display options
+    // -----------------------------------------------------------------------
+    /// Append summary line (total count, total size)
     #[arg(long, default_value_t = false, help_heading = "Display")]
     pub summary: bool,
 
+    /// Human-readable sizes (e.g. 1.2KiB)
     #[arg(long, default_value_t = false, help_heading = "Display")]
     pub human: bool,
 
+    /// Show full key instead of relative to prefix
     #[arg(long, default_value_t = false, help_heading = "Display")]
     pub show_fullpath: bool,
 
+    /// Show ETag column
     #[arg(long, default_value_t = false, help_heading = "Display")]
     pub show_etag: bool,
 
+    /// Show storage class column
     #[arg(long, default_value_t = false, help_heading = "Display")]
     pub show_storage_class: bool,
 
+    /// Show checksum algorithm column
     #[arg(long, default_value_t = false, help_heading = "Display")]
     pub show_checksum_algorithm: bool,
 
+    /// Show checksum type column
     #[arg(long, default_value_t = false, help_heading = "Display")]
     pub show_checksum_type: bool,
 
@@ -131,96 +180,137 @@ pub struct CLIArgs {
     #[arg(long, default_value_t = false, help_heading = "Display")]
     pub json: bool,
 
-    // -- Tracing/Logging --
+    // -----------------------------------------------------------------------
+    // Tracing/Logging options (reused from s3rm-rs)
+    // -----------------------------------------------------------------------
+    /// Verbosity level (-q quiet, default normal, -v, -vv, -vvv)
     #[command(flatten)]
     pub verbosity: Verbosity<WarnLevel>,
 
+    /// Output structured logs in JSON format
     #[arg(long, env, default_value_t = false, help_heading = "Tracing/Logging")]
     pub json_tracing: bool,
 
+    /// Include AWS SDK internal traces in log output
     #[arg(long, env, default_value_t = false, help_heading = "Tracing/Logging")]
     pub aws_sdk_tracing: bool,
 
+    /// Include span open/close events in log output
     #[arg(long, env, default_value_t = false, help_heading = "Tracing/Logging")]
     pub span_events_tracing: bool,
 
+    /// Disable colored output in logs
     #[arg(long, env, default_value_t = false, help_heading = "Tracing/Logging")]
     pub disable_color_tracing: bool,
 
-    // -- AWS Configuration --
+    // -----------------------------------------------------------------------
+    // AWS configuration (reused from s3rm-rs)
+    // -----------------------------------------------------------------------
+    /// Path to the AWS config file
     #[arg(long, env, help_heading = "AWS Configuration")]
     pub aws_config_file: Option<PathBuf>,
 
+    /// Path to the AWS shared credentials file
     #[arg(long, env, help_heading = "AWS Configuration")]
     pub aws_shared_credentials_file: Option<PathBuf>,
 
+    /// Target AWS CLI profile
     #[arg(long, env, conflicts_with_all = ["target_access_key", "target_secret_access_key", "target_session_token"], value_parser = NonEmptyStringValueParser::new(), help_heading = "AWS Configuration")]
     pub target_profile: Option<String>,
 
+    /// Target access key
     #[arg(long, env, conflicts_with_all = ["target_profile"], requires = "target_secret_access_key", value_parser = NonEmptyStringValueParser::new(), help_heading = "AWS Configuration")]
     pub target_access_key: Option<String>,
 
+    /// Target secret access key
     #[arg(long, env, conflicts_with_all = ["target_profile"], requires = "target_access_key", value_parser = NonEmptyStringValueParser::new(), help_heading = "AWS Configuration")]
     pub target_secret_access_key: Option<String>,
 
+    /// Target session token
     #[arg(long, env, conflicts_with_all = ["target_profile"], requires = "target_access_key", value_parser = NonEmptyStringValueParser::new(), help_heading = "AWS Configuration")]
     pub target_session_token: Option<String>,
 
+    /// AWS region for the target
     #[arg(long, env, value_parser = NonEmptyStringValueParser::new(), help_heading = "AWS Configuration")]
     pub target_region: Option<String>,
 
+    /// Custom S3-compatible endpoint URL (e.g. MinIO, Wasabi)
     #[arg(long, env, value_parser = value_parser::url::check_scheme, help_heading = "AWS Configuration")]
     pub target_endpoint_url: Option<String>,
 
+    /// Use path-style access (required by some S3-compatible services)
     #[arg(long, env, default_value_t = false, help_heading = "AWS Configuration")]
     pub target_force_path_style: bool,
 
+    /// Enable S3 Transfer Acceleration
     #[arg(long, env, default_value_t = false, help_heading = "AWS Configuration")]
     pub target_accelerate: bool,
 
+    /// Enable requester-pays for the target bucket
     #[arg(long, env, default_value_t = false, help_heading = "AWS Configuration")]
     pub target_request_payer: bool,
 
+    /// Disable stalled stream protection
     #[arg(long, env, default_value_t = false, help_heading = "AWS Configuration")]
     pub disable_stalled_stream_protection: bool,
 
-    // -- Performance --
+    // -----------------------------------------------------------------------
+    // Performance options (reused from s3rm-rs)
+    // -----------------------------------------------------------------------
+    /// Number of concurrent listing operations (1-65535)
     #[arg(long, env, default_value_t = DEFAULT_MAX_PARALLEL_LISTINGS, value_parser = clap::value_parser!(u16).range(1..), help_heading = "Performance")]
     pub max_parallel_listings: u16,
 
+    /// Maximum depth for parallel listing operations
     #[arg(long, env, default_value_t = DEFAULT_PARALLEL_LISTING_MAX_DEPTH, value_parser = clap::value_parser!(u16).range(1..), help_heading = "Performance")]
     pub max_parallel_listing_max_depth: u16,
 
+    /// Internal queue size for object listing
     #[arg(long, env, default_value_t = DEFAULT_OBJECT_LISTING_QUEUE_SIZE, value_parser = clap::value_parser!(u32).range(1..), help_heading = "Performance")]
     pub object_listing_queue_size: u32,
 
+    /// Allow parallel listings in Express One Zone storage
     #[arg(long, env, default_value_t = false, help_heading = "Performance")]
     pub allow_parallel_listings_in_express_one_zone: bool,
 
-    // -- Retry --
+    // -----------------------------------------------------------------------
+    // Retry options (reused from s3rm-rs)
+    // -----------------------------------------------------------------------
+    /// Maximum retry attempts for AWS SDK operations
     #[arg(long, env, default_value_t = DEFAULT_AWS_MAX_ATTEMPTS, help_heading = "Retry Options")]
     pub aws_max_attempts: u32,
 
+    /// Initial backoff in milliseconds for retries
     #[arg(long, env, default_value_t = DEFAULT_INITIAL_BACKOFF_MILLISECONDS, help_heading = "Retry Options")]
     pub initial_backoff_milliseconds: u64,
 
-    // -- Timeout --
+    // -----------------------------------------------------------------------
+    // Timeout options (reused from s3rm-rs)
+    // -----------------------------------------------------------------------
+    /// Overall operation timeout in milliseconds
     #[arg(long, env, help_heading = "Timeout Options")]
     pub operation_timeout_milliseconds: Option<u64>,
 
+    /// Per-attempt operation timeout in milliseconds
     #[arg(long, env, help_heading = "Timeout Options")]
     pub operation_attempt_timeout_milliseconds: Option<u64>,
 
+    /// Connection timeout in milliseconds
     #[arg(long, env, help_heading = "Timeout Options")]
     pub connect_timeout_milliseconds: Option<u64>,
 
+    /// Read timeout in milliseconds
     #[arg(long, env, help_heading = "Timeout Options")]
     pub read_timeout_milliseconds: Option<u64>,
 
-    // -- Advanced --
+    // -----------------------------------------------------------------------
+    // Advanced options
+    // -----------------------------------------------------------------------
+    /// Maximum number of objects returned in a single list object request
     #[arg(long, env, default_value_t = DEFAULT_MAX_KEYS, value_parser = clap::value_parser!(i32).range(1..=32767), help_heading = "Advanced")]
     pub max_keys: i32,
 
+    /// Generate shell completions for the given shell
     #[arg(long, env, help_heading = "Advanced")]
     pub auto_complete_shell: Option<clap_complete::shells::Shell>,
 }
