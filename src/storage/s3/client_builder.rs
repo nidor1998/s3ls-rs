@@ -17,7 +17,7 @@ impl ClientConfig {
         let mut s3_config_builder = aws_sdk_s3::config::Builder::from(&sdk_config)
             .force_path_style(self.force_path_style)
             .accelerate(self.accelerate)
-            .request_checksum_calculation(self.request_checksum_calculation.clone());
+            .request_checksum_calculation(self.request_checksum_calculation);
 
         if let Some(timeout_config) = self.build_timeout_config() {
             s3_config_builder = s3_config_builder.timeout_config(timeout_config);
