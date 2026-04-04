@@ -3,6 +3,11 @@
 //! New filter for s3ls-rs (no s3rm-rs equivalent).
 //! Passes entries whose storage class matches one of the configured classes.
 //! Delete markers and CommonPrefix entries always pass.
+//!
+//! **S3 API behavior:** The S3 ListObjectsV2 and ListObjectVersions APIs omit
+//! the `StorageClass` field (returning `None`) for objects stored in the
+//! STANDARD class. This filter treats `None` as `"STANDARD"` so that
+//! `--storage-class STANDARD` correctly matches those objects.
 
 use crate::filters::ObjectFilter;
 use crate::types::ListEntry;
@@ -23,32 +28,22 @@ impl StorageClassFilter {
 impl ObjectFilter for StorageClassFilter {
     fn matches(&self, entry: &ListEntry) -> bool {
         match entry {
-            ListEntry::Object(obj) => match obj.storage_class() {
-                Some(sc) => {
-                    let matched = self.classes.iter().any(|c| c == sc);
-                    if !matched {
-                        debug!(
-                            name = FILTER_NAME,
-                            key = entry.key(),
-                            delete_marker = entry.is_delete_marker(),
-                            version_id = entry.version_id(),
-                            storage_class = sc,
-                            "entry filtered."
-                        );
-                    }
-                    matched
-                }
-                None => {
+            ListEntry::Object(obj) => {
+                // S3 API omits StorageClass for STANDARD objects (returns None).
+                let sc = obj.storage_class().unwrap_or("STANDARD");
+                let matched = self.classes.iter().any(|c| c == sc);
+                if !matched {
                     debug!(
                         name = FILTER_NAME,
                         key = entry.key(),
                         delete_marker = entry.is_delete_marker(),
                         version_id = entry.version_id(),
-                        "entry has no storage class, filtered."
+                        storage_class = sc,
+                        "entry filtered."
                     );
-                    false
                 }
-            },
+                matched
+            }
             ListEntry::DeleteMarker { .. } => true,
             ListEntry::CommonPrefix(_) => true,
         }
@@ -83,8 +78,15 @@ mod tests {
     }
 
     #[test]
-    fn no_class_does_not_match() {
+    fn none_class_treated_as_standard() {
+        // S3 API omits StorageClass for STANDARD objects
         let filter = StorageClassFilter::new(vec!["STANDARD".to_string()]);
+        assert!(filter.matches(&make_entry_with_class(None)));
+    }
+
+    #[test]
+    fn none_class_does_not_match_non_standard() {
+        let filter = StorageClassFilter::new(vec!["GLACIER".to_string()]);
         assert!(!filter.matches(&make_entry_with_class(None)));
     }
 
