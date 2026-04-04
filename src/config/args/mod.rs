@@ -68,7 +68,7 @@ pub struct CLIArgs {
     #[arg(short = 'r', long, env, default_value_t = false, help_heading = "General")]
     pub recursive: bool,
 
-    #[arg(long, env, default_value_t = false, help_heading = "General")]
+    #[arg(long, env = "LIST_ALL_VERSIONS", default_value_t = false, help_heading = "General")]
     pub all_versions: bool,
 
     // -- Filtering --
