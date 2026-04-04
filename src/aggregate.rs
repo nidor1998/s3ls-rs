@@ -231,6 +231,68 @@ pub fn format_entry_json(entry: &ListEntry) -> String {
     }
 }
 
+pub fn compute_statistics(entries: &[ListEntry]) -> crate::types::ListingStatistics {
+    let mut total_objects: u64 = 0;
+    let mut total_size: u64 = 0;
+    let mut total_versions: u64 = 0;
+    let mut total_delete_markers: u64 = 0;
+
+    for entry in entries {
+        match entry {
+            ListEntry::Object(obj) => {
+                total_objects += 1;
+                total_size += obj.size();
+                if obj.version_id().is_some() {
+                    total_versions += 1;
+                }
+            }
+            ListEntry::CommonPrefix(_) => {}
+            ListEntry::DeleteMarker { .. } => {
+                total_delete_markers += 1;
+            }
+        }
+    }
+
+    crate::types::ListingStatistics {
+        total_objects,
+        total_size,
+        total_versions,
+        total_delete_markers,
+    }
+}
+
+pub fn format_summary(
+    stats: &crate::types::ListingStatistics,
+    json: bool,
+    all_versions: bool,
+) -> String {
+    if json {
+        let mut map = serde_json::Map::new();
+        let mut summary = serde_json::Map::new();
+        summary.insert("total_objects".to_string(), serde_json::json!(stats.total_objects));
+        summary.insert("total_size".to_string(), serde_json::json!(stats.total_size));
+        if all_versions {
+            summary.insert("total_versions".to_string(), serde_json::json!(stats.total_versions));
+            summary.insert(
+                "total_delete_markers".to_string(),
+                serde_json::json!(stats.total_delete_markers),
+            );
+        }
+        map.insert("summary".to_string(), serde_json::Value::Object(summary));
+        serde_json::to_string(&map).unwrap()
+    } else {
+        let size_str = format_size(stats.total_size, true);
+        let mut line = format!("Total: {} objects, {}", stats.total_objects, size_str);
+        if all_versions {
+            line.push_str(&format!(
+                ", {} versions, {} delete markers",
+                stats.total_versions, stats.total_delete_markers
+            ));
+        }
+        line
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,5 +452,64 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["key"], "deleted.txt");
         assert_eq!(parsed["delete_marker"], true);
+    }
+
+    #[test]
+    fn format_summary_text() {
+        let stats = crate::types::ListingStatistics {
+            total_objects: 42,
+            total_size: 5678901,
+            total_versions: 0,
+            total_delete_markers: 0,
+        };
+        let summary = format_summary(&stats, false, false);
+        assert!(summary.contains("42 objects"));
+        assert!(summary.contains("5.4 MiB"));
+    }
+
+    #[test]
+    fn format_summary_json() {
+        let stats = crate::types::ListingStatistics {
+            total_objects: 10,
+            total_size: 1024,
+            total_versions: 0,
+            total_delete_markers: 0,
+        };
+        let summary = format_summary(&stats, true, false);
+        let parsed: serde_json::Value = serde_json::from_str(&summary).unwrap();
+        assert_eq!(parsed["summary"]["total_objects"], 10);
+        assert_eq!(parsed["summary"]["total_size"], 1024);
+    }
+
+    #[test]
+    fn format_summary_with_versions() {
+        let stats = crate::types::ListingStatistics {
+            total_objects: 10,
+            total_size: 1024,
+            total_versions: 15,
+            total_delete_markers: 3,
+        };
+        let summary = format_summary(&stats, false, true);
+        assert!(summary.contains("15 versions"));
+        assert!(summary.contains("3 delete markers"));
+    }
+
+    #[test]
+    fn compute_statistics_counts_correctly() {
+        let entries = vec![
+            make_entry("a.txt", 100, 2024, 1),
+            make_entry("b.txt", 200, 2024, 2),
+            ListEntry::CommonPrefix("logs/".to_string()),
+            ListEntry::DeleteMarker {
+                key: "c.txt".to_string(),
+                version_id: "v1".to_string(),
+                last_modified: chrono::Utc::now(),
+                is_latest: true,
+            },
+        ];
+        let stats = compute_statistics(&entries);
+        assert_eq!(stats.total_objects, 2);
+        assert_eq!(stats.total_size, 300);
+        assert_eq!(stats.total_delete_markers, 1);
     }
 }
