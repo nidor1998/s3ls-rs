@@ -114,6 +114,15 @@ pub fn format_entry(entry: &ListEntry, opts: &FormatOptions) -> String {
     }
 }
 
+fn cmp_mtime(a: &ListEntry, b: &ListEntry) -> std::cmp::Ordering {
+    match (a.last_modified(), b.last_modified()) {
+        (Some(at), Some(bt)) => at.cmp(bt),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
+}
+
 pub fn sort_entries(
     entries: &mut [ListEntry],
     field: &SortField,
@@ -121,31 +130,34 @@ pub fn sort_entries(
     all_versions: bool,
 ) {
     entries.sort_by(|a, b| {
+        // When all_versions is enabled, apply secondary tie-breakers for
+        // deterministic output across parallel executions:
+        //   Key  → key, mtime
+        //   Size → size, key, mtime
+        //   Date → mtime, key
         let cmp = match field {
             SortField::Key => {
                 let primary = a.key().cmp(b.key());
                 if all_versions && primary == std::cmp::Ordering::Equal {
-                    let a_time = a.last_modified();
-                    let b_time = b.last_modified();
-                    match (a_time, b_time) {
-                        (Some(at), Some(bt)) => at.cmp(bt),
-                        (Some(_), None) => std::cmp::Ordering::Less,
-                        (None, Some(_)) => std::cmp::Ordering::Greater,
-                        (None, None) => std::cmp::Ordering::Equal,
-                    }
+                    cmp_mtime(a, b)
                 } else {
                     primary
                 }
             }
-            SortField::Size => a.size().cmp(&b.size()),
+            SortField::Size => {
+                let primary = a.size().cmp(&b.size());
+                if all_versions && primary == std::cmp::Ordering::Equal {
+                    a.key().cmp(b.key()).then_with(|| cmp_mtime(a, b))
+                } else {
+                    primary
+                }
+            }
             SortField::Date => {
-                let a_time = a.last_modified();
-                let b_time = b.last_modified();
-                match (a_time, b_time) {
-                    (Some(at), Some(bt)) => at.cmp(bt),
-                    (Some(_), None) => std::cmp::Ordering::Less,
-                    (None, Some(_)) => std::cmp::Ordering::Greater,
-                    (None, None) => std::cmp::Ordering::Equal,
+                let primary = cmp_mtime(a, b);
+                if all_versions && primary == std::cmp::Ordering::Equal {
+                    a.key().cmp(b.key())
+                } else {
+                    primary
                 }
             }
         };
@@ -354,6 +366,38 @@ mod tests {
         sort_entries(&mut entries, &SortField::Key, true, false);
         assert_eq!(entries[0].key(), "b.txt");
         assert_eq!(entries[1].key(), "a.txt");
+    }
+
+    #[test]
+    fn sort_by_size_with_all_versions_secondary_key_then_mtime() {
+        // Same size → secondary sort by key, then by mtime for determinism
+        let mut entries = vec![
+            make_entry("b.txt", 100, 2024, 1),
+            make_entry("a.txt", 100, 2024, 3),  // same key+size, later mtime
+            make_entry("a.txt", 100, 2024, 1),  // same key+size, earlier mtime
+        ];
+        sort_entries(&mut entries, &SortField::Size, false, true);
+        // Equal sizes: tiebreak by key (a < b), then mtime (Jan < Mar)
+        assert_eq!(entries[0].key(), "a.txt");
+        assert_eq!(entries[2].key(), "b.txt");
+        // The two a.txt entries are ordered by mtime: Jan before Mar
+        // Verify by checking the second a.txt has the later date
+        assert!(entries[0].last_modified().unwrap() < entries[1].last_modified().unwrap());
+    }
+
+    #[test]
+    fn sort_by_date_with_all_versions_secondary_key() {
+        // Same mtime → secondary sort by key
+        let mut entries = vec![
+            make_entry("c.txt", 300, 2024, 1),
+            make_entry("a.txt", 100, 2024, 1),
+            make_entry("b.txt", 200, 2024, 1),
+        ];
+        sort_entries(&mut entries, &SortField::Date, false, true);
+        // Same date: sorted by key
+        assert_eq!(entries[0].key(), "a.txt");
+        assert_eq!(entries[1].key(), "b.txt");
+        assert_eq!(entries[2].key(), "c.txt");
     }
 
     #[test]
