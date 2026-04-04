@@ -822,17 +822,20 @@ fn config_from_full_args() {
     .unwrap();
     assert!(config.recursive);
     assert!(config.all_versions);
-    assert_eq!(config.filter_include_regex.as_deref(), Some(r".*\.log$"));
-    assert_eq!(config.filter_larger_size, Some(1024 * 1024 * 1024));
     assert_eq!(
-        config.storage_class.unwrap(),
+        config.filter_config.include_regex.as_deref(),
+        Some(r".*\.log$")
+    );
+    assert_eq!(config.filter_config.larger_size, Some(1024 * 1024 * 1024));
+    assert_eq!(
+        config.filter_config.storage_class.unwrap(),
         vec!["STANDARD", "GLACIER"]
     );
     assert_eq!(config.sort, SortField::Date);
     assert!(config.reverse);
-    assert!(config.human);
-    assert!(config.summary);
-    assert!(config.json);
+    assert!(config.display_config.human);
+    assert!(config.display_config.summary);
+    assert!(config.display_config.json);
 }
 
 #[test]
@@ -846,8 +849,11 @@ fn config_filter_size_values_are_u64() {
         "2GiB",
     ])
     .unwrap();
-    assert_eq!(config.filter_larger_size, Some(1024 * 1024 * 1024));
-    assert_eq!(config.filter_smaller_size, Some(2 * 1024 * 1024 * 1024));
+    assert_eq!(config.filter_config.larger_size, Some(1024 * 1024 * 1024));
+    assert_eq!(
+        config.filter_config.smaller_size,
+        Some(2 * 1024 * 1024 * 1024)
+    );
 }
 
 #[test]

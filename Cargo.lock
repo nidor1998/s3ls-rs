@@ -2327,6 +2327,7 @@ dependencies = [
  "nix",
  "once_cell",
  "proptest",
+ "rusty-fork",
  "thiserror",
  "tokio",
  "tokio-util",

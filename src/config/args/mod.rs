@@ -349,6 +349,68 @@ impl CLIArgs {
         crate::types::S3Target::parse(&self.target).map_err(|e| e.to_string())
     }
 
+    fn build_filter_config(&self) -> Result<crate::config::FilterConfig, String> {
+        let larger_size = self
+            .filter_larger_size
+            .as_deref()
+            .map(parse_human_bytes)
+            .transpose()
+            .map_err(|e| format!("Invalid filter-larger-size: {e}"))?;
+        let smaller_size = self
+            .filter_smaller_size
+            .as_deref()
+            .map(parse_human_bytes)
+            .transpose()
+            .map_err(|e| format!("Invalid filter-smaller-size: {e}"))?;
+
+        Ok(crate::config::FilterConfig {
+            include_regex: self.filter_include_regex.clone(),
+            exclude_regex: self.filter_exclude_regex.clone(),
+            mtime_before: self.filter_mtime_before,
+            mtime_after: self.filter_mtime_after,
+            smaller_size,
+            larger_size,
+            storage_class: self.storage_class.clone(),
+        })
+    }
+
+    fn build_client_config(&self) -> Option<crate::config::ClientConfig> {
+        let credential = if let Some(ref profile) = self.target_profile {
+            crate::config::S3Credentials::Profile(profile.clone())
+        } else if let Some(ref access_key) = self.target_access_key {
+            crate::config::S3Credentials::Credentials {
+                access_key: access_key.clone(),
+                secret_access_key: self.target_secret_access_key.clone().unwrap_or_default(),
+                session_token: self.target_session_token.clone(),
+            }
+        } else {
+            crate::config::S3Credentials::FromEnvironment
+        };
+
+        Some(crate::config::ClientConfig {
+            aws_config_file: self.aws_config_file.clone(),
+            aws_shared_credentials_file: self.aws_shared_credentials_file.clone(),
+            credential,
+            region: self.target_region.clone(),
+            endpoint_url: self.target_endpoint_url.clone(),
+            force_path_style: self.target_force_path_style,
+            accelerate: self.target_accelerate,
+            request_payer: self.target_request_payer,
+            retry_config: crate::config::RetryConfig {
+                aws_max_attempts: self.aws_max_attempts,
+                initial_backoff_milliseconds: self.initial_backoff_milliseconds,
+            },
+            cli_timeout_config: crate::config::CLITimeoutConfig {
+                operation_timeout_milliseconds: self.operation_timeout_milliseconds,
+                operation_attempt_timeout_milliseconds: self
+                    .operation_attempt_timeout_milliseconds,
+                connect_timeout_milliseconds: self.connect_timeout_milliseconds,
+                read_timeout_milliseconds: self.read_timeout_milliseconds,
+            },
+            disable_stalled_stream_protection: self.disable_stalled_stream_protection,
+        })
+    }
+
     fn build_tracing_config(&self) -> Option<crate::config::TracingConfig> {
         self.verbosity
             .log_level()
@@ -367,65 +429,33 @@ impl TryFrom<CLIArgs> for crate::config::Config {
 
     fn try_from(args: CLIArgs) -> Result<Self, Self::Error> {
         let target = args.parse_target()?;
+        let filter_config = args.build_filter_config()?;
+        let target_client_config = args.build_client_config();
         let tracing_config = args.build_tracing_config();
-
-        let filter_larger_size = args
-            .filter_larger_size
-            .as_deref()
-            .map(parse_human_bytes)
-            .transpose()
-            .map_err(|e| format!("Invalid filter-larger-size: {e}"))?;
-        let filter_smaller_size = args
-            .filter_smaller_size
-            .as_deref()
-            .map(parse_human_bytes)
-            .transpose()
-            .map_err(|e| format!("Invalid filter-smaller-size: {e}"))?;
 
         Ok(crate::config::Config {
             target,
             recursive: args.recursive,
             all_versions: args.all_versions,
-            filter_include_regex: args.filter_include_regex,
-            filter_exclude_regex: args.filter_exclude_regex,
-            filter_mtime_before: args.filter_mtime_before,
-            filter_mtime_after: args.filter_mtime_after,
-            filter_smaller_size,
-            filter_larger_size,
-            storage_class: args.storage_class,
+            filter_config,
             sort: args.sort,
             reverse: args.reverse,
-            summary: args.summary,
-            human: args.human,
-            show_fullpath: args.show_fullpath,
-            show_etag: args.show_etag,
-            show_storage_class: args.show_storage_class,
-            show_checksum_algorithm: args.show_checksum_algorithm,
-            show_checksum_type: args.show_checksum_type,
-            json: args.json,
+            display_config: crate::config::DisplayConfig {
+                summary: args.summary,
+                human: args.human,
+                show_fullpath: args.show_fullpath,
+                show_etag: args.show_etag,
+                show_storage_class: args.show_storage_class,
+                show_checksum_algorithm: args.show_checksum_algorithm,
+                show_checksum_type: args.show_checksum_type,
+                json: args.json,
+            },
             max_parallel_listings: args.max_parallel_listings,
             max_parallel_listing_max_depth: args.max_parallel_listing_max_depth,
             object_listing_queue_size: args.object_listing_queue_size,
             allow_parallel_listings_in_express_one_zone: args
                 .allow_parallel_listings_in_express_one_zone,
-            aws_config_file: args.aws_config_file,
-            aws_shared_credentials_file: args.aws_shared_credentials_file,
-            target_profile: args.target_profile,
-            target_access_key: args.target_access_key,
-            target_secret_access_key: args.target_secret_access_key,
-            target_session_token: args.target_session_token,
-            target_region: args.target_region,
-            target_endpoint_url: args.target_endpoint_url,
-            target_force_path_style: args.target_force_path_style,
-            target_accelerate: args.target_accelerate,
-            target_request_payer: args.target_request_payer,
-            disable_stalled_stream_protection: args.disable_stalled_stream_protection,
-            aws_max_attempts: args.aws_max_attempts,
-            initial_backoff_milliseconds: args.initial_backoff_milliseconds,
-            operation_timeout_milliseconds: args.operation_timeout_milliseconds,
-            operation_attempt_timeout_milliseconds: args.operation_attempt_timeout_milliseconds,
-            connect_timeout_milliseconds: args.connect_timeout_milliseconds,
-            read_timeout_milliseconds: args.read_timeout_milliseconds,
+            target_client_config,
             max_keys: args.max_keys,
             auto_complete_shell: args.auto_complete_shell,
             tracing_config,

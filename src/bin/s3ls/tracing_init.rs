@@ -1,4 +1,4 @@
-// Tracing infrastructure adapted from s3rm-rs.
+// Tracing infrastructure adapted from s3sync.
 // Initializes the tracing subscriber for the CLI binary.
 
 use std::env;
@@ -44,5 +44,81 @@ pub fn init_tracing(config: &TracingConfig) {
         subscriber_builder.json().init();
     } else {
         subscriber_builder.init();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusty_fork::rusty_fork_test;
+
+    rusty_fork_test! {
+        #[test]
+        fn init_json_tracing() {
+            init_tracing(&TracingConfig {
+                tracing_level: log::Level::Info,
+                json_tracing: true,
+                aws_sdk_tracing: false,
+                span_events_tracing: false,
+                disable_color_tracing: false,
+            });
+        }
+
+        #[test]
+        fn init_aws_sdk_tracing() {
+            init_tracing(&TracingConfig {
+                tracing_level: log::Level::Info,
+                json_tracing: false,
+                aws_sdk_tracing: true,
+                span_events_tracing: false,
+                disable_color_tracing: false,
+            });
+        }
+
+        #[test]
+        fn init_normal_tracing() {
+            unsafe { env::remove_var(EVENT_FILTER_ENV_VAR) };
+            init_tracing(&TracingConfig {
+                tracing_level: log::Level::Info,
+                json_tracing: false,
+                aws_sdk_tracing: false,
+                span_events_tracing: false,
+                disable_color_tracing: false,
+            });
+        }
+
+        #[test]
+        fn init_span_events_tracing() {
+            init_tracing(&TracingConfig {
+                tracing_level: log::Level::Info,
+                json_tracing: false,
+                aws_sdk_tracing: true,
+                span_events_tracing: true,
+                disable_color_tracing: false,
+            });
+        }
+
+        #[test]
+        fn init_disable_color_tracing() {
+            init_tracing(&TracingConfig {
+                tracing_level: log::Level::Info,
+                json_tracing: false,
+                aws_sdk_tracing: false,
+                span_events_tracing: false,
+                disable_color_tracing: true,
+            });
+        }
+
+        #[test]
+        fn init_with_env() {
+            unsafe { env::set_var(EVENT_FILTER_ENV_VAR, "trace") };
+            init_tracing(&TracingConfig {
+                tracing_level: log::Level::Info,
+                json_tracing: false,
+                aws_sdk_tracing: false,
+                span_events_tracing: false,
+                disable_color_tracing: true,
+            });
+        }
     }
 }

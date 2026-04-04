@@ -1,4 +1,4 @@
-// Ctrl+C signal handler adapted from s3rm-rs.
+// Ctrl+C signal handler adapted from s3sync's `bin/s3sync/cli/ctrl_c_handler/mod.rs`.
 //
 // Uses tokio::select! to wait for either pipeline cancellation or Ctrl+C signal.
 
