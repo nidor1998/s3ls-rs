@@ -35,6 +35,7 @@ zeroize = "1.8.2"
 zeroize_derive = "1.4.3"
 
 # Logging
+log = "0.4.29"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json", "local-time"] }
 

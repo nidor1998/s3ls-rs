@@ -1,10 +1,9 @@
 pub mod args;
 
 use crate::config::args::SortField;
-use crate::types::{S3Credentials, S3Target};
+use crate::types::{ClientConfigLocation, S3Credentials, S3Target};
 use chrono::{DateTime, Utc};
 use fancy_regex::Regex;
-use std::path::PathBuf;
 
 /// Main configuration for the s3ls-rs listing pipeline.
 #[derive(Debug, Clone)]
@@ -110,13 +109,6 @@ pub struct DisplayConfig {
     pub json: bool,
 }
 
-/// AWS configuration file locations.
-#[derive(Debug, Clone)]
-pub struct ClientConfigLocation {
-    pub aws_config_file: Option<PathBuf>,
-    pub aws_shared_credentials_file: Option<PathBuf>,
-}
-
 /// AWS S3 client configuration.
 #[derive(Debug, Clone)]
 pub struct ClientConfig {
@@ -152,7 +144,7 @@ pub struct CLITimeoutConfig {
 /// Tracing (logging) configuration.
 #[derive(Debug, Clone, Copy)]
 pub struct TracingConfig {
-    pub tracing_level: clap_verbosity_flag::log::Level,
+    pub tracing_level: log::Level,
     pub json_tracing: bool,
     pub aws_sdk_tracing: bool,
     pub span_events_tracing: bool,
