@@ -36,11 +36,21 @@ fn parse_human_bytes(s: &str) -> Result<u64, String> {
 }
 
 /// Field to sort listing results by.
-#[derive(Clone, Debug, ValueEnum)]
+#[derive(Clone, Debug, PartialEq, ValueEnum)]
 pub enum SortField {
     Key,
     Size,
     Date,
+}
+
+impl std::fmt::Display for SortField {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SortField::Key => write!(f, "key"),
+            SortField::Size => write!(f, "size"),
+            SortField::Date => write!(f, "date"),
+        }
+    }
 }
 
 /// s3ls - Ultra-fast S3 object listing tool.
@@ -138,8 +148,8 @@ pub struct CLIArgs {
     // Sort options
     // -----------------------------------------------------------------------
     /// Sort results by field: key, size, or date
-    #[arg(long, value_enum, help_heading = "Sort")]
-    pub sort: Option<SortField>,
+    #[arg(long, value_enum, default_value_t = SortField::Key, help_heading = "Sort")]
+    pub sort: SortField,
 
     /// Reverse the sort order
     #[arg(long, default_value_t = false, help_heading = "Sort")]

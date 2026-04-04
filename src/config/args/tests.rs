@@ -157,19 +157,19 @@ fn invalid_regex_rejected() {
 #[test]
 fn sort_key() {
     let cli = parse_from_args(args(&["s3://bucket", "--sort", "key"])).unwrap();
-    assert!(matches!(cli.sort, Some(SortField::Key)));
+    assert_eq!(cli.sort, SortField::Key);
 }
 
 #[test]
 fn sort_size() {
     let cli = parse_from_args(args(&["s3://bucket", "--sort", "size"])).unwrap();
-    assert!(matches!(cli.sort, Some(SortField::Size)));
+    assert_eq!(cli.sort, SortField::Size);
 }
 
 #[test]
 fn sort_date() {
     let cli = parse_from_args(args(&["s3://bucket", "--sort", "date"])).unwrap();
-    assert!(matches!(cli.sort, Some(SortField::Date)));
+    assert_eq!(cli.sort, SortField::Date);
 }
 
 #[test]
@@ -187,7 +187,7 @@ fn reverse_flag() {
 #[test]
 fn sort_and_reverse_combo() {
     let cli = parse_from_args(args(&["s3://bucket", "--sort", "size", "--reverse"])).unwrap();
-    assert!(matches!(cli.sort, Some(SortField::Size)));
+    assert_eq!(cli.sort, SortField::Size);
     assert!(cli.reverse);
 }
 
@@ -572,7 +572,7 @@ fn verify_all_defaults() {
     assert!(cli.storage_class.is_none());
 
     // Sort
-    assert!(cli.sort.is_none());
+    assert_eq!(cli.sort, SortField::Key);
     assert!(!cli.reverse);
 
     // Display
@@ -752,7 +752,7 @@ fn full_combination_many_flags() {
         cli.storage_class,
         Some(vec!["STANDARD".to_string(), "GLACIER".to_string()])
     );
-    assert!(matches!(cli.sort, Some(SortField::Date)));
+    assert_eq!(cli.sort, SortField::Date);
     assert!(cli.reverse);
     assert!(cli.summary);
     assert!(cli.human);
