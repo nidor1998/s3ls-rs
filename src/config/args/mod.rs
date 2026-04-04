@@ -316,8 +316,8 @@ pub struct CLIArgs {
     // -----------------------------------------------------------------------
     // Advanced options
     // -----------------------------------------------------------------------
-    /// Maximum number of objects returned in a single list object request
-    #[arg(long, env, default_value_t = DEFAULT_MAX_KEYS, value_parser = clap::value_parser!(i32).range(1..=32767), help_heading = "Advanced")]
+    /// Maximum number of objects returned in a single list object request (1-1000)
+    #[arg(long, env, default_value_t = DEFAULT_MAX_KEYS, value_parser = clap::value_parser!(i32).range(1..=1000), help_heading = "Advanced")]
     pub max_keys: i32,
 
     /// Generate shell completions for the given shell

@@ -515,7 +515,7 @@ fn advanced_reject_max_keys_zero() {
 
 #[test]
 fn advanced_reject_max_keys_above_range() {
-    let result = parse_from_args(args(&["s3://bucket", "--max-keys", "32768"]));
+    let result = parse_from_args(args(&["s3://bucket", "--max-keys", "1001"]));
     assert!(result.is_err());
 }
 
@@ -734,7 +734,7 @@ fn full_combination_many_flags() {
         "--max-parallel-listings",
         "64",
         "--max-keys",
-        "5000",
+        "500",
         "--aws-max-attempts",
         "3",
         "--operation-timeout-milliseconds",
@@ -761,7 +761,7 @@ fn full_combination_many_flags() {
     assert!(cli.json);
     assert_eq!(cli.target_region.as_deref(), Some("eu-west-1"));
     assert_eq!(cli.max_parallel_listings, 64);
-    assert_eq!(cli.max_keys, 5000);
+    assert_eq!(cli.max_keys, 500);
     assert_eq!(cli.aws_max_attempts, 3);
     assert_eq!(cli.operation_timeout_milliseconds, Some(60000));
 }
