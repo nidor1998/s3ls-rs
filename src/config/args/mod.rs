@@ -333,3 +333,101 @@ where
 {
     CLIArgs::try_parse_from(args)
 }
+
+/// Parse arguments and build a Config in one step.
+pub fn build_config_from_args<I, T>(args: I) -> Result<crate::config::Config, String>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let cli_args = CLIArgs::try_parse_from(args).map_err(|e| e.to_string())?;
+    crate::config::Config::try_from(cli_args)
+}
+
+impl CLIArgs {
+    fn parse_target(&self) -> Result<crate::types::S3Target, String> {
+        crate::types::S3Target::parse(&self.target).map_err(|e| e.to_string())
+    }
+
+    fn build_tracing_config(&self) -> Option<crate::config::TracingConfig> {
+        self.verbosity
+            .log_level()
+            .map(|log_level| crate::config::TracingConfig {
+                tracing_level: log_level,
+                json_tracing: self.json_tracing,
+                aws_sdk_tracing: self.aws_sdk_tracing,
+                span_events_tracing: self.span_events_tracing,
+                disable_color_tracing: self.disable_color_tracing,
+            })
+    }
+}
+
+impl TryFrom<CLIArgs> for crate::config::Config {
+    type Error = String;
+
+    fn try_from(args: CLIArgs) -> Result<Self, Self::Error> {
+        let target = args.parse_target()?;
+        let tracing_config = args.build_tracing_config();
+
+        let filter_larger_size = args
+            .filter_larger_size
+            .as_deref()
+            .map(parse_human_bytes)
+            .transpose()
+            .map_err(|e| format!("Invalid filter-larger-size: {e}"))?;
+        let filter_smaller_size = args
+            .filter_smaller_size
+            .as_deref()
+            .map(parse_human_bytes)
+            .transpose()
+            .map_err(|e| format!("Invalid filter-smaller-size: {e}"))?;
+
+        Ok(crate::config::Config {
+            target,
+            recursive: args.recursive,
+            all_versions: args.all_versions,
+            filter_include_regex: args.filter_include_regex,
+            filter_exclude_regex: args.filter_exclude_regex,
+            filter_mtime_before: args.filter_mtime_before,
+            filter_mtime_after: args.filter_mtime_after,
+            filter_smaller_size,
+            filter_larger_size,
+            storage_class: args.storage_class,
+            sort: args.sort,
+            reverse: args.reverse,
+            summary: args.summary,
+            human: args.human,
+            show_fullpath: args.show_fullpath,
+            show_etag: args.show_etag,
+            show_storage_class: args.show_storage_class,
+            show_checksum_algorithm: args.show_checksum_algorithm,
+            show_checksum_type: args.show_checksum_type,
+            json: args.json,
+            max_parallel_listings: args.max_parallel_listings,
+            max_parallel_listing_max_depth: args.max_parallel_listing_max_depth,
+            object_listing_queue_size: args.object_listing_queue_size,
+            allow_parallel_listings_in_express_one_zone: args
+                .allow_parallel_listings_in_express_one_zone,
+            aws_config_file: args.aws_config_file,
+            aws_shared_credentials_file: args.aws_shared_credentials_file,
+            target_profile: args.target_profile,
+            target_access_key: args.target_access_key,
+            target_secret_access_key: args.target_secret_access_key,
+            target_session_token: args.target_session_token,
+            target_region: args.target_region,
+            target_endpoint_url: args.target_endpoint_url,
+            target_force_path_style: args.target_force_path_style,
+            target_accelerate: args.target_accelerate,
+            target_request_payer: args.target_request_payer,
+            disable_stalled_stream_protection: args.disable_stalled_stream_protection,
+            aws_max_attempts: args.aws_max_attempts,
+            initial_backoff_milliseconds: args.initial_backoff_milliseconds,
+            operation_timeout_milliseconds: args.operation_timeout_milliseconds,
+            operation_attempt_timeout_milliseconds: args.operation_attempt_timeout_milliseconds,
+            connect_timeout_milliseconds: args.connect_timeout_milliseconds,
+            read_timeout_milliseconds: args.read_timeout_milliseconds,
+            max_keys: args.max_keys,
+            tracing_config,
+        })
+    }
+}
