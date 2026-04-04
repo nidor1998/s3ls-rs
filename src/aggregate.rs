@@ -1,5 +1,139 @@
 use crate::config::args::SortField;
 use crate::types::ListEntry;
+use byte_unit::Byte;
+
+#[derive(Default)]
+pub struct FormatOptions {
+    pub human: bool,
+    pub show_fullpath: bool,
+    pub show_etag: bool,
+    pub show_storage_class: bool,
+    pub show_checksum_algorithm: bool,
+    pub show_checksum_type: bool,
+    pub prefix: Option<String>,
+}
+
+impl FormatOptions {
+    pub fn from_display_config(display_config: &crate::config::DisplayConfig) -> Self {
+        FormatOptions {
+            human: display_config.human,
+            show_fullpath: display_config.show_fullpath,
+            show_etag: display_config.show_etag,
+            show_storage_class: display_config.show_storage_class,
+            show_checksum_algorithm: display_config.show_checksum_algorithm,
+            show_checksum_type: display_config.show_checksum_type,
+            prefix: None,
+        }
+    }
+}
+
+fn format_size(size: u64, human: bool) -> String {
+    if human {
+        let byte = Byte::from_u64(size);
+        let adjusted = byte.get_appropriate_unit(byte_unit::UnitType::Binary);
+        if size < 1024 {
+            format!("{size}")
+        } else {
+            format!("{adjusted:.1}")
+        }
+    } else {
+        size.to_string()
+    }
+}
+
+fn format_key<'a>(entry: &'a ListEntry, opts: &FormatOptions) -> &'a str {
+    if opts.show_fullpath {
+        entry.key()
+    } else if let Some(ref prefix) = opts.prefix {
+        entry.key().strip_prefix(prefix.as_str()).unwrap_or(entry.key())
+    } else {
+        entry.key()
+    }
+}
+
+pub fn format_entry(entry: &ListEntry, bucket: Option<&str>, opts: &FormatOptions) -> String {
+    match entry {
+        ListEntry::CommonPrefix(_) => {
+            let key = format_key(entry, opts);
+            let key_display = if let Some(bucket) = bucket {
+                if opts.show_fullpath {
+                    format!("s3://{bucket}/{key}")
+                } else {
+                    key.to_string()
+                }
+            } else {
+                key.to_string()
+            };
+            format!("{:>30} PRE {}", "", key_display)
+        }
+        ListEntry::Object(obj) => {
+            let date = obj.last_modified().format("%Y-%m-%d %H:%M:%S");
+            let size = format_size(obj.size(), opts.human);
+            let key = format_key(entry, opts);
+            let key_display = if let Some(bucket) = bucket {
+                if opts.show_fullpath {
+                    format!("s3://{bucket}/{key}")
+                } else {
+                    key.to_string()
+                }
+            } else {
+                key.to_string()
+            };
+
+            let mut line = format!("{date} {size:>10} {key_display}");
+
+            if let Some(version_id) = obj.version_id() {
+                let latest = if obj.is_latest() { " (latest)" } else { "" };
+                line.push_str(&format!("  [version: {version_id}{latest}]"));
+            }
+
+            if opts.show_etag {
+                line.push_str(&format!("  etag:{}", obj.e_tag()));
+            }
+            if opts.show_storage_class {
+                line.push_str(&format!(
+                    "  class:{}",
+                    obj.storage_class().unwrap_or("STANDARD")
+                ));
+            }
+            if opts.show_checksum_algorithm {
+                if let Some(algo) = obj.checksum_algorithm() {
+                    line.push_str(&format!("  checksum_algo:{algo}"));
+                }
+            }
+            if opts.show_checksum_type {
+                if let Some(ctype) = obj.checksum_type() {
+                    line.push_str(&format!("  checksum_type:{ctype}"));
+                }
+            }
+
+            line
+        }
+        ListEntry::DeleteMarker {
+            key,
+            version_id,
+            last_modified,
+            is_latest,
+        } => {
+            let date = last_modified.format("%Y-%m-%d %H:%M:%S");
+            let key = if opts.show_fullpath {
+                if let Some(bucket) = bucket {
+                    format!("s3://{bucket}/{key}")
+                } else {
+                    key.clone()
+                }
+            } else if let Some(ref prefix) = opts.prefix {
+                key.strip_prefix(prefix.as_str())
+                    .unwrap_or(key)
+                    .to_string()
+            } else {
+                key.clone()
+            };
+            let latest = if *is_latest { " (latest)" } else { "" };
+            format!("{date} DELETE_MARKER {key}  [version: {version_id}{latest}]")
+        }
+    }
+}
 
 pub fn sort_entries(
     entries: &mut [ListEntry],
@@ -122,6 +256,41 @@ mod tests {
         sort_entries(&mut entries, &SortField::Key, true, false);
         assert_eq!(entries[0].key(), "b.txt");
         assert_eq!(entries[1].key(), "a.txt");
+    }
+
+    #[test]
+    fn format_text_basic_object() {
+        let entry = make_entry("readme.txt", 1234, 2024, 1);
+        let opts = FormatOptions::default();
+        let line = format_entry(&entry, None, &opts);
+        assert!(line.contains("2024-01-01"));
+        assert!(line.contains("1234"));
+        assert!(line.contains("readme.txt"));
+    }
+
+    #[test]
+    fn format_text_common_prefix() {
+        let entry = ListEntry::CommonPrefix("logs/".to_string());
+        let opts = FormatOptions::default();
+        let line = format_entry(&entry, None, &opts);
+        assert!(line.contains("PRE"));
+        assert!(line.contains("logs/"));
+    }
+
+    #[test]
+    fn format_text_human_size() {
+        let entry = make_entry("data.csv", 5678901, 2024, 1);
+        let opts = FormatOptions { human: true, ..Default::default() };
+        let line = format_entry(&entry, None, &opts);
+        assert!(line.contains("5.4 MiB"));
+    }
+
+    #[test]
+    fn format_text_with_etag() {
+        let entry = make_entry("file.txt", 100, 2024, 1);
+        let opts = FormatOptions { show_etag: true, ..Default::default() };
+        let line = format_entry(&entry, None, &opts);
+        assert!(line.contains("\"e\""));
     }
 
     #[test]
