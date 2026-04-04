@@ -785,3 +785,92 @@ fn version_does_not_panic() {
     let err = result.unwrap_err();
     assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion);
 }
+
+// ===========================================================================
+// Config building tests
+// ===========================================================================
+
+#[test]
+fn config_from_minimal_args() {
+    let config = build_config_from_args(vec!["s3ls", "s3://my-bucket/prefix/"]).unwrap();
+    assert_eq!(config.target.bucket, "my-bucket");
+    assert_eq!(config.target.prefix.as_deref(), Some("prefix/"));
+    assert!(!config.recursive);
+    assert!(!config.all_versions);
+}
+
+#[test]
+fn config_from_full_args() {
+    let config = build_config_from_args(vec![
+        "s3ls",
+        "s3://bucket/logs/",
+        "--recursive",
+        "--all-versions",
+        "--filter-include-regex",
+        r".*\.log$",
+        "--filter-larger-size",
+        "1GiB",
+        "--storage-class",
+        "STANDARD,GLACIER",
+        "--sort",
+        "date",
+        "--reverse",
+        "--human",
+        "--summary",
+        "--json",
+    ])
+    .unwrap();
+    assert!(config.recursive);
+    assert!(config.all_versions);
+    assert!(config.filter_config.include_regex.is_some());
+    assert_eq!(config.filter_config.larger_size, Some(1024 * 1024 * 1024));
+    assert_eq!(
+        config.filter_config.storage_class.unwrap(),
+        vec!["STANDARD", "GLACIER"]
+    );
+    assert_eq!(config.sort, SortField::Date);
+    assert!(config.reverse);
+    assert!(config.display_config.human);
+    assert!(config.display_config.summary);
+    assert!(config.display_config.json);
+}
+
+#[test]
+fn config_filter_size_values_are_u64() {
+    let config = build_config_from_args(vec![
+        "s3ls",
+        "s3://bucket/",
+        "--filter-larger-size",
+        "1GiB",
+        "--filter-smaller-size",
+        "2GiB",
+    ])
+    .unwrap();
+    assert_eq!(config.filter_config.larger_size, Some(1024 * 1024 * 1024));
+    assert_eq!(
+        config.filter_config.smaller_size,
+        Some(2 * 1024 * 1024 * 1024)
+    );
+}
+
+#[test]
+fn build_config_from_args_error() {
+    let result = build_config_from_args(vec!["s3ls"]);
+    assert!(result.is_err());
+}
+
+#[test]
+fn config_tracing_config_none_when_silent() {
+    let config = build_config_from_args(vec!["s3ls", "s3://bucket/", "-qq"]).unwrap();
+    assert!(config.tracing_config.is_none());
+}
+
+#[test]
+fn config_tracing_config_info_with_verbose() {
+    let config = build_config_from_args(vec!["s3ls", "s3://bucket/", "-v"]).unwrap();
+    assert!(config.tracing_config.is_some());
+    assert_eq!(
+        config.tracing_config.unwrap().tracing_level,
+        clap_verbosity_flag::log::Level::Info
+    );
+}

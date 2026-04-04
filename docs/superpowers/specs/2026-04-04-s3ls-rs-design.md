@@ -30,14 +30,16 @@ Filters are applied inline within the lister task as synchronous function calls,
 ### Pipeline Orchestration
 
 ```
-1. execute_pipeline():
-   a. Create Lister stage with FilterChain (spawn async task)
-   b. Create Aggregate stage (spawn async task)
-   c. Wait for Aggregate to complete
-2. Return exit code (and statistics if --summary)
+1. ListingPipeline::new(config, cancellation_token)
+2. pipeline.run():
+   a. Check cancellation token — return early if already cancelled
+   b. Create Lister stage with FilterChain (spawn async task)
+   c. Create Aggregate stage (spawn async task)
+   d. Wait for Aggregate to complete
+3. Return exit code (and statistics if --summary)
 ```
 
-No event/callback infrastructure. The pipeline just runs and returns.
+The pipeline accepts a `PipelineCancellationToken` (a `tokio_util::sync::CancellationToken` type alias) that enables graceful shutdown. The Ctrl+C handler in the binary cancels this token to stop the pipeline.
 
 ## Project Structure
 
@@ -48,16 +50,20 @@ s3ls-rs/
 │   ├── lib.rs                    # Public API exports
 │   ├── bin/
 │   │   └── s3ls/
-│   │       └── main.rs           # CLI entry point
+│   │       ├── main.rs           # CLI entry point
+│   │       ├── ctrl_c_handler/
+│   │       │   └── mod.rs        # Ctrl+C signal handler (adapted from s3sync)
+│   │       └── tracing_init.rs   # Tracing subscriber init (adapted from s3sync)
 │   ├── config/
-│   │   ├── mod.rs                # Config struct, build_config_from_args()
+│   │   ├── mod.rs                # Config, FilterConfig, DisplayConfig, ClientConfig, etc.
 │   │   └── args/
 │   │       ├── mod.rs            # CLIArgs (Clap) — adapted from s3rm-rs
 │   │       ├── tests.rs          # Argument parsing tests
 │   │       └── value_parser/     # Custom Clap value parsers (reused)
 │   ├── types/
 │   │   ├── mod.rs                # S3Object, S3Target, ListEntry, ListingStatistics
-│   │   └── error.rs              # ListingError enum
+│   │   ├── error.rs              # S3lsError enum + helper functions
+│   │   └── token.rs              # PipelineCancellationToken type alias
 │   ├── pipeline.rs               # ListingPipeline — 2-stage orchestrator
 │   ├── lister.rs                 # ObjectLister with inline filtering (reused + adapted)
 │   ├── filters/                  # Filter implementations (reused)
@@ -84,7 +90,7 @@ s3ls-rs/
 
 **Removed from s3rm-rs:** `deleter.rs`, `terminator.rs`, `safety/`, `lua/`, `property_tests/`, `callback/`, `stage.rs` (SPSC filter wiring)
 
-**New:** `aggregate.rs`, `filters/storage_class.rs`
+**New:** `aggregate.rs`, `filters/storage_class.rs`, `types/token.rs`, `bin/s3ls/ctrl_c_handler/mod.rs`, `bin/s3ls/tracing_init.rs`
 
 ## CLI Arguments
 
@@ -127,7 +133,7 @@ Options:
 | `--sort <FIELD>` | Sort by: `key`, `size`, or `date` | `key` |
 | `--reverse` | Reverse sort order | false |
 
-The default sort field is `key` (lexicographic). When `--all-versions` is enabled, a secondary sort by `last_modified` (chronological) is applied after the primary sort field to guarantee deterministic ordering across parallel executions.
+Sort is always applied (not optional) — the default is `key` (lexicographic). When `--all-versions` is enabled, a secondary sort by `last_modified` (chronological) is applied after the primary sort field to guarantee deterministic ordering across parallel executions.
 
 ### Display
 
@@ -197,7 +203,7 @@ The default sort field is `key` (lexicographic). When `--all-versions` is enable
 
 | Flag | Description | Env | Default |
 |------|-------------|-----|---------|
-| `--max-keys <N>` | Max objects per list request | `MAX_KEYS` | 1000 |
+| `--max-keys <N>` | Max objects per list request (1..=1000) | `MAX_KEYS` | 1000 |
 | `--auto-complete-shell <SHELL>` | Generate shell completions | `AUTO_COMPLETE_SHELL` | - |
 
 ## Core Types
@@ -265,6 +271,205 @@ pub struct ListingStatistics {
     pub total_delete_markers: u64, // when --all-versions
 }
 ```
+
+### S3lsError
+
+```rust
+#[derive(Error, Debug)]
+pub enum S3lsError {
+    #[error("Invalid URI: {0}")]
+    InvalidUri(String),
+
+    #[error("Invalid configuration: {0}")]
+    InvalidConfig(String),
+
+    #[error("Listing error: {0}")]
+    ListingError(String),
+
+    #[error("Pipeline cancelled")]
+    Cancelled,
+}
+```
+
+Helper functions:
+
+```rust
+/// Check if an error represents a user-initiated cancellation (Ctrl+C).
+pub fn is_cancelled_error(err: &anyhow::Error) -> bool;
+
+/// Map an error to an appropriate process exit code.
+/// Cancelled -> 0, InvalidConfig/InvalidUri -> 2, ListingError -> 1, other -> 1.
+pub fn exit_code_from_error(err: &anyhow::Error) -> i32;
+```
+
+### PipelineCancellationToken
+
+```rust
+/// Type alias for tokio_util::sync::CancellationToken.
+pub type PipelineCancellationToken = tokio_util::sync::CancellationToken;
+
+/// Create a new PipelineCancellationToken.
+pub fn create_pipeline_cancellation_token() -> PipelineCancellationToken;
+```
+
+## Config Struct
+
+The configuration uses nested structs to organize related settings, following the s3rm-rs pattern.
+
+```rust
+pub struct Config {
+    // Target
+    pub target: S3Target,
+
+    // Listing mode
+    pub recursive: bool,
+    pub all_versions: bool,
+
+    // Filtering (nested)
+    pub filter_config: FilterConfig,
+
+    // Sort — always set, defaults to Key
+    pub sort: SortField,
+    pub reverse: bool,
+
+    // Display (nested)
+    pub display_config: DisplayConfig,
+
+    // Performance
+    pub max_parallel_listings: u16,
+    pub max_parallel_listing_max_depth: u16,
+    pub object_listing_queue_size: u32,
+    pub allow_parallel_listings_in_express_one_zone: bool,
+
+    // AWS Client (nested, None when using default credential chain)
+    pub target_client_config: Option<ClientConfig>,
+
+    // Advanced
+    pub max_keys: i32,
+    pub auto_complete_shell: Option<clap_complete::shells::Shell>,
+
+    // Tracing (None when no tracing flags are set)
+    pub tracing_config: Option<TracingConfig>,
+}
+
+pub struct FilterConfig {
+    pub include_regex: Option<String>,
+    pub exclude_regex: Option<String>,
+    pub mtime_before: Option<DateTime<Utc>>,
+    pub mtime_after: Option<DateTime<Utc>>,
+    pub smaller_size: Option<u64>,
+    pub larger_size: Option<u64>,
+    pub storage_class: Option<Vec<String>>,
+}
+
+pub struct DisplayConfig {
+    pub summary: bool,
+    pub human: bool,
+    pub show_fullpath: bool,
+    pub show_etag: bool,
+    pub show_storage_class: bool,
+    pub show_checksum_algorithm: bool,
+    pub show_checksum_type: bool,
+    pub json: bool,
+}
+
+pub struct ClientConfig {
+    pub aws_config_file: Option<PathBuf>,
+    pub aws_shared_credentials_file: Option<PathBuf>,
+    pub credential: S3Credentials,
+    pub region: Option<String>,
+    pub endpoint_url: Option<String>,
+    pub force_path_style: bool,
+    pub accelerate: bool,
+    pub request_payer: bool,
+    pub retry_config: RetryConfig,
+    pub cli_timeout_config: CLITimeoutConfig,
+    pub disable_stalled_stream_protection: bool,
+}
+
+pub enum S3Credentials {
+    Profile(String),
+    Credentials { access_keys: AccessKeys },
+    FromEnvironment,
+}
+
+// Custom Debug impl redacts secrets in log output.
+// S3Credentials::Credentials shows AccessKeys with redacted fields.
+
+/// AWS access key pair with secure zeroization (zeroize crate).
+/// secret_access_key and session_token are securely cleared from memory on drop.
+pub struct AccessKeys {
+    pub access_key: String,
+    pub secret_access_key: String,   // Debug: "** redacted **"
+    pub session_token: Option<String>, // Debug: "** redacted **" when Some
+}
+
+pub struct RetryConfig {
+    pub aws_max_attempts: u32,
+    pub initial_backoff_milliseconds: u64,
+}
+
+pub struct CLITimeoutConfig {
+    pub operation_timeout_milliseconds: Option<u64>,
+    pub operation_attempt_timeout_milliseconds: Option<u64>,
+    pub connect_timeout_milliseconds: Option<u64>,
+    pub read_timeout_milliseconds: Option<u64>,
+}
+
+pub struct TracingConfig {
+    pub tracing_level: log::Level,
+    pub json_tracing: bool,
+    pub aws_sdk_tracing: bool,
+    pub span_events_tracing: bool,
+    pub disable_color_tracing: bool,
+}
+```
+
+## Binary Structure (main.rs)
+
+The CLI binary (`src/bin/s3ls/main.rs`) is organized into three modules:
+
+- **`ctrl_c_handler`** (adapted from s3sync) — spawns an async task that listens for Ctrl+C signals and cancels the pipeline token
+- **`tracing_init`** (adapted from s3sync) — initializes the tracing subscriber
+
+### Entry Point Flow
+
+```
+main():
+  1. load_config_exit_if_err()
+     — Parse CLIArgs, build Config, exit with clap error on failure
+  2. If auto_complete_shell is set:
+     — Generate shell completions via clap_complete::generate() and return
+  3. start_tracing_if_necessary(&config)
+     — Init tracing subscriber if config has tracing_config
+  4. run(config).await
+```
+
+### run() Function
+
+```
+run(config):
+  1. Create cancellation token
+  2. Spawn Ctrl+C handler with token clone
+  3. Record start time
+  4. Create ListingPipeline::new(config, cancellation_token)
+  5. pipeline.run().await
+  6. On Ok: log completion with duration
+  7. On Err:
+     — If is_cancelled_error: log "cancelled by user", return Ok
+     — Otherwise: exit_code_from_error, log error, std::process::exit(code)
+```
+
+### Tracing Initialization
+
+The tracing subscriber is configured with:
+- **Format:** compact, stdout writer
+- **Crate-specific filters:** `s3ls_rs={level},s3ls={level}`
+- **AWS SDK tracing:** additionally includes `aws_smithy_runtime`, `aws_config`, `aws_sigv4` filters
+- **RUST_LOG support:** falls back to `RUST_LOG` env var when aws_sdk_tracing is not enabled
+- **Span events:** NEW + CLOSE when `--span-events-tracing` is set
+- **Terminal detection:** ANSI colors enabled only when stdout is a terminal (and `--disable-color-tracing` is not set)
+- **JSON mode:** uses `.json()` format when `--json-tracing` is set
 
 ## Filter System
 
@@ -370,68 +575,6 @@ Non-recursive mode uses the S3 API's delimiter feature directly. Parallel listin
 Total: 2 objects, 5.4MiB
 ```
 Summary always uses human-readable sizes.
-
-## Config Struct
-
-```rust
-pub struct Config {
-    // Target
-    pub target: S3Target,
-    pub storage: Box<dyn StorageTrait>,
-
-    // Listing mode
-    pub recursive: bool,
-    pub all_versions: bool,
-
-    // Filtering
-    pub filter_include_regex: Option<String>,
-    pub filter_exclude_regex: Option<String>,
-    pub filter_mtime_before: Option<DateTime<Utc>>,
-    pub filter_mtime_after: Option<DateTime<Utc>>,
-    pub filter_smaller_size: Option<u64>,
-    pub filter_larger_size: Option<u64>,
-    pub storage_class: Option<Vec<String>>,
-
-    // Sort
-    pub sort: Option<SortField>,
-    pub reverse: bool,
-
-    // Display
-    pub summary: bool,
-    pub human: bool,
-    pub show_fullpath: bool,
-    pub show_etag: bool,
-    pub show_storage_class: bool,
-    pub show_checksum_algorithm: bool,
-    pub show_checksum_type: bool,
-    pub json: bool,
-
-    // Performance
-    pub max_parallel_listings: u16,
-    pub max_parallel_listing_max_depth: u16,
-    pub object_listing_queue_size: u32,
-    pub allow_parallel_listings_in_express_one_zone: bool,
-
-    // AWS/Retry/Timeout (reused from s3rm-rs)
-    pub aws_max_attempts: u32,
-    pub initial_backoff_milliseconds: u64,
-    pub operation_timeout_milliseconds: Option<u64>,
-    pub operation_attempt_timeout_milliseconds: Option<u64>,
-    pub connect_timeout_milliseconds: Option<u64>,
-    pub read_timeout_milliseconds: Option<u64>,
-    pub max_keys: i32,
-
-    // Tracing
-    pub tracing_config: TracingConfig,
-}
-
-pub struct TracingConfig {
-    pub json_tracing: bool,
-    pub aws_sdk_tracing: bool,
-    pub span_events_tracing: bool,
-    pub disable_color_tracing: bool,
-}
-```
 
 ## Testing Strategy
 
