@@ -6,6 +6,10 @@ s3ls-rs is an ultra-fast S3 object listing tool that reuses over 95% of the sour
 
 This is a code reuse (copy-and-modify) approach, not a fork. The two codebases are independent going forward.
 
+### Library-First
+
+All core functionality resides in the library crate (`src/lib.rs`). The CLI binary (`src/bin/s3ls/main.rs`) is a thin wrapper that parses arguments, builds a `Config`, and runs a `ListingPipeline`. All CLI features are available as a Rust library for programmatic use.
+
 ## Architecture
 
 ### 2-Stage Pipeline
@@ -118,10 +122,12 @@ Options:
 
 ### Sort
 
-| Flag | Description |
-|------|-------------|
-| `--sort <FIELD>` | Sort by: `key`, `size`, or `date` |
-| `--reverse` | Reverse sort order |
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--sort <FIELD>` | Sort by: `key`, `size`, or `date` | `key` |
+| `--reverse` | Reverse sort order | false |
+
+The default sort field is `key` (lexicographic). When `--all-versions` is enabled, a secondary sort by `last_modified` (chronological) is applied after the primary sort field to guarantee deterministic ordering across parallel executions.
 
 ### Display
 
@@ -316,10 +322,11 @@ Non-recursive mode uses the S3 API's delimiter feature directly. Parallel listin
 ### Flow
 
 1. Drain channel into `Vec<ListEntry>`
-2. If `--sort`: sort by key/size/date
+2. Sort by the `--sort` field (default: `key`):
    - Key: lexicographic
    - Size: numeric (CommonPrefix sorts as size 0)
    - Date: chronological (CommonPrefix sorts last)
+   - When `--all-versions`: secondary sort by `last_modified` (chronological) to ensure deterministic output across parallel executions
 3. If `--reverse`: reverse the Vec
 4. Format and write each entry to `BufWriter<Stdout>`
 5. If `--summary`: append summary line

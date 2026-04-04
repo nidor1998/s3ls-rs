@@ -3,6 +3,23 @@ name = "s3ls-rs"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-description = "S3 object listing library"
+description = "Ultra-fast S3 object listing tool"
+repository = "https://github.com/nidor1998/s3ls-rs"
 
 [dependencies]
+anyhow = "1.0.102"
+thiserror = "2.0.18"
+clap = { version = "4.6.0", features = ["derive", "env", "cargo", "string"] }
+clap_complete = "4.6.0"
+clap-verbosity-flag = "3.0.4"
+chrono = "0.4.44"
+fancy-regex = "0.17.0"
+byte-unit = "5.2.0"
+url = "2.5.8"
+log = "0.4.29"
+
+[dev-dependencies]
+proptest = "1.11"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(e2e_test)'] }
