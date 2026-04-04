@@ -32,35 +32,24 @@ impl ClientConfig {
         let region_provider = self.build_region_provider();
         let retry_config = self.build_retry_config();
 
-        let mut config_loader = aws_config::defaults(aws_config::BehaviorVersion::latest())
-            .region(region_provider)
-            .retry_config(retry_config)
-            .stalled_stream_protection(
-                aws_sdk_s3::config::StalledStreamProtectionConfig::enabled()
-                    .grace_period(Duration::from_secs(5))
-                    .build(),
-            );
+        let mut config_loader = if self.disable_stalled_stream_protection {
+            aws_config::defaults(aws_config::BehaviorVersion::latest())
+                .stalled_stream_protection(
+                    aws_smithy_runtime_api::client::stalled_stream_protection::StalledStreamProtectionConfig::disabled()
+                )
+        } else {
+            aws_config::defaults(aws_config::BehaviorVersion::latest())
+                .stalled_stream_protection(
+                    aws_smithy_runtime_api::client::stalled_stream_protection::StalledStreamProtectionConfig::enabled().build()
+                )
+        };
 
-        if self.disable_stalled_stream_protection {
-            config_loader = config_loader.stalled_stream_protection(
-                aws_sdk_s3::config::StalledStreamProtectionConfig::disabled(),
-            );
-        }
+        config_loader = config_loader
+            .region(region_provider)
+            .retry_config(retry_config);
 
         if let Some(ref endpoint_url) = self.endpoint_url {
             config_loader = config_loader.endpoint_url(endpoint_url);
-        }
-
-        // Apply AWS config file locations
-        // SAFETY: These env vars are set early during client init, before any
-        // multi-threaded AWS SDK config loading occurs.
-        if let Some(ref config_file) = self.client_config_location.aws_config_file {
-            unsafe { std::env::set_var("AWS_CONFIG_FILE", config_file) };
-            debug!(?config_file, "set AWS_CONFIG_FILE");
-        }
-        if let Some(ref creds_file) = self.client_config_location.aws_shared_credentials_file {
-            unsafe { std::env::set_var("AWS_SHARED_CREDENTIALS_FILE", creds_file) };
-            debug!(?creds_file, "set AWS_SHARED_CREDENTIALS_FILE");
         }
 
         config_loader = self.load_config_credential(config_loader);
@@ -74,10 +63,17 @@ impl ClientConfig {
         match &self.credential {
             S3Credentials::Profile(profile_name) => {
                 debug!(%profile_name, "using profile credentials");
+                let mut builder = aws_config::profile::ProfileFileCredentialsProvider::builder();
+
+                if let Some(ref creds_file) = self.client_config_location.aws_shared_credentials_file {
+                    let profile_files = aws_runtime::env_config::file::EnvConfigFiles::builder()
+                        .with_file(aws_runtime::env_config::file::EnvConfigFileKind::Credentials, creds_file)
+                        .build();
+                    builder = builder.profile_files(profile_files);
+                }
+
                 config_loader.credentials_provider(
-                    aws_config::profile::ProfileFileCredentialsProvider::builder()
-                        .profile_name(profile_name)
-                        .build(),
+                    builder.profile_name(profile_name).build(),
                 )
             }
             S3Credentials::Credentials { access_keys } => {
@@ -100,18 +96,27 @@ impl ClientConfig {
 
     /// Build a region provider chain: explicit region -> profile -> default.
     fn build_region_provider(&self) -> Box<dyn aws_config::meta::region::ProvideRegion> {
-        let chain = match &self.region {
-            Some(region) => {
-                debug!(%region, "using explicit region");
-                RegionProviderChain::first_try(Region::new(region.clone()))
-                    .or_default_provider()
+        let mut builder = aws_config::profile::ProfileFileRegionProvider::builder();
+
+        if let crate::types::S3Credentials::Profile(ref profile_name) = self.credential {
+            if let Some(ref aws_config_file) = self.client_config_location.aws_config_file {
+                let profile_files = aws_runtime::env_config::file::EnvConfigFiles::builder()
+                    .with_file(aws_runtime::env_config::file::EnvConfigFileKind::Config, aws_config_file)
+                    .build();
+                builder = builder.profile_files(profile_files);
             }
-            None => {
-                debug!("using default region provider chain");
-                RegionProviderChain::default_provider()
-            }
+            builder = builder.profile_name(profile_name);
+        }
+
+        let provider_region = if matches!(&self.credential, crate::types::S3Credentials::FromEnvironment) {
+            RegionProviderChain::first_try(self.region.clone().map(Region::new))
+                .or_default_provider()
+        } else {
+            RegionProviderChain::first_try(self.region.clone().map(Region::new))
+                .or_else(builder.build())
         };
-        Box::new(chain)
+
+        Box::new(provider_region)
     }
 
     /// Build retry configuration from CLI settings.

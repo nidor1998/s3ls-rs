@@ -69,7 +69,17 @@ impl ListingPipeline {
             println!("{}", entry.key());
         }
 
-        lister_handle.await??;
+        match lister_handle.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                cancellation_token.cancel();
+                return Err(e);
+            }
+            Err(join_err) => {
+                cancellation_token.cancel();
+                return Err(anyhow::anyhow!("Lister task panicked: {}", join_err));
+            }
+        }
 
         Ok(())
     }

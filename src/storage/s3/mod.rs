@@ -86,10 +86,13 @@ impl StorageTrait for S3Storage {
                 req = req.request_payer(payer.clone());
             }
 
-            let resp = req.send().await?;
+            let response = req.send().await.map_err(|e| {
+                tracing::error!(bucket = %self.bucket, error = %e, "S3 list_objects failed");
+                e
+            })?;
 
             // Send objects
-            for object in resp.contents() {
+            for object in response.contents() {
                 if self.cancellation_token.is_cancelled() {
                     return Ok(());
                 }
@@ -99,7 +102,7 @@ impl StorageTrait for S3Storage {
             }
 
             // Send common prefixes
-            for cp in resp.common_prefixes() {
+            for cp in response.common_prefixes() {
                 if self.cancellation_token.is_cancelled() {
                     return Ok(());
                 }
@@ -112,8 +115,8 @@ impl StorageTrait for S3Storage {
             }
 
             // Check for more pages
-            if resp.is_truncated() == Some(true) {
-                continuation_token = resp.next_continuation_token().map(|s| s.to_string());
+            if response.is_truncated() == Some(true) {
+                continuation_token = response.next_continuation_token().map(|s| s.to_string());
                 if continuation_token.is_none() {
                     warn!("truncated response but no continuation token");
                     break;
@@ -158,11 +161,17 @@ impl StorageTrait for S3Storage {
             if let Some(ref marker) = version_id_marker {
                 req = req.version_id_marker(marker);
             }
+            if let Some(ref payer) = self.request_payer {
+                req = req.request_payer(payer.clone());
+            }
 
-            let resp = req.send().await?;
+            let response = req.send().await.map_err(|e| {
+                tracing::error!(bucket = %self.bucket, error = %e, "S3 list_object_versions failed");
+                e
+            })?;
 
             // Send object versions
-            for version in resp.versions() {
+            for version in response.versions() {
                 if self.cancellation_token.is_cancelled() {
                     return Ok(());
                 }
@@ -172,7 +181,7 @@ impl StorageTrait for S3Storage {
             }
 
             // Send delete markers
-            for marker in resp.delete_markers() {
+            for marker in response.delete_markers() {
                 if self.cancellation_token.is_cancelled() {
                     return Ok(());
                 }
@@ -182,7 +191,7 @@ impl StorageTrait for S3Storage {
             }
 
             // Send common prefixes
-            for cp in resp.common_prefixes() {
+            for cp in response.common_prefixes() {
                 if self.cancellation_token.is_cancelled() {
                     return Ok(());
                 }
@@ -195,9 +204,9 @@ impl StorageTrait for S3Storage {
             }
 
             // Check for more pages
-            if resp.is_truncated() == Some(true) {
-                key_marker = resp.next_key_marker().map(|s| s.to_string());
-                version_id_marker = resp.next_version_id_marker().map(|s| s.to_string());
+            if response.is_truncated() == Some(true) {
+                key_marker = response.next_key_marker().map(|s| s.to_string());
+                version_id_marker = response.next_version_id_marker().map(|s| s.to_string());
                 if key_marker.is_none() {
                     warn!("truncated response but no next key marker");
                     break;
