@@ -261,6 +261,18 @@ impl ListEntry {
             Self::DeleteMarker { last_modified, .. } => Some(last_modified),
         }
     }
+
+    pub fn version_id(&self) -> Option<&str> {
+        match self {
+            Self::Object(obj) => obj.version_id(),
+            Self::DeleteMarker { version_id, .. } => Some(version_id),
+            Self::CommonPrefix(_) => None,
+        }
+    }
+
+    pub fn is_delete_marker(&self) -> bool {
+        matches!(self, Self::DeleteMarker { .. })
+    }
 }
 
 // ---------------------------------------------------------------------------

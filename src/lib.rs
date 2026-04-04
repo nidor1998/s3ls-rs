@@ -1,4 +1,5 @@
 pub mod config;
+pub mod filters;
 pub mod lister;
 pub mod pipeline;
 pub mod storage;

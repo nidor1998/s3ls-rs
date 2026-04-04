@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::filters::build_filter_chain;
 use crate::lister::ObjectLister;
 use crate::storage::StorageTrait;
 use crate::types::token::PipelineCancellationToken;
@@ -58,12 +59,18 @@ impl ListingPipeline {
             max_keys: self.config.max_keys,
         };
 
+        let filter_chain = build_filter_chain(&self.config.filter_config)
+            .map_err(|e| anyhow::anyhow!(e))?;
+
         let lister_handle = tokio::spawn(async move { lister.list_target().await });
 
         let cancellation_token = self.cancellation_token.clone();
         while let Some(entry) = rx.recv().await {
             if cancellation_token.is_cancelled() {
                 break;
+            }
+            if !filter_chain.matches(&entry) {
+                continue;
             }
             // Temporary: print key to stdout (replaced in Step 5)
             println!("{}", entry.key());
