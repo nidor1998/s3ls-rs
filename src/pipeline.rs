@@ -130,15 +130,17 @@ impl ListingPipeline {
         let stdout = std::io::stdout();
         let mut writer = std::io::BufWriter::new(stdout.lock());
 
-        let opts = FormatOptions::from_display_config(&self.config.display_config);
-        let bucket = self.config.target.bucket.as_str();
+        let opts = FormatOptions::from_display_config(
+            &self.config.display_config,
+            self.config.target.prefix.clone(),
+        );
         let use_json = self.config.display_config.json;
 
         for entry in &entries {
             let line = if use_json {
                 format_entry_json(entry)
             } else {
-                format_entry(entry, Some(bucket), &opts)
+                format_entry(entry, &opts)
             };
             writeln!(writer, "{line}")?;
         }

@@ -14,7 +14,10 @@ pub struct FormatOptions {
 }
 
 impl FormatOptions {
-    pub fn from_display_config(display_config: &crate::config::DisplayConfig) -> Self {
+    pub fn from_display_config(
+        display_config: &crate::config::DisplayConfig,
+        prefix: Option<String>,
+    ) -> Self {
         FormatOptions {
             human: display_config.human,
             show_fullpath: display_config.show_fullpath,
@@ -22,7 +25,7 @@ impl FormatOptions {
             show_storage_class: display_config.show_storage_class,
             show_checksum_algorithm: display_config.show_checksum_algorithm,
             show_checksum_type: display_config.show_checksum_type,
-            prefix: None,
+            prefix,
         }
     }
 }
@@ -43,41 +46,33 @@ fn format_size(size: u64, human: bool) -> String {
     }
 }
 
-fn format_key_display(
-    entry_key: &str,
-    bucket: Option<&str>,
-    opts: &FormatOptions,
-) -> String {
-    let key = if opts.show_fullpath {
-        entry_key
+fn format_key_display(entry_key: &str, opts: &FormatOptions) -> String {
+    if opts.show_fullpath {
+        entry_key.to_string()
     } else if let Some(ref prefix) = opts.prefix {
-        entry_key.strip_prefix(prefix.as_str()).unwrap_or(entry_key)
-    } else {
         entry_key
-    };
-
-    if opts.show_fullpath
-        && let Some(bucket) = bucket
-    {
-        return format!("s3://{bucket}/{key}");
+            .strip_prefix(prefix.as_str())
+            .unwrap_or(entry_key)
+            .to_string()
+    } else {
+        entry_key.to_string()
     }
-    key.to_string()
 }
 
 fn format_rfc3339(dt: &chrono::DateTime<chrono::Utc>) -> String {
     dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
-pub fn format_entry(entry: &ListEntry, bucket: Option<&str>, opts: &FormatOptions) -> String {
+pub fn format_entry(entry: &ListEntry, opts: &FormatOptions) -> String {
     match entry {
         ListEntry::CommonPrefix(_) => {
-            let key_display = format_key_display(entry.key(), bucket, opts);
+            let key_display = format_key_display(entry.key(), opts);
             format!("{:>30} PRE {}", "", key_display)
         }
         ListEntry::Object(obj) => {
             let date = format_rfc3339(obj.last_modified());
             let size = format_size(obj.size(), opts.human);
-            let key_display = format_key_display(entry.key(), bucket, opts);
+            let key_display = format_key_display(entry.key(), opts);
 
             // Build middle columns: extra columns then version_id, all before key
             let mut middle = String::new();
@@ -113,7 +108,7 @@ pub fn format_entry(entry: &ListEntry, bucket: Option<&str>, opts: &FormatOption
             ..
         } => {
             let date = format_rfc3339(last_modified);
-            let key_display = format_key_display(key, bucket, opts);
+            let key_display = format_key_display(key, opts);
             format!("{date} {:>10} {version_id} (delete marker) {key_display}", "0")
         }
     }
@@ -365,7 +360,7 @@ mod tests {
     fn format_text_basic_object() {
         let entry = make_entry("readme.txt", 1234, 2024, 1);
         let opts = FormatOptions::default();
-        let line = format_entry(&entry, None, &opts);
+        let line = format_entry(&entry, &opts);
         // Spec: 2024-01-01T00:00:00Z       1234 readme.txt
         assert!(line.contains("2024-01-01T00:00:00Z"));
         assert!(line.contains("1234"));
@@ -376,7 +371,7 @@ mod tests {
     fn format_text_common_prefix() {
         let entry = ListEntry::CommonPrefix("logs/".to_string());
         let opts = FormatOptions::default();
-        let line = format_entry(&entry, None, &opts);
+        let line = format_entry(&entry, &opts);
         assert!(line.contains("PRE"));
         assert!(line.ends_with("logs/"));
     }
@@ -385,7 +380,7 @@ mod tests {
     fn format_text_human_size() {
         let entry = make_entry("data.csv", 5678901, 2024, 1);
         let opts = FormatOptions { human: true, ..Default::default() };
-        let line = format_entry(&entry, None, &opts);
+        let line = format_entry(&entry, &opts);
         // Spec: 2024-01-01T00:00:00Z    5.4MiB data.csv
         assert!(line.contains("5.4MiB"));
         assert!(line.ends_with("data.csv"));
@@ -400,7 +395,7 @@ mod tests {
             show_storage_class: true,
             ..Default::default()
         };
-        let line = format_entry(&entry, None, &opts);
+        let line = format_entry(&entry, &opts);
         // storage_class and etag appear between size and key
         let size_pos = line.find("1234").unwrap();
         let class_pos = line.find("STANDARD").unwrap();
@@ -426,7 +421,7 @@ mod tests {
             checksum_type: None,
         });
         let opts = FormatOptions::default();
-        let line = format_entry(&entry, None, &opts);
+        let line = format_entry(&entry, &opts);
         // version_id appears between size and key
         let size_pos = line.find("1234").unwrap();
         let vid_pos = line.find("abc123-version-id").unwrap();
@@ -445,7 +440,7 @@ mod tests {
             is_latest: false,
         };
         let opts = FormatOptions::default();
-        let line = format_entry(&entry, None, &opts);
+        let line = format_entry(&entry, &opts);
         assert!(line.contains("2024-01-16T09:00:00Z"));
         let zero_pos = line.find('0').unwrap();
         let vid_pos = line.find("def456-version-id").unwrap();
@@ -536,6 +531,43 @@ mod tests {
         let summary = format_summary(&stats, false, true);
         assert!(summary.contains("15 versions"));
         assert!(summary.contains("3 delete markers"));
+    }
+
+    #[test]
+    fn format_text_strips_prefix_by_default() {
+        let entry = make_entry("logs/2024/data.csv", 100, 2024, 1);
+        let opts = FormatOptions {
+            prefix: Some("logs/2024/".to_string()),
+            ..Default::default()
+        };
+        let line = format_entry(&entry, &opts);
+        assert!(line.ends_with("data.csv"));
+        assert!(!line.contains("logs/2024/"));
+    }
+
+    #[test]
+    fn format_text_show_fullpath_keeps_full_key() {
+        let entry = make_entry("logs/2024/data.csv", 100, 2024, 1);
+        let opts = FormatOptions {
+            show_fullpath: true,
+            prefix: Some("logs/2024/".to_string()),
+            ..Default::default()
+        };
+        let line = format_entry(&entry, &opts);
+        assert!(line.contains("logs/2024/data.csv"));
+    }
+
+    #[test]
+    fn format_text_common_prefix_strips_prefix() {
+        let entry = ListEntry::CommonPrefix("logs/2024/".to_string());
+        let opts = FormatOptions {
+            prefix: Some("logs/".to_string()),
+            ..Default::default()
+        };
+        let line = format_entry(&entry, &opts);
+        assert!(line.contains("PRE"));
+        assert!(line.ends_with("2024/"));
+        assert!(!line.contains("logs/2024/"));
     }
 
     #[test]
