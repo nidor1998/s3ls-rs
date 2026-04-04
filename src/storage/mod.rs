@@ -11,16 +11,19 @@ pub trait StorageTrait: Send + Sync {
     async fn list_object_versions(&self, sender: &Sender<ListEntry>, max_keys: i32) -> Result<()>;
 }
 
-pub struct MockStorage {
+#[cfg(test)]
+pub(crate) struct MockStorage {
     entries: Vec<ListEntry>,
 }
 
+#[cfg(test)]
 impl MockStorage {
-    pub fn new(entries: Vec<ListEntry>) -> Self {
+    pub(crate) fn new(entries: Vec<ListEntry>) -> Self {
         Self { entries }
     }
 }
 
+#[cfg(test)]
 #[async_trait]
 impl StorageTrait for MockStorage {
     async fn list_objects(&self, sender: &Sender<ListEntry>, _max_keys: i32) -> Result<()> {

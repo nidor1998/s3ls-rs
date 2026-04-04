@@ -115,6 +115,7 @@ impl ClientConfig {
         } else {
             RegionProviderChain::first_try(self.region.clone().map(Region::new))
                 .or_else(builder.build())
+                .or_default_provider()
         };
 
         Box::new(provider_region)
