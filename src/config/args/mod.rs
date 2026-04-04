@@ -427,6 +427,7 @@ impl TryFrom<CLIArgs> for crate::config::Config {
             connect_timeout_milliseconds: args.connect_timeout_milliseconds,
             read_timeout_milliseconds: args.read_timeout_milliseconds,
             max_keys: args.max_keys,
+            auto_complete_shell: args.auto_complete_shell,
             tracing_config,
         })
     }

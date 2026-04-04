@@ -5,6 +5,7 @@ use crate::types::S3Target;
 use chrono::{DateTime, Utc};
 use std::path::PathBuf;
 
+#[derive(Debug)]
 pub struct Config {
     // Target
     pub target: S3Target,
@@ -68,6 +69,7 @@ pub struct Config {
 
     // Advanced
     pub max_keys: i32,
+    pub auto_complete_shell: Option<clap_complete::shells::Shell>,
 
     // Tracing
     pub tracing_config: Option<TracingConfig>,

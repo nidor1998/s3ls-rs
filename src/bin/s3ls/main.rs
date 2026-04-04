@@ -1,64 +1,87 @@
-use s3ls_rs::types::error::S3lsError;
-use s3ls_rs::{build_config_from_args, ListingPipeline};
-use std::process::ExitCode;
+use anyhow::Result;
+use clap::{CommandFactory, Parser};
+use clap_complete::generate;
+use tracing::{debug, error, trace};
 
+use s3ls_rs::config::Config;
+use s3ls_rs::{
+    create_pipeline_cancellation_token, exit_code_from_error, is_cancelled_error, CLIArgs,
+    ListingPipeline,
+};
+
+mod ctrl_c_handler;
+mod tracing_init;
+
+/// s3ls - Ultra-fast S3 object listing tool.
+///
+/// This binary is a thin wrapper over the s3ls-rs library.
+/// All core functionality is implemented in the library crate.
 #[tokio::main]
-async fn main() -> ExitCode {
-    let config = match build_config_from_args(std::env::args_os()) {
-        Ok(config) => config,
-        Err(e) => {
-            eprintln!("{e}");
-            return ExitCode::from(2);
-        }
-    };
+async fn main() -> Result<()> {
+    let config = load_config_exit_if_err();
 
-    // Initialize tracing
-    if let Some(ref tracing_config) = config.tracing_config {
-        init_tracing(tracing_config);
+    if let Some(shell) = config.auto_complete_shell {
+        generate(
+            shell,
+            &mut CLIArgs::command(),
+            "s3ls",
+            &mut std::io::stdout(),
+        );
+
+        return Ok(());
     }
 
-    let pipeline = ListingPipeline::new(config);
-    match pipeline.run().await {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            if let Some(s3ls_err) = e.downcast_ref::<S3lsError>() {
-                eprintln!("{s3ls_err}");
-                ExitCode::from(s3ls_err.exit_code() as u8)
-            } else {
-                eprintln!("Error: {e}");
-                ExitCode::from(1)
-            }
+    start_tracing_if_necessary(&config);
+
+    trace!("config = {:?}", config);
+
+    run(config).await
+}
+
+fn load_config_exit_if_err() -> Config {
+    match Config::try_from(CLIArgs::parse()) {
+        Ok(config) => config,
+        Err(error_message) => {
+            clap::Error::raw(clap::error::ErrorKind::ValueValidation, error_message).exit();
         }
     }
 }
 
-fn init_tracing(config: &s3ls_rs::config::TracingConfig) {
-    use tracing_subscriber::fmt;
-    use tracing_subscriber::EnvFilter;
-
-    let level = match config.tracing_level {
-        log::Level::Error => "error",
-        log::Level::Warn => "warn",
-        log::Level::Info => "info",
-        log::Level::Debug => "debug",
-        log::Level::Trace => "trace",
-    };
-
-    let filter = if config.aws_sdk_tracing {
-        EnvFilter::new(level)
+fn start_tracing_if_necessary(config: &Config) -> bool {
+    if let Some(tracing_config) = config.tracing_config.as_ref() {
+        tracing_init::init_tracing(tracing_config);
+        true
     } else {
-        EnvFilter::new(format!(
-            "{level},aws_config=off,aws_sdk=off,aws_smithy=off"
-        ))
-    };
+        false
+    }
+}
 
-    let builder = fmt().with_env_filter(filter);
+async fn run(config: Config) -> Result<()> {
+    let cancellation_token = create_pipeline_cancellation_token();
 
-    if config.json_tracing {
-        builder.json().init();
-    } else if config.disable_color_tracing {
-        builder.with_ansi(false).init();
-    } else {
-        builder.init();
+    ctrl_c_handler::spawn_ctrl_c_handler(cancellation_token.clone());
+
+    let start_time = tokio::time::Instant::now();
+    debug!("listing pipeline start.");
+
+    let pipeline = ListingPipeline::new(config, cancellation_token);
+
+    match pipeline.run().await {
+        Ok(()) => {
+            let duration_sec = format!("{:.3}", start_time.elapsed().as_secs_f32());
+            debug!(duration_sec = duration_sec, "s3ls has been completed.");
+            Ok(())
+        }
+        Err(e) => {
+            let duration_sec = format!("{:.3}", start_time.elapsed().as_secs_f32());
+            if is_cancelled_error(&e) {
+                debug!("listing cancelled by user.");
+                return Ok(());
+            }
+            let code = exit_code_from_error(&e);
+            error!(duration_sec = duration_sec, "s3ls failed.");
+            error!("{}", e);
+            std::process::exit(code);
+        }
     }
 }

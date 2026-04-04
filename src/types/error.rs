@@ -24,3 +24,14 @@ impl S3lsError {
         }
     }
 }
+
+pub fn is_cancelled_error(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<S3lsError>()
+        .is_some_and(|e| matches!(e, S3lsError::Cancelled))
+}
+
+pub fn exit_code_from_error(err: &anyhow::Error) -> i32 {
+    err.downcast_ref::<S3lsError>()
+        .map(|e| e.exit_code())
+        .unwrap_or(1)
+}

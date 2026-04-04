@@ -1,4 +1,5 @@
 pub mod error;
+pub mod token;
 
 use chrono::{DateTime, Utc};
 use std::fmt;
