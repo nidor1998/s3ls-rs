@@ -6,6 +6,10 @@ s3ls-rs is an ultra-fast S3 object listing tool that reuses over 95% of the sour
 
 This is a code reuse (copy-and-modify) approach, not a fork. The two codebases are independent going forward.
 
+### Library-First
+
+All core functionality resides in the library crate (`src/lib.rs`). The CLI binary (`src/bin/s3ls/main.rs`) is a thin wrapper that parses arguments, builds a `Config`, and runs a `ListingPipeline`. All CLI features are available as a Rust library for programmatic use.
+
 ## Architecture
 
 ### 2-Stage Pipeline
