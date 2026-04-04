@@ -1,11 +1,16 @@
 pub mod client_builder;
 
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use anyhow::Result;
 use aws_sdk_s3::Client;
 use aws_sdk_s3::types::RequestPayer;
 use chrono::{DateTime, Utc};
 use tokio::sync::mpsc::Sender;
+use tokio::task::JoinSet;
 use tracing::{debug, warn};
 
 use crate::config::ClientConfig;
@@ -13,7 +18,27 @@ use crate::storage::StorageTrait;
 use crate::types::token::PipelineCancellationToken;
 use crate::types::{ListEntry, S3Object};
 
+const EXPRESS_ONEZONE_STORAGE_SUFFIX: &str = "--x-s3";
+
+/// Whether to use ListObjectsV2 or ListObjectVersions.
+#[derive(Clone, Copy)]
+enum ListingMode {
+    Objects,
+    Versions,
+}
+
+/// A single page of listing results from S3.
+struct ListPage {
+    objects: Vec<ListEntry>,
+    sub_prefixes: Vec<String>,
+    is_truncated: bool,
+    continuation_token: Option<String>,
+    key_marker: Option<String>,
+    version_id_marker: Option<String>,
+}
+
 /// S3-backed implementation of [`StorageTrait`].
+#[derive(Clone)]
 pub struct S3Storage {
     bucket: String,
     prefix: Option<String>,
@@ -21,6 +46,10 @@ pub struct S3Storage {
     client: Client,
     cancellation_token: PipelineCancellationToken,
     request_payer: Option<RequestPayer>,
+    max_parallel_listings: u16,
+    max_parallel_listing_max_depth: u16,
+    allow_parallel_listings_in_express_one_zone: bool,
+    listing_worker_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 impl S3Storage {
@@ -30,6 +59,7 @@ impl S3Storage {
     /// returns common prefixes (virtual directories). When `recursive` is
     /// `true`, no delimiter is set and all objects under the prefix are
     /// returned.
+    #[allow(clippy::too_many_arguments)]
     pub async fn new(
         client_config: &ClientConfig,
         bucket: String,
@@ -37,6 +67,9 @@ impl S3Storage {
         recursive: bool,
         cancellation_token: PipelineCancellationToken,
         request_payer: Option<RequestPayer>,
+        max_parallel_listings: u16,
+        max_parallel_listing_max_depth: u16,
+        allow_parallel_listings_in_express_one_zone: bool,
     ) -> Self {
         let client = client_config.create_client().await;
         let delimiter = if recursive {
@@ -45,6 +78,8 @@ impl S3Storage {
             Some("/".to_string())
         };
 
+        let semaphore_size = max_parallel_listings.max(1) as usize;
+
         Self {
             bucket,
             prefix,
@@ -52,74 +87,114 @@ impl S3Storage {
             client,
             cancellation_token,
             request_payer,
+            max_parallel_listings,
+            max_parallel_listing_max_depth,
+            allow_parallel_listings_in_express_one_zone,
+            listing_worker_semaphore: Arc::new(tokio::sync::Semaphore::new(semaphore_size)),
         }
     }
-}
 
-#[async_trait]
-impl StorageTrait for S3Storage {
-    async fn list_objects(&self, sender: &Sender<ListEntry>, max_keys: i32) -> Result<()> {
+    /// Returns true if the bucket is an Express One Zone bucket.
+    fn is_express_onezone_storage(&self) -> bool {
+        self.bucket.ends_with(EXPRESS_ONEZONE_STORAGE_SUFFIX)
+    }
+
+    /// Decide whether to use parallel or sequential listing, then dispatch.
+    async fn list_dispatch(
+        &self,
+        mode: ListingMode,
+        sender: &Sender<ListEntry>,
+        max_keys: i32,
+    ) -> Result<()> {
+        let use_parallel = self.max_parallel_listings > 1
+            && self.delimiter.is_none() // recursive mode
+            && (!self.is_express_onezone_storage()
+                || self.allow_parallel_listings_in_express_one_zone);
+
+        if use_parallel {
+            debug!(
+                bucket = %self.bucket,
+                max_parallel = self.max_parallel_listings,
+                max_depth = self.max_parallel_listing_max_depth,
+                "Using parallel listing"
+            );
+            self.list_with_parallel(mode, sender, max_keys, self.prefix.clone(), 0)
+                .await
+        } else {
+            debug!(bucket = %self.bucket, "Using sequential listing");
+            self.list_sequential(mode, sender, max_keys, self.prefix.clone(), self.delimiter.clone())
+                .await
+        }
+    }
+
+    /// Sequential listing: paginate through all results for the given prefix/delimiter.
+    async fn list_sequential(
+        &self,
+        mode: ListingMode,
+        sender: &Sender<ListEntry>,
+        max_keys: i32,
+        prefix: Option<String>,
+        delimiter: Option<String>,
+    ) -> Result<()> {
         let mut continuation_token: Option<String> = None;
+        let mut key_marker: Option<String> = None;
+        let mut version_id_marker: Option<String> = None;
 
         loop {
             if self.cancellation_token.is_cancelled() {
-                debug!("list_objects cancelled");
+                debug!("list_sequential cancelled");
                 break;
             }
 
-            let mut req = self
-                .client
-                .list_objects_v2()
-                .bucket(&self.bucket)
-                .max_keys(max_keys);
-
-            if let Some(ref prefix) = self.prefix {
-                req = req.prefix(prefix);
-            }
-            if let Some(ref delimiter) = self.delimiter {
-                req = req.delimiter(delimiter);
-            }
-            if let Some(ref token) = continuation_token {
-                req = req.continuation_token(token);
-            }
-            if let Some(ref payer) = self.request_payer {
-                req = req.request_payer(payer.clone());
-            }
-
-            let response = req.send().await.map_err(|e| {
-                tracing::error!(bucket = %self.bucket, error = %e, "S3 list_objects failed");
-                e
-            })?;
+            let page = self
+                .fetch_list_page(
+                    mode,
+                    max_keys,
+                    prefix.as_deref(),
+                    delimiter.as_deref(),
+                    continuation_token.as_deref(),
+                    key_marker.as_deref(),
+                    version_id_marker.as_deref(),
+                )
+                .await?;
 
             // Send objects
-            for object in response.contents() {
+            for entry in page.objects {
                 if self.cancellation_token.is_cancelled() {
                     return Ok(());
                 }
-                if let Some(entry) = convert_object(object) {
-                    sender.send(entry).await.ok();
-                }
+                sender.send(entry).await.ok();
             }
 
             // Send common prefixes
-            for cp in response.common_prefixes() {
+            for p in &page.sub_prefixes {
                 if self.cancellation_token.is_cancelled() {
                     return Ok(());
                 }
-                if let Some(p) = cp.prefix() {
-                    sender
-                        .send(ListEntry::CommonPrefix(p.to_string()))
-                        .await
-                        .ok();
-                }
+                sender
+                    .send(ListEntry::CommonPrefix(p.clone()))
+                    .await
+                    .ok();
             }
 
             // Check for more pages
-            if response.is_truncated() == Some(true) {
-                continuation_token = response.next_continuation_token().map(|s| s.to_string());
-                if continuation_token.is_none() {
-                    warn!("truncated response but no continuation token");
-                    break;
+            if page.is_truncated {
+                match mode {
+                    ListingMode::Objects => {
+                        continuation_token = page.continuation_token;
+                        if continuation_token.is_none() {
+                            warn!("truncated response but no continuation token");
+                            break;
+                        }
+                    }
+                    ListingMode::Versions => {
+                        key_marker = page.key_marker;
+                        version_id_marker = page.version_id_marker;
+                        if key_marker.is_none() {
+                            warn!("truncated response but no next key marker");
+                            break;
+                        }
+                    }
                 }
             } else {
                 break;
@@ -127,6 +202,298 @@ impl StorageTrait for S3Storage {
         }
 
         Ok(())
+    }
+
+    /// Parallel listing using recursive prefix discovery with JoinSet.
+    fn list_with_parallel<'a>(
+        &'a self,
+        mode: ListingMode,
+        sender: &'a Sender<ListEntry>,
+        max_keys: i32,
+        prefix: Option<String>,
+        depth: u16,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            if self.cancellation_token.is_cancelled() {
+                return Ok(());
+            }
+
+            // Beyond max depth: switch to sequential with no delimiter
+            if depth > self.max_parallel_listing_max_depth {
+                return self
+                    .list_sequential(mode, sender, max_keys, prefix, None)
+                    .await;
+            }
+
+            // At this depth: use "/" delimiter to discover sub-prefixes
+            let _permit = self
+                .listing_worker_semaphore
+                .acquire()
+                .await
+                .map_err(|e| anyhow::anyhow!("Semaphore closed: {}", e))?;
+
+            // Paginate at this level with "/" delimiter to discover sub-prefixes
+            let mut continuation_token: Option<String> = None;
+            let mut key_marker: Option<String> = None;
+            let mut version_id_marker: Option<String> = None;
+            let mut all_sub_prefixes: Vec<String> = Vec::new();
+
+            loop {
+                if self.cancellation_token.is_cancelled() {
+                    return Ok(());
+                }
+
+                let page = self
+                    .fetch_list_page(
+                        mode,
+                        max_keys,
+                        prefix.as_deref(),
+                        Some("/"),
+                        continuation_token.as_deref(),
+                        key_marker.as_deref(),
+                        version_id_marker.as_deref(),
+                    )
+                    .await?;
+
+                // Send objects at this level
+                for entry in page.objects {
+                    if self.cancellation_token.is_cancelled() {
+                        return Ok(());
+                    }
+                    sender.send(entry).await.ok();
+                }
+
+                // Collect sub-prefixes
+                all_sub_prefixes.extend(page.sub_prefixes);
+
+                if page.is_truncated {
+                    match mode {
+                        ListingMode::Objects => {
+                            continuation_token = page.continuation_token;
+                            if continuation_token.is_none() {
+                                warn!("truncated response but no continuation token");
+                                break;
+                            }
+                        }
+                        ListingMode::Versions => {
+                            key_marker = page.key_marker;
+                            version_id_marker = page.version_id_marker;
+                            if key_marker.is_none() {
+                                warn!("truncated response but no next key marker");
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    break;
+                }
+            }
+
+            // Release permit before spawning sub-tasks
+            drop(_permit);
+
+            // Spawn sub-tasks for each sub-prefix
+            if !all_sub_prefixes.is_empty() {
+                let mut join_set = JoinSet::new();
+
+                for sub_prefix in all_sub_prefixes {
+                    let storage = self.clone();
+                    let sender = sender.clone();
+                    let next_depth = depth + 1;
+
+                    join_set.spawn(async move {
+                        storage
+                            .list_with_parallel(
+                                mode,
+                                &sender,
+                                max_keys,
+                                Some(sub_prefix),
+                                next_depth,
+                            )
+                            .await
+                    });
+                }
+
+                while let Some(result) = join_set.join_next().await {
+                    match result {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => {
+                            self.cancellation_token.cancel();
+                            return Err(e);
+                        }
+                        Err(join_err) => {
+                            self.cancellation_token.cancel();
+                            return Err(anyhow::anyhow!(
+                                "Listing sub-task panicked: {}",
+                                join_err
+                            ));
+                        }
+                    }
+                }
+            }
+
+            Ok(())
+        })
+    }
+
+    /// Fetch a single page of listing results from S3.
+    #[allow(clippy::too_many_arguments)]
+    async fn fetch_list_page(
+        &self,
+        mode: ListingMode,
+        max_keys: i32,
+        prefix: Option<&str>,
+        delimiter: Option<&str>,
+        continuation_token: Option<&str>,
+        key_marker: Option<&str>,
+        version_id_marker: Option<&str>,
+    ) -> Result<ListPage> {
+        match mode {
+            ListingMode::Objects => {
+                self.fetch_list_objects_page(max_keys, prefix, delimiter, continuation_token)
+                    .await
+            }
+            ListingMode::Versions => {
+                self.fetch_list_versions_page(
+                    max_keys,
+                    prefix,
+                    delimiter,
+                    key_marker,
+                    version_id_marker,
+                )
+                .await
+            }
+        }
+    }
+
+    async fn fetch_list_objects_page(
+        &self,
+        max_keys: i32,
+        prefix: Option<&str>,
+        delimiter: Option<&str>,
+        continuation_token: Option<&str>,
+    ) -> Result<ListPage> {
+        let mut req = self
+            .client
+            .list_objects_v2()
+            .bucket(&self.bucket)
+            .max_keys(max_keys);
+
+        if let Some(prefix) = prefix {
+            req = req.prefix(prefix);
+        }
+        if let Some(delimiter) = delimiter {
+            req = req.delimiter(delimiter);
+        }
+        if let Some(token) = continuation_token {
+            req = req.continuation_token(token);
+        }
+        if let Some(ref payer) = self.request_payer {
+            req = req.request_payer(payer.clone());
+        }
+
+        let response = req.send().await.map_err(|e| {
+            tracing::error!(bucket = %self.bucket, error = %e, "S3 list_objects failed");
+            e
+        })?;
+
+        let objects: Vec<ListEntry> = response
+            .contents()
+            .iter()
+            .filter_map(convert_object)
+            .collect();
+
+        let sub_prefixes: Vec<String> = response
+            .common_prefixes()
+            .iter()
+            .filter_map(|cp| cp.prefix().map(|p| p.to_string()))
+            .collect();
+
+        Ok(ListPage {
+            objects,
+            sub_prefixes,
+            is_truncated: response.is_truncated() == Some(true),
+            continuation_token: response
+                .next_continuation_token()
+                .map(|s| s.to_string()),
+            key_marker: None,
+            version_id_marker: None,
+        })
+    }
+
+    async fn fetch_list_versions_page(
+        &self,
+        max_keys: i32,
+        prefix: Option<&str>,
+        delimiter: Option<&str>,
+        key_marker: Option<&str>,
+        version_id_marker: Option<&str>,
+    ) -> Result<ListPage> {
+        let mut req = self
+            .client
+            .list_object_versions()
+            .bucket(&self.bucket)
+            .max_keys(max_keys);
+
+        if let Some(prefix) = prefix {
+            req = req.prefix(prefix);
+        }
+        if let Some(delimiter) = delimiter {
+            req = req.delimiter(delimiter);
+        }
+        if let Some(marker) = key_marker {
+            req = req.key_marker(marker);
+        }
+        if let Some(marker) = version_id_marker {
+            req = req.version_id_marker(marker);
+        }
+        if let Some(ref payer) = self.request_payer {
+            req = req.request_payer(payer.clone());
+        }
+
+        let response = req.send().await.map_err(|e| {
+            tracing::error!(bucket = %self.bucket, error = %e, "S3 list_object_versions failed");
+            e
+        })?;
+
+        let mut objects: Vec<ListEntry> = Vec::new();
+
+        for version in response.versions() {
+            if let Some(entry) = convert_object_version(version) {
+                objects.push(entry);
+            }
+        }
+
+        for marker in response.delete_markers() {
+            if let Some(entry) = convert_delete_marker(marker) {
+                objects.push(entry);
+            }
+        }
+
+        let sub_prefixes: Vec<String> = response
+            .common_prefixes()
+            .iter()
+            .filter_map(|cp| cp.prefix().map(|p| p.to_string()))
+            .collect();
+
+        Ok(ListPage {
+            objects,
+            sub_prefixes,
+            is_truncated: response.is_truncated() == Some(true),
+            continuation_token: None,
+            key_marker: response.next_key_marker().map(|s| s.to_string()),
+            version_id_marker: response
+                .next_version_id_marker()
+                .map(|s| s.to_string()),
+        })
+    }
+}
+
+#[async_trait]
+impl StorageTrait for S3Storage {
+    async fn list_objects(&self, sender: &Sender<ListEntry>, max_keys: i32) -> Result<()> {
+        self.list_dispatch(ListingMode::Objects, sender, max_keys)
+            .await
     }
 
     async fn list_object_versions(
@@ -134,89 +501,8 @@ impl StorageTrait for S3Storage {
         sender: &Sender<ListEntry>,
         max_keys: i32,
     ) -> Result<()> {
-        let mut key_marker: Option<String> = None;
-        let mut version_id_marker: Option<String> = None;
-
-        loop {
-            if self.cancellation_token.is_cancelled() {
-                debug!("list_object_versions cancelled");
-                break;
-            }
-
-            let mut req = self
-                .client
-                .list_object_versions()
-                .bucket(&self.bucket)
-                .max_keys(max_keys);
-
-            if let Some(ref prefix) = self.prefix {
-                req = req.prefix(prefix);
-            }
-            if let Some(ref delimiter) = self.delimiter {
-                req = req.delimiter(delimiter);
-            }
-            if let Some(ref marker) = key_marker {
-                req = req.key_marker(marker);
-            }
-            if let Some(ref marker) = version_id_marker {
-                req = req.version_id_marker(marker);
-            }
-            if let Some(ref payer) = self.request_payer {
-                req = req.request_payer(payer.clone());
-            }
-
-            let response = req.send().await.map_err(|e| {
-                tracing::error!(bucket = %self.bucket, error = %e, "S3 list_object_versions failed");
-                e
-            })?;
-
-            // Send object versions
-            for version in response.versions() {
-                if self.cancellation_token.is_cancelled() {
-                    return Ok(());
-                }
-                if let Some(entry) = convert_object_version(version) {
-                    sender.send(entry).await.ok();
-                }
-            }
-
-            // Send delete markers
-            for marker in response.delete_markers() {
-                if self.cancellation_token.is_cancelled() {
-                    return Ok(());
-                }
-                if let Some(entry) = convert_delete_marker(marker) {
-                    sender.send(entry).await.ok();
-                }
-            }
-
-            // Send common prefixes
-            for cp in response.common_prefixes() {
-                if self.cancellation_token.is_cancelled() {
-                    return Ok(());
-                }
-                if let Some(p) = cp.prefix() {
-                    sender
-                        .send(ListEntry::CommonPrefix(p.to_string()))
-                        .await
-                        .ok();
-                }
-            }
-
-            // Check for more pages
-            if response.is_truncated() == Some(true) {
-                key_marker = response.next_key_marker().map(|s| s.to_string());
-                version_id_marker = response.next_version_id_marker().map(|s| s.to_string());
-                if key_marker.is_none() {
-                    warn!("truncated response but no next key marker");
-                    break;
-                }
-            } else {
-                break;
-            }
-        }
-
-        Ok(())
+        self.list_dispatch(ListingMode::Versions, sender, max_keys)
+            .await
     }
 }
 

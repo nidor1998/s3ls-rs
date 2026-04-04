@@ -107,6 +107,9 @@ impl ListingPipeline {
             self.config.recursive,
             self.cancellation_token.clone(),
             client_config.request_payer.clone(),
+            self.config.max_parallel_listings,
+            self.config.max_parallel_listing_max_depth,
+            self.config.allow_parallel_listings_in_express_one_zone,
         )
         .await;
 
