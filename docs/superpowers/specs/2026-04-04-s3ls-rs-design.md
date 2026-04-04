@@ -102,7 +102,7 @@ Options:
 | Flag | Description | Env | Default |
 |------|-------------|-----|---------|
 | `--all-versions` | All versions including delete markers | `LIST_ALL_VERSIONS` | false |
-| `--recursive` | List all objects recursively | - | false |
+| `--recursive` | List all objects recursively | `RECURSIVE` | false |
 
 ### Filtering
 
@@ -114,7 +114,7 @@ Options:
 | `--filter-mtime-after <TIME>` | Objects modified at or after this time | `FILTER_MTIME_AFTER` |
 | `--filter-smaller-size <SIZE>` | Objects smaller than this size | `FILTER_SMALLER_SIZE` |
 | `--filter-larger-size <SIZE>` | Objects larger than or equal to this size | `FILTER_LARGER_SIZE` |
-| `--storage-class <LIST>` | Comma-separated storage classes to include | - |
+| `--storage-class <LIST>` | Comma-separated storage classes to include | `STORAGE_CLASS` |
 
 ### Sort
 
@@ -128,7 +128,7 @@ Options:
 | Flag | Description |
 |------|-------------|
 | `--summary` | Append summary line (total count, total size) |
-| `--human` | Human-readable sizes (e.g., `1.2 KiB`) |
+| `--human` | Human-readable sizes (e.g., `1.2KiB`) |
 | `--show-fullpath` | Show full key instead of relative to prefix |
 | `--show-etag` | Show ETag column |
 | `--show-storage-class` | Show storage class column |
@@ -335,8 +335,8 @@ Non-recursive mode uses the S3 API's delimiter feature directly. Parallel listin
 
 **With `--human`:**
 ```
-2024-01-15T10:30:00Z     1.2 KiB readme.txt
-2024-01-15T11:00:00Z     5.4 MiB data.csv
+2024-01-15T10:30:00Z    1.2KiB readme.txt
+2024-01-15T11:00:00Z    5.4MiB data.csv
 ```
 
 **With `--show-etag --show-storage-class`:**
@@ -360,7 +360,7 @@ Non-recursive mode uses the S3 API's delimiter feature directly. Parallel listin
 
 **Summary line (text):**
 ```
-Total: 2 objects, 5.4 MiB
+Total: 2 objects, 5.4MiB
 ```
 Summary always uses human-readable sizes.
 
@@ -471,35 +471,43 @@ impl StorageTrait for MockStorage {
 - Copy and adapt `config/args/` from s3rm-rs
 - Strip deletion args, add s3ls args (sort, display, storage_class filter)
 - Reuse value parsers (mtime, size)
-- Port and adapt argument parsing tests
-- Deliverable: `s3ls --help` works
+- Unit tests: port and adapt argument parsing tests (all flag combinations, env vars, defaults, validation)
+- Deliverable: `s3ls --help` works, all arg tests pass
 
 ### Step 2: Empty Pipeline
 - Scaffold `ListingPipeline` with `run()`
 - Wire up `Config` and `build_config_from_args()`
 - Create `main.rs` entry point (tracing init, config load, pipeline run)
 - Copy and adapt `StorageTrait`, `S3Storage`, `client_builder`
-- Deliverable: pipeline runs, returns success, does nothing
+- Unit tests: Config building from args, S3Target parsing, MockStorage setup
+- Deliverable: pipeline runs, returns success, does nothing, all tests pass
 
 ### Step 3: Listing Stage
 - Copy and adapt `lister.rs` from s3rm-rs
 - Emit `ListEntry` (including `CommonPrefix` in non-recursive mode)
 - Parallel listing for recursive mode, delimiter listing for non-recursive
 - Temporary aggregate: drain and print keys
-- Deliverable: list real bucket objects
+- Unit tests: ListEntry type, lister with MockStorage (recursive, non-recursive, all-versions, CommonPrefix emission)
+- Deliverable: list real bucket objects, all tests pass
 
 ### Step 4: Filtering Stage
 - Copy and adapt `filters/` from s3rm-rs
 - Adapt to `ListEntry` (CommonPrefix passes through)
 - Add `StorageClassFilter`
 - Inline filters into lister
-- Port filter unit tests with `MockStorage`
-- Deliverable: filtered listing works
+- Unit tests: each filter individually, FilterChain composition, CommonPrefix passthrough, StorageClassFilter
+- Deliverable: filtered listing works, all tests pass
 
 ### Step 5: Aggregate Stage
 - Implement collect, sort, format, output
 - All display options: text, human, NDJSON, extra columns
 - Summary line (when `--summary`)
 - Non-recursive `PRE` formatting
-- Unit tests for all formatting combinations
-- Deliverable: complete s3ls tool
+- Unit tests: sort by key/size/date, reverse, all formatting combinations (text, human, NDJSON, extra columns), summary output, PRE formatting
+- Deliverable: complete s3ls tool, all tests pass
+
+### Step 6: E2E Tests (human-directed)
+- Human instructs Claude Code to generate E2E tests one by one
+- Tests hit real S3 or MinIO, gated by `E2E_TEST` env flag
+- Scope: basic listing, recursive/non-recursive, parallel listing, all-versions, filters, sort/output, storage class filter
+- Deliverable: E2E test suite, ~99% coverage
