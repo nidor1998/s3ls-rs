@@ -1,5 +1,6 @@
 pub mod config;
 pub mod pipeline;
+pub mod storage;
 pub mod types;
 
 // Core pipeline
