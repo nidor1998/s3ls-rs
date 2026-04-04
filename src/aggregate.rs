@@ -96,15 +96,15 @@ pub fn format_entry(entry: &ListEntry, bucket: Option<&str>, opts: &FormatOption
                     obj.storage_class().unwrap_or("STANDARD")
                 ));
             }
-            if opts.show_checksum_algorithm {
-                if let Some(algo) = obj.checksum_algorithm() {
-                    line.push_str(&format!("  checksum_algo:{algo}"));
-                }
+            if opts.show_checksum_algorithm
+                && let Some(algo) = obj.checksum_algorithm()
+            {
+                line.push_str(&format!("  checksum_algo:{algo}"));
             }
-            if opts.show_checksum_type {
-                if let Some(ctype) = obj.checksum_type() {
-                    line.push_str(&format!("  checksum_type:{ctype}"));
-                }
+            if opts.show_checksum_type
+                && let Some(ctype) = obj.checksum_type()
+            {
+                line.push_str(&format!("  checksum_type:{ctype}"));
             }
 
             line

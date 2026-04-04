@@ -1,9 +1,14 @@
+use crate::aggregate::{
+    compute_statistics, format_entry, format_entry_json, format_summary, sort_entries,
+    FormatOptions,
+};
 use crate::config::Config;
 use crate::filters::build_filter_chain;
 use crate::lister::ObjectLister;
 use crate::storage::StorageTrait;
 use crate::types::token::PipelineCancellationToken;
 use anyhow::Result;
+use std::io::Write;
 use std::sync::Arc;
 
 pub struct ListingPipeline {
@@ -64,7 +69,9 @@ impl ListingPipeline {
 
         let lister_handle = tokio::spawn(async move { lister.list_target().await });
 
+        // Drain channel into Vec, applying filters
         let cancellation_token = self.cancellation_token.clone();
+        let mut entries = Vec::new();
         while let Some(entry) = rx.recv().await {
             if cancellation_token.is_cancelled() {
                 break;
@@ -72,8 +79,7 @@ impl ListingPipeline {
             if !filter_chain.matches(&entry) {
                 continue;
             }
-            // Temporary: print key to stdout (replaced in Step 5)
-            println!("{}", entry.key());
+            entries.push(entry);
         }
 
         match lister_handle.await {
@@ -87,6 +93,40 @@ impl ListingPipeline {
                 return Err(anyhow::anyhow!("Lister task panicked: {}", join_err));
             }
         }
+
+        // Sort
+        sort_entries(
+            &mut entries,
+            &self.config.sort,
+            self.config.reverse,
+            self.config.all_versions,
+        );
+
+        // Format and write output
+        let stdout = std::io::stdout();
+        let mut writer = std::io::BufWriter::new(stdout.lock());
+
+        let opts = FormatOptions::from_display_config(&self.config.display_config);
+        let bucket = self.config.target.bucket.as_str();
+        let use_json = self.config.display_config.json;
+
+        for entry in &entries {
+            let line = if use_json {
+                format_entry_json(entry)
+            } else {
+                format_entry(entry, Some(bucket), &opts)
+            };
+            writeln!(writer, "{line}")?;
+        }
+
+        // Summary
+        if self.config.display_config.summary {
+            let stats = compute_statistics(&entries);
+            let summary = format_summary(&stats, use_json, self.config.all_versions);
+            writeln!(writer, "{summary}")?;
+        }
+
+        writer.flush()?;
 
         Ok(())
     }
