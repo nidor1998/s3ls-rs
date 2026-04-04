@@ -56,7 +56,7 @@ mod tests {
         #[test]
         fn init_json_tracing() {
             init_tracing(&TracingConfig {
-                tracing_level: log::Level::Info,
+                tracing_level: clap_verbosity_flag::log::Level::Info,
                 json_tracing: true,
                 aws_sdk_tracing: false,
                 span_events_tracing: false,
@@ -67,7 +67,7 @@ mod tests {
         #[test]
         fn init_aws_sdk_tracing() {
             init_tracing(&TracingConfig {
-                tracing_level: log::Level::Info,
+                tracing_level: clap_verbosity_flag::log::Level::Info,
                 json_tracing: false,
                 aws_sdk_tracing: true,
                 span_events_tracing: false,
@@ -79,7 +79,7 @@ mod tests {
         fn init_normal_tracing() {
             unsafe { env::remove_var(EVENT_FILTER_ENV_VAR) };
             init_tracing(&TracingConfig {
-                tracing_level: log::Level::Info,
+                tracing_level: clap_verbosity_flag::log::Level::Info,
                 json_tracing: false,
                 aws_sdk_tracing: false,
                 span_events_tracing: false,
@@ -90,7 +90,7 @@ mod tests {
         #[test]
         fn init_span_events_tracing() {
             init_tracing(&TracingConfig {
-                tracing_level: log::Level::Info,
+                tracing_level: clap_verbosity_flag::log::Level::Info,
                 json_tracing: false,
                 aws_sdk_tracing: true,
                 span_events_tracing: true,
@@ -101,7 +101,7 @@ mod tests {
         #[test]
         fn init_disable_color_tracing() {
             init_tracing(&TracingConfig {
-                tracing_level: log::Level::Info,
+                tracing_level: clap_verbosity_flag::log::Level::Info,
                 json_tracing: false,
                 aws_sdk_tracing: false,
                 span_events_tracing: false,
@@ -113,7 +113,7 @@ mod tests {
         fn init_with_env() {
             unsafe { env::set_var(EVENT_FILTER_ENV_VAR, "trace") };
             init_tracing(&TracingConfig {
-                tracing_level: log::Level::Info,
+                tracing_level: clap_verbosity_flag::log::Level::Info,
                 json_tracing: false,
                 aws_sdk_tracing: false,
                 span_events_tracing: false,

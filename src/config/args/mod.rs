@@ -350,6 +350,12 @@ impl CLIArgs {
     }
 
     fn build_filter_config(&self) -> Result<crate::config::FilterConfig, String> {
+        let compile_regex = |pattern: &Option<String>| -> Option<fancy_regex::Regex> {
+            pattern
+                .as_ref()
+                .map(|p| fancy_regex::Regex::new(p).expect("regex was already validated by value_parser"))
+        };
+
         let larger_size = self
             .filter_larger_size
             .as_deref()
@@ -364,8 +370,8 @@ impl CLIArgs {
             .map_err(|e| format!("Invalid filter-smaller-size: {e}"))?;
 
         Ok(crate::config::FilterConfig {
-            include_regex: self.filter_include_regex.clone(),
-            exclude_regex: self.filter_exclude_regex.clone(),
+            include_regex: compile_regex(&self.filter_include_regex),
+            exclude_regex: compile_regex(&self.filter_exclude_regex),
             mtime_before: self.filter_mtime_before,
             mtime_after: self.filter_mtime_after,
             smaller_size,
@@ -376,28 +382,35 @@ impl CLIArgs {
 
     fn build_client_config(&self) -> Option<crate::config::ClientConfig> {
         let credential = if let Some(ref profile) = self.target_profile {
-            crate::config::S3Credentials::Profile(profile.clone())
+            crate::types::S3Credentials::Profile(profile.clone())
         } else if let Some(ref access_key) = self.target_access_key {
-            crate::config::S3Credentials::Credentials {
-                access_keys: crate::config::AccessKeys {
+            crate::types::S3Credentials::Credentials {
+                access_keys: crate::types::AccessKeys {
                     access_key: access_key.clone(),
                     secret_access_key: self.target_secret_access_key.clone().unwrap_or_default(),
                     session_token: self.target_session_token.clone(),
                 },
             }
         } else {
-            crate::config::S3Credentials::FromEnvironment
+            crate::types::S3Credentials::FromEnvironment
         };
 
         Some(crate::config::ClientConfig {
-            aws_config_file: self.aws_config_file.clone(),
-            aws_shared_credentials_file: self.aws_shared_credentials_file.clone(),
+            client_config_location: crate::config::ClientConfigLocation {
+                aws_config_file: self.aws_config_file.clone(),
+                aws_shared_credentials_file: self.aws_shared_credentials_file.clone(),
+            },
             credential,
             region: self.target_region.clone(),
             endpoint_url: self.target_endpoint_url.clone(),
             force_path_style: self.target_force_path_style,
             accelerate: self.target_accelerate,
-            request_payer: self.target_request_payer,
+            request_payer: if self.target_request_payer {
+                Some(aws_sdk_s3::types::RequestPayer::Requester)
+            } else {
+                None
+            },
+            request_checksum_calculation: aws_smithy_types::checksum_config::RequestChecksumCalculation::WhenRequired,
             retry_config: crate::config::RetryConfig {
                 aws_max_attempts: self.aws_max_attempts,
                 initial_backoff_milliseconds: self.initial_backoff_milliseconds,

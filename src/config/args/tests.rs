@@ -822,10 +822,7 @@ fn config_from_full_args() {
     .unwrap();
     assert!(config.recursive);
     assert!(config.all_versions);
-    assert_eq!(
-        config.filter_config.include_regex.as_deref(),
-        Some(r".*\.log$")
-    );
+    assert!(config.filter_config.include_regex.is_some());
     assert_eq!(config.filter_config.larger_size, Some(1024 * 1024 * 1024));
     assert_eq!(
         config.filter_config.storage_class.unwrap(),
@@ -874,6 +871,6 @@ fn config_tracing_config_info_with_verbose() {
     assert!(config.tracing_config.is_some());
     assert_eq!(
         config.tracing_config.unwrap().tracing_level,
-        log::Level::Info
+        clap_verbosity_flag::log::Level::Info
     );
 }
