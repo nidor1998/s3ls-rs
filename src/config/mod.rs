@@ -126,15 +126,49 @@ pub struct ClientConfig {
 }
 
 /// S3 credential types.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum S3Credentials {
     Profile(String),
-    Credentials {
-        access_key: String,
-        secret_access_key: String,
-        session_token: Option<String>,
-    },
+    Credentials { access_keys: AccessKeys },
     FromEnvironment,
+}
+
+impl std::fmt::Debug for S3Credentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            S3Credentials::Profile(p) => f.debug_tuple("Profile").field(p).finish(),
+            S3Credentials::Credentials { access_keys } => f
+                .debug_struct("Credentials")
+                .field("access_keys", access_keys)
+                .finish(),
+            S3Credentials::FromEnvironment => write!(f, "FromEnvironment"),
+        }
+    }
+}
+
+/// AWS access key pair with secure zeroization.
+///
+/// The secret_access_key and session_token are securely cleared from memory
+/// when this struct is dropped, using the zeroize crate.
+#[derive(Clone, zeroize_derive::Zeroize, zeroize_derive::ZeroizeOnDrop)]
+pub struct AccessKeys {
+    pub access_key: String,
+    pub secret_access_key: String,
+    pub session_token: Option<String>,
+}
+
+impl std::fmt::Debug for AccessKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let session_token = self
+            .session_token
+            .as_ref()
+            .map_or("None", |_| "** redacted **");
+        f.debug_struct("AccessKeys")
+            .field("access_key", &self.access_key)
+            .field("secret_access_key", &"** redacted **")
+            .field("session_token", &session_token)
+            .finish()
+    }
 }
 
 /// Retry configuration for AWS SDK operations.

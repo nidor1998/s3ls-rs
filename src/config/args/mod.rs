@@ -379,9 +379,11 @@ impl CLIArgs {
             crate::config::S3Credentials::Profile(profile.clone())
         } else if let Some(ref access_key) = self.target_access_key {
             crate::config::S3Credentials::Credentials {
-                access_key: access_key.clone(),
-                secret_access_key: self.target_secret_access_key.clone().unwrap_or_default(),
-                session_token: self.target_session_token.clone(),
+                access_keys: crate::config::AccessKeys {
+                    access_key: access_key.clone(),
+                    secret_access_key: self.target_secret_access_key.clone().unwrap_or_default(),
+                    session_token: self.target_session_token.clone(),
+                },
             }
         } else {
             crate::config::S3Credentials::FromEnvironment
