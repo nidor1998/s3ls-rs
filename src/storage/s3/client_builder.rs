@@ -1,8 +1,9 @@
 use crate::config::ClientConfig;
 use crate::types::S3Credentials;
 use aws_config::meta::region::RegionProviderChain;
-use aws_config::{ConfigLoader, SdkConfig};
-use aws_sdk_s3::config::Region;
+use aws_config::ConfigLoader;
+use aws_types::SdkConfig;
+use aws_types::region::Region;
 use aws_sdk_s3::Client;
 use aws_smithy_types::retry::RetryConfig;
 use aws_smithy_types::timeout::TimeoutConfig;
@@ -83,7 +84,7 @@ impl ClientConfig {
                     &access_keys.secret_access_key,
                     access_keys.session_token.clone(),
                     None, // expiry
-                    "s3ls-rs-cli",
+                    "",
                 );
                 config_loader.credentials_provider(creds)
             }
@@ -163,7 +164,8 @@ impl ClientConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{CLITimeoutConfig, ClientConfigLocation, RetryConfig as CliRetryConfig};
+    use crate::config::{CLITimeoutConfig, RetryConfig as CliRetryConfig};
+    use crate::types::ClientConfigLocation;
 
     fn default_client_config() -> ClientConfig {
         ClientConfig {

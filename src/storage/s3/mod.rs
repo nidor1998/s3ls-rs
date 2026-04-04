@@ -7,7 +7,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use anyhow::Result;
 use aws_sdk_s3::Client;
+use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::types::RequestPayer;
+use aws_smithy_types::error::metadata::ProvideErrorMetadata;
 use chrono::{DateTime, Utc};
 use tokio::sync::mpsc::Sender;
 use tokio::task::JoinSet;
@@ -99,6 +101,24 @@ impl S3Storage {
         self.bucket.ends_with(EXPRESS_ONEZONE_STORAGE_SUFFIX)
     }
 
+    /// Send a batch of entries to the channel, returning `true` if sending
+    /// should stop (cancellation or receiver dropped).
+    async fn send_listed_entries(
+        &self,
+        entries: Vec<ListEntry>,
+        sender: &Sender<ListEntry>,
+    ) -> Result<bool> {
+        for entry in entries {
+            if self.cancellation_token.is_cancelled() {
+                return Ok(true);
+            }
+            if sender.send(entry).await.is_err() {
+                return Ok(true); // receiver dropped
+            }
+        }
+        Ok(false)
+    }
+
     /// Decide whether to use parallel or sequential listing, then dispatch.
     async fn list_dispatch(
         &self,
@@ -118,7 +138,13 @@ impl S3Storage {
                 max_depth = self.max_parallel_listing_max_depth,
                 "Using parallel listing"
             );
-            self.list_with_parallel(mode, sender, max_keys, self.prefix.clone(), 0)
+            let permit = self
+                .listing_worker_semaphore
+                .clone()
+                .acquire_owned()
+                .await
+                .expect("listing semaphore closed unexpectedly");
+            self.list_with_parallel(mode, sender, max_keys, self.prefix.clone(), 0, permit)
                 .await
         } else {
             debug!(bucket = %self.bucket, "Using sequential listing");
@@ -159,22 +185,18 @@ impl S3Storage {
                 .await?;
 
             // Send objects
-            for entry in page.objects {
-                if self.cancellation_token.is_cancelled() {
-                    return Ok(());
-                }
-                sender.send(entry).await.ok();
+            if self.send_listed_entries(page.objects, sender).await? {
+                return Ok(());
             }
 
             // Send common prefixes
-            for p in &page.sub_prefixes {
-                if self.cancellation_token.is_cancelled() {
-                    return Ok(());
-                }
-                sender
-                    .send(ListEntry::CommonPrefix(p.clone()))
-                    .await
-                    .ok();
+            let prefix_entries: Vec<ListEntry> = page
+                .sub_prefixes
+                .iter()
+                .map(|p| ListEntry::CommonPrefix(p.clone()))
+                .collect();
+            if self.send_listed_entries(prefix_entries, sender).await? {
+                return Ok(());
             }
 
             // Check for more pages
@@ -212,6 +234,7 @@ impl S3Storage {
         max_keys: i32,
         prefix: Option<String>,
         depth: u16,
+        permit: tokio::sync::OwnedSemaphorePermit,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
             if self.cancellation_token.is_cancelled() {
@@ -220,17 +243,13 @@ impl S3Storage {
 
             // Beyond max depth: switch to sequential with no delimiter
             if depth > self.max_parallel_listing_max_depth {
+                drop(permit);
                 return self
                     .list_sequential(mode, sender, max_keys, prefix, None)
                     .await;
             }
 
-            // At this depth: use "/" delimiter to discover sub-prefixes
-            let _permit = self
-                .listing_worker_semaphore
-                .acquire()
-                .await
-                .map_err(|e| anyhow::anyhow!("Semaphore closed: {}", e))?;
+            let mut current_permit = Some(permit);
 
             // Paginate at this level with "/" delimiter to discover sub-prefixes
             let mut continuation_token: Option<String> = None;
@@ -256,11 +275,8 @@ impl S3Storage {
                     .await?;
 
                 // Send objects at this level
-                for entry in page.objects {
-                    if self.cancellation_token.is_cancelled() {
-                        return Ok(());
-                    }
-                    sender.send(entry).await.ok();
+                if self.send_listed_entries(page.objects, sender).await? {
+                    return Ok(());
                 }
 
                 // Collect sub-prefixes
@@ -290,7 +306,7 @@ impl S3Storage {
             }
 
             // Release permit before spawning sub-tasks
-            drop(_permit);
+            drop(current_permit.take());
 
             // Spawn sub-tasks for each sub-prefix
             if !all_sub_prefixes.is_empty() {
@@ -300,8 +316,13 @@ impl S3Storage {
                     let storage = self.clone();
                     let sender = sender.clone();
                     let next_depth = depth + 1;
+                    let sem = self.listing_worker_semaphore.clone();
 
                     join_set.spawn(async move {
+                        let sub_permit = sem
+                            .acquire_owned()
+                            .await
+                            .expect("listing semaphore closed unexpectedly");
                         storage
                             .list_with_parallel(
                                 mode,
@@ -309,6 +330,7 @@ impl S3Storage {
                                 max_keys,
                                 Some(sub_prefix),
                                 next_depth,
+                                sub_permit,
                             )
                             .await
                     });
@@ -393,8 +415,19 @@ impl S3Storage {
         }
 
         let response = req.send().await.map_err(|e| {
-            tracing::error!(bucket = %self.bucket, error = %e, "S3 list_objects failed");
-            e
+            let (code, msg) = extract_sdk_error_details(&e);
+            tracing::error!(
+                bucket = %self.bucket,
+                prefix = ?prefix,
+                s3_error_code = %code,
+                s3_error_message = %msg,
+                "S3 ListObjectsV2 API call failed"
+            );
+            anyhow::anyhow!(e).context(format!(
+                "S3 ListObjectsV2 failed for s3://{}/{}",
+                self.bucket,
+                prefix.unwrap_or("")
+            ))
         })?;
 
         let objects: Vec<ListEntry> = response
@@ -452,8 +485,19 @@ impl S3Storage {
         }
 
         let response = req.send().await.map_err(|e| {
-            tracing::error!(bucket = %self.bucket, error = %e, "S3 list_object_versions failed");
-            e
+            let (code, msg) = extract_sdk_error_details(&e);
+            tracing::error!(
+                bucket = %self.bucket,
+                prefix = ?prefix,
+                s3_error_code = %code,
+                s3_error_message = %msg,
+                "S3 ListObjectVersions API call failed"
+            );
+            anyhow::anyhow!(e).context(format!(
+                "S3 ListObjectVersions failed for s3://{}/{}",
+                self.bucket,
+                prefix.unwrap_or("")
+            ))
         })?;
 
         let mut objects: Vec<ListEntry> = Vec::new();
@@ -503,6 +547,20 @@ impl StorageTrait for S3Storage {
     ) -> Result<()> {
         self.list_dispatch(ListingMode::Versions, sender, max_keys)
             .await
+    }
+}
+
+/// Extract error code and message from an AWS SDK error.
+fn extract_sdk_error_details<E: std::fmt::Display + ProvideErrorMetadata>(
+    e: &SdkError<E>,
+) -> (String, String) {
+    if let Some(service_err) = e.as_service_error() {
+        (
+            service_err.code().unwrap_or("unknown").to_string(),
+            service_err.message().unwrap_or("no message").to_string(),
+        )
+    } else {
+        ("N/A".to_string(), e.to_string())
     }
 }
 

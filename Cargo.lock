@@ -2323,6 +2323,7 @@ dependencies = [
  "clap-verbosity-flag",
  "clap_complete",
  "fancy-regex",
+ "log",
  "nix",
  "once_cell",
  "proptest",

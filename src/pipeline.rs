@@ -49,7 +49,7 @@ impl ListingPipeline {
         let queue_size = self.config.object_listing_queue_size as usize;
         let (tx, mut rx) = tokio::sync::mpsc::channel(queue_size);
 
-        let storage = self.build_storage().await;
+        let storage = self.build_storage().await?;
 
         let lister = ObjectLister {
             storage,
@@ -84,21 +84,21 @@ impl ListingPipeline {
         Ok(())
     }
 
-    async fn build_storage(&self) -> Arc<dyn StorageTrait> {
+    async fn build_storage(&self) -> Result<Arc<dyn StorageTrait>> {
         #[cfg(test)]
         if let Some(ref storage) = self.storage_override {
-            return Arc::clone(storage);
+            return Ok(Arc::clone(storage));
         }
 
         self.build_s3_storage().await
     }
 
-    async fn build_s3_storage(&self) -> Arc<dyn StorageTrait> {
+    async fn build_s3_storage(&self) -> Result<Arc<dyn StorageTrait>> {
         let client_config = self
             .config
             .target_client_config
             .as_ref()
-            .expect("target_client_config is required for S3 operations");
+            .ok_or_else(|| anyhow::anyhow!("No client configuration provided"))?;
 
         let storage = crate::storage::s3::S3Storage::new(
             client_config,
@@ -113,7 +113,7 @@ impl ListingPipeline {
         )
         .await;
 
-        Arc::new(storage)
+        Ok(Arc::new(storage))
     }
 }
 

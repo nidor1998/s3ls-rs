@@ -12,6 +12,11 @@ use s3ls_rs::{
 mod ctrl_c_handler;
 mod tracing_init;
 
+#[allow(dead_code)]
+const EXIT_CODE_WARNING: i32 = 3;
+#[allow(dead_code)]
+const EXIT_CODE_ABNORMAL_TERMINATION: i32 = 101;
+
 /// s3ls - Ultra-fast S3 object listing tool.
 ///
 /// This binary is a thin wrapper over the s3ls-rs library.

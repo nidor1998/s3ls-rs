@@ -4,6 +4,7 @@ pub mod token;
 use chrono::{DateTime, Utc};
 use std::fmt;
 use std::fmt::{Display, Formatter};
+use std::path::PathBuf;
 
 // ---------------------------------------------------------------------------
 // S3Credentials / AccessKeys
@@ -53,6 +54,17 @@ impl std::fmt::Debug for AccessKeys {
             .field("session_token", &session_token)
             .finish()
     }
+}
+
+// ---------------------------------------------------------------------------
+// ClientConfigLocation
+// ---------------------------------------------------------------------------
+
+/// AWS configuration file locations.
+#[derive(Debug, Clone)]
+pub struct ClientConfigLocation {
+    pub aws_config_file: Option<PathBuf>,
+    pub aws_shared_credentials_file: Option<PathBuf>,
 }
 
 // ---------------------------------------------------------------------------

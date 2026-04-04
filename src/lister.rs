@@ -3,6 +3,7 @@ use crate::types::ListEntry;
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use tracing::debug;
 
 pub struct ObjectLister {
     pub storage: Arc<dyn StorageTrait>,
@@ -13,7 +14,8 @@ pub struct ObjectLister {
 
 impl ObjectLister {
     pub async fn list_target(self) -> Result<()> {
-        if self.all_versions {
+        debug!("list target objects has started.");
+        let result = if self.all_versions {
             self.storage
                 .list_object_versions(&self.sender, self.max_keys)
                 .await
@@ -21,7 +23,9 @@ impl ObjectLister {
             self.storage
                 .list_objects(&self.sender, self.max_keys)
                 .await
-        }
+        };
+        debug!("list target objects has been completed.");
+        result
     }
 }
 

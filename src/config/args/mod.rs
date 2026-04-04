@@ -396,7 +396,7 @@ impl CLIArgs {
         };
 
         Some(crate::config::ClientConfig {
-            client_config_location: crate::config::ClientConfigLocation {
+            client_config_location: crate::types::ClientConfigLocation {
                 aws_config_file: self.aws_config_file.clone(),
                 aws_shared_credentials_file: self.aws_shared_credentials_file.clone(),
             },
