@@ -564,8 +564,8 @@ Non-recursive mode uses the S3 API's delimiter feature directly. Parallel listin
 
 **With `--json` (NDJSON):**
 ```json
-{"key":"readme.txt","size":1234,"last_modified":"2024-01-15T10:30:00Z"}
-{"key":"data.csv","size":5678901,"last_modified":"2024-01-15T11:00:00Z"}
+{"key":"readme.txt","size":1234,"last_modified":"2024-01-15T10:30:00+00:00"}
+{"key":"data.csv","size":5678901,"last_modified":"2024-01-15T11:00:00+00:00"}
 ```
 - JSON includes all available fields regardless of display flags
 - `--summary` appends: `{"summary":{"total_objects":2,"total_size":5680135}}`

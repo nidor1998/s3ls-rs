@@ -34,7 +34,9 @@ fn format_size(size: u64, human: bool) -> String {
         if size < 1024 {
             format!("{size}")
         } else {
-            format!("{adjusted:.1}")
+            // byte-unit formats as "5.4 MiB" but spec requires "5.4MiB" (no space)
+            let s = format!("{adjusted:.1}");
+            s.replacen(' ', "", 1)
         }
     } else {
         size.to_string()
@@ -384,8 +386,8 @@ mod tests {
         let entry = make_entry("data.csv", 5678901, 2024, 1);
         let opts = FormatOptions { human: true, ..Default::default() };
         let line = format_entry(&entry, None, &opts);
-        // Spec: 2024-01-01T00:00:00Z    5.4 MiB data.csv
-        assert!(line.contains("5.4 MiB"));
+        // Spec: 2024-01-01T00:00:00Z    5.4MiB data.csv
+        assert!(line.contains("5.4MiB"));
         assert!(line.ends_with("data.csv"));
     }
 
@@ -506,7 +508,7 @@ mod tests {
         };
         let summary = format_summary(&stats, false, false);
         assert!(summary.contains("42 objects"));
-        assert!(summary.contains("5.4 MiB"));
+        assert!(summary.contains("5.4MiB"));
     }
 
     #[test]

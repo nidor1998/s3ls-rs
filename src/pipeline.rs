@@ -57,40 +57,64 @@ impl ListingPipeline {
 
         let storage = self.build_storage().await?;
 
-        let lister = ObjectLister {
-            storage,
-            sender: tx,
-            all_versions: self.config.all_versions,
-            max_keys: self.config.max_keys,
-        };
-
         let filter_chain = build_filter_chain(&self.config.filter_config)
             .map_err(|e| anyhow::anyhow!(e))?;
 
-        let lister_handle = tokio::spawn(async move { lister.list_target().await });
-
-        // Drain channel into Vec, applying filters
+        // Lister task: list objects, apply filter chain inline, send filtered
+        // entries to the aggregate channel. Matches spec: "Lister → apply
+        // filter chain → if passes: send to channel → if not: discard".
         let cancellation_token = self.cancellation_token.clone();
+        let all_versions = self.config.all_versions;
+        let max_keys = self.config.max_keys;
+
+        let lister_handle = tokio::spawn(async move {
+            let (list_tx, mut list_rx) = tokio::sync::mpsc::channel(queue_size);
+
+            let lister = ObjectLister {
+                storage,
+                sender: list_tx,
+                all_versions,
+                max_keys,
+            };
+
+            let inner_handle = tokio::spawn(async move { lister.list_target().await });
+
+            // Filter inline and forward to aggregate channel
+            while let Some(entry) = list_rx.recv().await {
+                if cancellation_token.is_cancelled() {
+                    break;
+                }
+                if filter_chain.matches(&entry)
+                    && tx.send(entry).await.is_err()
+                {
+                    break;
+                }
+            }
+
+            match inner_handle.await {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(e)) => {
+                    cancellation_token.cancel();
+                    Err(e)
+                }
+                Err(join_err) => {
+                    cancellation_token.cancel();
+                    Err(anyhow::anyhow!("Lister task panicked: {}", join_err))
+                }
+            }
+        });
+
+        // Aggregate: collect all filtered entries
         let mut entries = Vec::new();
         while let Some(entry) = rx.recv().await {
-            if cancellation_token.is_cancelled() {
-                break;
-            }
-            if !filter_chain.matches(&entry) {
-                continue;
-            }
             entries.push(entry);
         }
 
         match lister_handle.await {
             Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                cancellation_token.cancel();
-                return Err(e);
-            }
+            Ok(Err(e)) => return Err(e),
             Err(join_err) => {
-                cancellation_token.cancel();
-                return Err(anyhow::anyhow!("Lister task panicked: {}", join_err));
+                return Err(anyhow::anyhow!("Lister+filter task panicked: {}", join_err));
             }
         }
 
