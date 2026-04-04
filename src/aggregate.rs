@@ -41,96 +41,78 @@ fn format_size(size: u64, human: bool) -> String {
     }
 }
 
-fn format_key<'a>(entry: &'a ListEntry, opts: &FormatOptions) -> &'a str {
-    if opts.show_fullpath {
-        entry.key()
+fn format_key_display(
+    entry_key: &str,
+    bucket: Option<&str>,
+    opts: &FormatOptions,
+) -> String {
+    let key = if opts.show_fullpath {
+        entry_key
     } else if let Some(ref prefix) = opts.prefix {
-        entry.key().strip_prefix(prefix.as_str()).unwrap_or(entry.key())
+        entry_key.strip_prefix(prefix.as_str()).unwrap_or(entry_key)
     } else {
-        entry.key()
+        entry_key
+    };
+
+    if opts.show_fullpath
+        && let Some(bucket) = bucket
+    {
+        return format!("s3://{bucket}/{key}");
     }
+    key.to_string()
+}
+
+fn format_rfc3339(dt: &chrono::DateTime<chrono::Utc>) -> String {
+    dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 pub fn format_entry(entry: &ListEntry, bucket: Option<&str>, opts: &FormatOptions) -> String {
     match entry {
         ListEntry::CommonPrefix(_) => {
-            let key = format_key(entry, opts);
-            let key_display = if let Some(bucket) = bucket {
-                if opts.show_fullpath {
-                    format!("s3://{bucket}/{key}")
-                } else {
-                    key.to_string()
-                }
-            } else {
-                key.to_string()
-            };
+            let key_display = format_key_display(entry.key(), bucket, opts);
             format!("{:>30} PRE {}", "", key_display)
         }
         ListEntry::Object(obj) => {
-            let date = obj.last_modified().format("%Y-%m-%d %H:%M:%S");
+            let date = format_rfc3339(obj.last_modified());
             let size = format_size(obj.size(), opts.human);
-            let key = format_key(entry, opts);
-            let key_display = if let Some(bucket) = bucket {
-                if opts.show_fullpath {
-                    format!("s3://{bucket}/{key}")
-                } else {
-                    key.to_string()
-                }
-            } else {
-                key.to_string()
-            };
+            let key_display = format_key_display(entry.key(), bucket, opts);
 
-            let mut line = format!("{date} {size:>10} {key_display}");
-
-            if let Some(version_id) = obj.version_id() {
-                let latest = if obj.is_latest() { " (latest)" } else { "" };
-                line.push_str(&format!("  [version: {version_id}{latest}]"));
-            }
-
-            if opts.show_etag {
-                line.push_str(&format!("  etag:{}", obj.e_tag()));
-            }
+            // Build middle columns: extra columns then version_id, all before key
+            let mut middle = String::new();
             if opts.show_storage_class {
-                line.push_str(&format!(
-                    "  class:{}",
+                middle.push_str(&format!(
+                    " {}",
                     obj.storage_class().unwrap_or("STANDARD")
                 ));
+            }
+            if opts.show_etag {
+                middle.push_str(&format!(" {}", obj.e_tag()));
             }
             if opts.show_checksum_algorithm
                 && let Some(algo) = obj.checksum_algorithm()
             {
-                line.push_str(&format!("  checksum_algo:{algo}"));
+                middle.push_str(&format!(" {algo}"));
             }
             if opts.show_checksum_type
                 && let Some(ctype) = obj.checksum_type()
             {
-                line.push_str(&format!("  checksum_type:{ctype}"));
+                middle.push_str(&format!(" {ctype}"));
+            }
+            if let Some(version_id) = obj.version_id() {
+                middle.push_str(&format!(" {version_id}"));
             }
 
-            line
+            format!("{date} {size:>10}{middle} {key_display}")
         }
         ListEntry::DeleteMarker {
             key,
             version_id,
             last_modified,
-            is_latest,
+            ..
         } => {
-            let date = last_modified.format("%Y-%m-%d %H:%M:%S");
-            let key = if opts.show_fullpath {
-                if let Some(bucket) = bucket {
-                    format!("s3://{bucket}/{key}")
-                } else {
-                    key.clone()
-                }
-            } else if let Some(ref prefix) = opts.prefix {
-                key.strip_prefix(prefix.as_str())
-                    .unwrap_or(key)
-                    .to_string()
-            } else {
-                key.clone()
-            };
-            let latest = if *is_latest { " (latest)" } else { "" };
-            format!("{date} DELETE_MARKER {key}  [version: {version_id}{latest}]")
+            let date = format_rfc3339(last_modified);
+            let key_display = format_key_display(key, bucket, opts);
+            format!("{date} {:>10} {version_id} (delete marker) {key_display}", "0")
         }
     }
 }
@@ -382,9 +364,10 @@ mod tests {
         let entry = make_entry("readme.txt", 1234, 2024, 1);
         let opts = FormatOptions::default();
         let line = format_entry(&entry, None, &opts);
-        assert!(line.contains("2024-01-01"));
+        // Spec: 2024-01-01T00:00:00Z       1234 readme.txt
+        assert!(line.contains("2024-01-01T00:00:00Z"));
         assert!(line.contains("1234"));
-        assert!(line.contains("readme.txt"));
+        assert!(line.ends_with("readme.txt"));
     }
 
     #[test]
@@ -393,7 +376,7 @@ mod tests {
         let opts = FormatOptions::default();
         let line = format_entry(&entry, None, &opts);
         assert!(line.contains("PRE"));
-        assert!(line.contains("logs/"));
+        assert!(line.ends_with("logs/"));
     }
 
     #[test]
@@ -401,15 +384,74 @@ mod tests {
         let entry = make_entry("data.csv", 5678901, 2024, 1);
         let opts = FormatOptions { human: true, ..Default::default() };
         let line = format_entry(&entry, None, &opts);
+        // Spec: 2024-01-01T00:00:00Z    5.4 MiB data.csv
         assert!(line.contains("5.4 MiB"));
+        assert!(line.ends_with("data.csv"));
     }
 
     #[test]
-    fn format_text_with_etag() {
-        let entry = make_entry("file.txt", 100, 2024, 1);
-        let opts = FormatOptions { show_etag: true, ..Default::default() };
+    fn format_text_extra_columns_before_key() {
+        // Spec: 2024-01-15T10:30:00Z       1234 STANDARD "abc123" readme.txt
+        let entry = make_entry("readme.txt", 1234, 2024, 1);
+        let opts = FormatOptions {
+            show_etag: true,
+            show_storage_class: true,
+            ..Default::default()
+        };
         let line = format_entry(&entry, None, &opts);
-        assert!(line.contains("\"e\""));
+        // storage_class and etag appear between size and key
+        let size_pos = line.find("1234").unwrap();
+        let class_pos = line.find("STANDARD").unwrap();
+        let etag_pos = line.find("\"e\"").unwrap();
+        let key_pos = line.find("readme.txt").unwrap();
+        assert!(size_pos < class_pos, "size before class");
+        assert!(class_pos < etag_pos, "class before etag");
+        assert!(etag_pos < key_pos, "etag before key");
+    }
+
+    #[test]
+    fn format_text_versioned_object() {
+        // Spec: 2024-01-15T10:30:00Z       1234 abc123-version-id readme.txt
+        let entry = ListEntry::Object(S3Object::Versioning {
+            key: "readme.txt".to_string(),
+            version_id: "abc123-version-id".to_string(),
+            size: 1234,
+            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 15, 10, 30, 0).unwrap(),
+            e_tag: "\"e\"".to_string(),
+            is_latest: true,
+            storage_class: Some("STANDARD".to_string()),
+            checksum_algorithm: None,
+            checksum_type: None,
+        });
+        let opts = FormatOptions::default();
+        let line = format_entry(&entry, None, &opts);
+        // version_id appears between size and key
+        let size_pos = line.find("1234").unwrap();
+        let vid_pos = line.find("abc123-version-id").unwrap();
+        let key_pos = line.rfind("readme.txt").unwrap();
+        assert!(size_pos < vid_pos, "size before version_id");
+        assert!(vid_pos < key_pos, "version_id before key");
+    }
+
+    #[test]
+    fn format_text_delete_marker() {
+        // Spec: 2024-01-16T09:00:00Z          0 def456-version-id (delete marker) readme.txt
+        let entry = ListEntry::DeleteMarker {
+            key: "readme.txt".to_string(),
+            version_id: "def456-version-id".to_string(),
+            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 16, 9, 0, 0).unwrap(),
+            is_latest: false,
+        };
+        let opts = FormatOptions::default();
+        let line = format_entry(&entry, None, &opts);
+        assert!(line.contains("2024-01-16T09:00:00Z"));
+        let zero_pos = line.find('0').unwrap();
+        let vid_pos = line.find("def456-version-id").unwrap();
+        let marker_pos = line.find("(delete marker)").unwrap();
+        let key_pos = line.rfind("readme.txt").unwrap();
+        assert!(zero_pos < vid_pos, "0 before version_id");
+        assert!(vid_pos < marker_pos, "version_id before (delete marker)");
+        assert!(marker_pos < key_pos, "(delete marker) before key");
     }
 
     #[test]
