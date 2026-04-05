@@ -280,15 +280,53 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
         entries: Vec<ListEntry>,
         sender: &Sender<ListEntry>,
     ) -> Result<bool> {
+        self.send_listed_entries_inner(entries, sender, false).await
+    }
+
+    /// Send entries with optional max_depth filtering.
+    /// When `apply_depth_filter` is true, entries beyond max_depth are skipped.
+    /// This is used by the sequential listing fallback path where all objects are
+    /// returned flat (no delimiter), so depth must be enforced per-key.
+    async fn send_listed_entries_inner(
+        &self,
+        entries: Vec<ListEntry>,
+        sender: &Sender<ListEntry>,
+        apply_depth_filter: bool,
+    ) -> Result<bool> {
         for entry in entries {
             if self.cancellation_token.is_cancelled() {
                 return Ok(true);
+            }
+            // Apply max_depth filter when set (fallback for sequential listing path)
+            if apply_depth_filter {
+                if let Some(max_depth) = self.max_depth {
+                    if let Some(depth) = self.key_depth(entry.key()) {
+                        if depth > max_depth {
+                            continue;
+                        }
+                    }
+                }
             }
             if sender.send(entry).await.is_err() {
                 return Ok(true); // receiver dropped
             }
         }
         Ok(false)
+    }
+
+    /// Calculate the depth of a key relative to the engine's prefix.
+    /// Depth = (number of "/" in the relative part of the key) + 1.
+    /// Returns None if the key doesn't start with the prefix.
+    fn key_depth(&self, key: &str) -> Option<u16> {
+        let prefix = self.prefix.as_deref().unwrap_or("");
+        let relative = key.strip_prefix(prefix)?;
+        if relative.is_empty() {
+            return None; // key IS the prefix, not an object under it
+        }
+        let slash_count = relative.matches('/').count();
+        // "file.txt" => 0 slashes => depth 1
+        // "a/file.txt" => 1 slash => depth 2
+        Some(slash_count as u16 + 1)
     }
 
     /// Decide whether to use parallel or sequential listing, then dispatch.
@@ -337,6 +375,9 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
         let mut continuation_token: Option<String> = None;
         let mut key_marker: Option<String> = None;
         let mut version_id_marker: Option<String> = None;
+        // Apply depth filtering when listing without a delimiter (recursive),
+        // since all objects are returned flat and may exceed max_depth.
+        let apply_depth_filter = delimiter.is_none();
 
         loop {
             if self.cancellation_token.is_cancelled() {
@@ -358,7 +399,7 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
                 .await?;
 
             // Send objects
-            if self.send_listed_entries(page.objects, sender).await? {
+            if self.send_listed_entries_inner(page.objects, sender, apply_depth_filter).await? {
                 return Ok(());
             }
 
@@ -368,7 +409,7 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
                 .iter()
                 .map(|p| ListEntry::CommonPrefix(p.clone()))
                 .collect();
-            if self.send_listed_entries(prefix_entries, sender).await? {
+            if self.send_listed_entries_inner(prefix_entries, sender, apply_depth_filter).await? {
                 return Ok(());
             }
 
@@ -1477,6 +1518,128 @@ mod tests {
         let engine = make_engine_with_max_depth(
             fetcher, "bucket", Some("p/"), None, 4, 5, false, Some(1),
         );
+        let entries = collect_entries(&engine, ListingMode::Objects, 1000).await.unwrap();
+
+        let mut keys: Vec<String> = entries.iter().map(|e| e.key().to_string()).collect();
+        keys.sort();
+        assert_eq!(keys, vec!["p/a/file.txt", "p/root.txt"]);
+    }
+
+    // 13. sequential_filters_by_max_depth
+    #[tokio::test]
+    async fn sequential_filters_by_max_depth() {
+        // Sequential listing with max_depth filtering.
+        // Prefix is "p/", max_depth=1 means only depth 1 objects (directly under p/).
+        let fetcher = MockPageFetcher::from_pages(
+            Some("p/"),
+            None,
+            vec![ListPage {
+                objects: vec![
+                    make_entry("p/file1.txt"),       // depth 1 (relative: "file1.txt", 0 slashes) — include
+                    make_entry("p/a/file2.txt"),      // depth 2 (relative: "a/file2.txt", 1 slash) — exclude
+                    make_entry("p/a/b/file3.txt"),    // depth 3 — exclude
+                ],
+                sub_prefixes: vec![],
+                is_truncated: false,
+                continuation_token: None,
+                key_marker: None,
+                version_id_marker: None,
+            }],
+        );
+        // Sequential (max_parallel=1), with content max_depth=1
+        let engine = make_engine_with_max_depth(
+            fetcher, "bucket", Some("p/"), None, 1, 3, false, Some(1),
+        );
+        let entries = collect_entries(&engine, ListingMode::Objects, 1000).await.unwrap();
+
+        let keys: Vec<String> = entries.iter().map(|e| e.key().to_string()).collect();
+        // Depth counting: depth = (slashes in relative part) + 1
+        // "file1.txt" -> 0 slashes -> depth 1 -> include (max_depth=1)
+        // "a/file2.txt" -> 1 slash -> depth 2 -> exclude
+        // "a/b/file3.txt" -> 2 slashes -> depth 3 -> exclude
+        assert_eq!(keys, vec!["p/file1.txt"]);
+    }
+
+    // 14. sequential_max_depth_with_no_prefix
+    #[tokio::test]
+    async fn sequential_max_depth_with_no_prefix() {
+        let fetcher = MockPageFetcher::from_pages(
+            None,
+            None,
+            vec![ListPage {
+                objects: vec![
+                    make_entry("file.txt"),           // depth 1 — include
+                    make_entry("a/file.txt"),          // depth 2 — exclude
+                    make_entry("a/b/file.txt"),        // depth 3 — exclude
+                ],
+                sub_prefixes: vec![],
+                is_truncated: false,
+                continuation_token: None,
+                key_marker: None,
+                version_id_marker: None,
+            }],
+        );
+        let engine = make_engine_with_max_depth(
+            fetcher, "bucket", None, None, 1, 3, false, Some(1),
+        );
+        let entries = collect_entries(&engine, ListingMode::Objects, 1000).await.unwrap();
+
+        let keys: Vec<String> = entries.iter().map(|e| e.key().to_string()).collect();
+        assert_eq!(keys, vec!["file.txt"]);
+    }
+
+    // 15. parallel_fallback_to_sequential_respects_max_depth
+    #[tokio::test]
+    async fn parallel_fallback_to_sequential_respects_max_depth() {
+        // max_parallel_listing_max_depth=0, so depth 1 immediately falls back to sequential.
+        // max_depth=2, so sequential must filter objects beyond depth 2.
+        let mut map: HashMap<(Option<String>, Option<String>), Vec<ListPage>> = HashMap::new();
+
+        // Top level (depth 0): discovers sub-prefix a/
+        map.insert(
+            (Some("p/".to_string()), Some("/".to_string())),
+            vec![ListPage {
+                objects: vec![make_entry("p/root.txt")],
+                sub_prefixes: vec!["p/a/".to_string()],
+                is_truncated: false,
+                continuation_token: None,
+                key_marker: None,
+                version_id_marker: None,
+            }],
+        );
+
+        // Depth 1 > max_parallel_listing_max_depth(0) => sequential with delimiter=None
+        // Sequential returns everything under p/a/ including deep objects
+        map.insert(
+            (Some("p/a/".to_string()), None),
+            vec![ListPage {
+                objects: vec![
+                    make_entry("p/a/file.txt"),           // depth 2 — include
+                    make_entry("p/a/b/file.txt"),         // depth 3 — exclude
+                    make_entry("p/a/b/c/file.txt"),       // depth 4 — exclude
+                ],
+                sub_prefixes: vec![],
+                is_truncated: false,
+                continuation_token: None,
+                key_marker: None,
+                version_id_marker: None,
+            }],
+        );
+
+        let fetcher = MockPageFetcher::from_map(map);
+        let token = create_pipeline_cancellation_token();
+        let engine = ListingEngine {
+            fetcher,
+            bucket: "bucket".to_string(),
+            prefix: Some("p/".to_string()),
+            delimiter: None,
+            cancellation_token: token,
+            max_parallel_listings: 4,
+            max_parallel_listing_max_depth: 0,
+            max_depth: Some(2),
+            allow_parallel_listings_in_express_one_zone: false,
+            listing_worker_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
+        };
         let entries = collect_entries(&engine, ListingMode::Objects, 1000).await.unwrap();
 
         let mut keys: Vec<String> = entries.iter().map(|e| e.key().to_string()).collect();
