@@ -11,7 +11,16 @@ $ time s3ls --recursive s3://data.cpp17.org | wc -l
 real    1.38s
 ```
 
-For comparison, `aws s3 ls --recursive` typically processes around 5,000-8,000 objects/sec on the same bucket. s3ls is **~20x faster**.
+Benchmark on the same bucket (200,002 objects, ap-northeast-1):
+
+| Tool | Time | Throughput |
+|------|------|------------|
+| **s3ls** | **1.5s** | **~136,000 obj/s** |
+| s5cmd ls | 23.8s | ~8,400 obj/s |
+| rclone ls --fast-list | 22.4s | ~8,900 obj/s |
+| aws s3 ls --recursive | 29.7s | ~6,700 obj/s |
+
+s3ls is **~15-20x faster** than the alternatives.
 
 > *Performance measured on the developer's local machine (ap-northeast-1 region). Results may vary depending on network conditions, bucket prefix distribution, and S3 endpoint proximity.*
 
@@ -251,7 +260,7 @@ There are several tools that can list S3 objects, but none of them expose the fu
 |---------|:----:|:---------:|:--------:|:----------:|
 | **Speed** | | | | |
 | Parallel listing | 32 concurrent | Sequential | Parallel | Parallel |
-| Throughput (200K objects) | ~1.4s | ~30s | ~3-5s | ~10s |
+| Throughput (200K objects) | ~1.5s | ~30s | ~24s | ~22s |
 | Streaming mode (no buffering) | `--no-sort` | - | - | - |
 | **Object Metadata** | | | | |
 | Key, Size, LastModified | Yes | Yes | Yes | Yes |
