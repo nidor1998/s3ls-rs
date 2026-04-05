@@ -266,9 +266,9 @@ fn display_human() {
 }
 
 #[test]
-fn display_show_fullpath() {
-    let cli = parse_from_args(args(&["s3://bucket", "--show-fullpath"])).unwrap();
-    assert!(cli.show_fullpath);
+fn display_show_relative_path() {
+    let cli = parse_from_args(args(&["s3://bucket", "--show-relative-path"])).unwrap();
+    assert!(cli.show_relative_path);
 }
 
 #[test]
@@ -307,7 +307,7 @@ fn all_display_options_combined() {
         "s3://bucket",
         "--summary",
         "--human",
-        "--show-fullpath",
+        "--show-relative-path",
         "--show-etag",
         "--show-storage-class",
         "--show-checksum-algorithm",
@@ -317,7 +317,7 @@ fn all_display_options_combined() {
     .unwrap();
     assert!(cli.summary);
     assert!(cli.human);
-    assert!(cli.show_fullpath);
+    assert!(cli.show_relative_path);
     assert!(cli.show_etag);
     assert!(cli.show_storage_class);
     assert!(cli.show_checksum_algorithm);
@@ -637,7 +637,7 @@ fn verify_all_defaults() {
     // Display
     assert!(!cli.summary);
     assert!(!cli.human);
-    assert!(!cli.show_fullpath);
+    assert!(!cli.show_relative_path);
     assert!(!cli.show_etag);
     assert!(!cli.show_storage_class);
     assert!(!cli.show_checksum_algorithm);
@@ -785,7 +785,7 @@ fn full_combination_many_flags() {
         "--reverse",
         "--summary",
         "--human",
-        "--show-fullpath",
+        "--show-relative-path",
         "--show-etag",
         "--json",
         "--target-region",
@@ -815,7 +815,7 @@ fn full_combination_many_flags() {
     assert!(cli.reverse);
     assert!(cli.summary);
     assert!(cli.human);
-    assert!(cli.show_fullpath);
+    assert!(cli.show_relative_path);
     assert!(cli.show_etag);
     assert!(cli.json);
     assert_eq!(cli.target_region.as_deref(), Some("eu-west-1"));

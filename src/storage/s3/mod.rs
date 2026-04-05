@@ -275,11 +275,13 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
 
     /// Send a batch of entries to the channel, returning `true` if sending
     /// should stop (cancellation or receiver dropped).
-    /// When `max_depth` is set, entries beyond the depth limit are skipped.
+    /// When `max_depth` is set, entries beyond the depth limit are replaced
+    /// by synthetic CommonPrefix entries at the boundary depth.
     async fn send_listed_entries(
         &self,
         entries: Vec<ListEntry>,
         sender: &Sender<ListEntry>,
+        mut emitted_prefixes: Option<&mut std::collections::HashSet<String>>,
     ) -> Result<bool> {
         for entry in entries {
             if self.cancellation_token.is_cancelled() {
@@ -289,6 +291,14 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
                 && let Some(depth) = self.key_depth(entry.key())
                 && depth > max_depth
             {
+                // Synthesize a CommonPrefix at the boundary depth
+                if let (Some(prefix_at_boundary), Some(seen)) =
+                    (self.prefix_at_depth(entry.key(), max_depth), emitted_prefixes.as_deref_mut())
+                    && seen.insert(prefix_at_boundary.clone())
+                    && sender.send(ListEntry::CommonPrefix(prefix_at_boundary)).await.is_err()
+                {
+                    return Ok(true);
+                }
                 continue;
             }
             if sender.send(entry).await.is_err() {
@@ -311,6 +321,26 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
         // "file.txt" => 0 slashes => depth 1
         // "a/file.txt" => 1 slash => depth 2
         Some(slash_count as u16 + 1)
+    }
+
+    /// Extract the prefix at a given depth boundary from a key.
+    /// For key "p/a/b/file.txt" with engine prefix "p/" and max_depth=1,
+    /// the boundary prefix is "p/a/" (the first directory component beyond
+    /// the depth limit, ending with "/").
+    fn prefix_at_depth(&self, key: &str, max_depth: u16) -> Option<String> {
+        let prefix = self.prefix.as_deref().unwrap_or("");
+        let relative = key.strip_prefix(prefix)?;
+        // Find the (max_depth)th "/" in the relative part
+        let mut slash_count = 0u16;
+        for (i, ch) in relative.char_indices() {
+            if ch == '/' {
+                slash_count += 1;
+                if slash_count == max_depth {
+                    return Some(format!("{}{}", prefix, &relative[..=i]));
+                }
+            }
+        }
+        None
     }
 
     /// Decide whether to use parallel or sequential listing, then dispatch.
@@ -359,6 +389,7 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
         let mut continuation_token: Option<String> = None;
         let mut key_marker: Option<String> = None;
         let mut version_id_marker: Option<String> = None;
+        let mut emitted_prefixes = std::collections::HashSet::new();
 
         loop {
             if self.cancellation_token.is_cancelled() {
@@ -379,8 +410,8 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
                 )
                 .await?;
 
-            // Send objects
-            if self.send_listed_entries(page.objects, sender).await? {
+            // Send objects (with synthetic CommonPrefix for keys beyond max_depth)
+            if self.send_listed_entries(page.objects, sender, Some(&mut emitted_prefixes)).await? {
                 return Ok(());
             }
 
@@ -390,7 +421,7 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
                 .iter()
                 .map(|p| ListEntry::CommonPrefix(p.clone()))
                 .collect();
-            if self.send_listed_entries(prefix_entries, sender).await? {
+            if self.send_listed_entries(prefix_entries, sender, Some(&mut emitted_prefixes)).await? {
                 return Ok(());
             }
 
@@ -485,7 +516,7 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
                     .await?;
 
                 // Send objects at this level
-                if self.send_listed_entries(page.objects, sender).await? {
+                if self.send_listed_entries(page.objects, sender, None).await? {
                     return Ok(());
                 }
 
@@ -523,6 +554,23 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
 
             // Release permit before spawning sub-tasks
             drop(current_permit.take());
+
+            // At max_depth boundary: emit sub-prefixes as CommonPrefix entries
+            // instead of recursing into them, mimicking non-recursive listing.
+            // Send directly to avoid depth filtering in send_listed_entries.
+            if let Some(max_depth) = self.max_depth
+                && depth + 1 >= max_depth && !all_sub_prefixes.is_empty()
+            {
+                for sub_prefix in all_sub_prefixes {
+                    if self.cancellation_token.is_cancelled() {
+                        return Ok(());
+                    }
+                    if sender.send(ListEntry::CommonPrefix(sub_prefix)).await.is_err() {
+                        return Ok(());
+                    }
+                }
+                return Ok(());
+            }
 
             // Spawn sub-tasks for each sub-prefix
             if !all_sub_prefixes.is_empty() {
@@ -1497,22 +1545,24 @@ mod tests {
 
         let mut keys: Vec<String> = entries.iter().map(|e| e.key().to_string()).collect();
         keys.sort();
-        assert_eq!(keys, vec!["p/a/file.txt", "p/root.txt"]);
+        // p/a/deep/ emitted as CommonPrefix at the max_depth boundary
+        assert_eq!(keys, vec!["p/a/deep/", "p/a/file.txt", "p/root.txt"]);
+        assert!(entries.iter().any(|e| matches!(e, ListEntry::CommonPrefix(p) if p == "p/a/deep/")));
     }
 
-    // 13. sequential_filters_by_max_depth
+    // 13. sequential_emits_common_prefix_at_max_depth_boundary
     #[tokio::test]
-    async fn sequential_filters_by_max_depth() {
+    async fn sequential_emits_common_prefix_at_max_depth_boundary() {
         // Sequential listing with max_depth filtering.
-        // Prefix is "p/", max_depth=1 means only depth 1 objects (directly under p/).
+        // Prefix is "p/", max_depth=1. Objects beyond depth 1 become CommonPrefix entries.
         let fetcher = MockPageFetcher::from_pages(
             Some("p/"),
             None,
             vec![ListPage {
                 objects: vec![
-                    make_entry("p/file1.txt"),       // depth 1 (relative: "file1.txt", 0 slashes) — include
-                    make_entry("p/a/file2.txt"),      // depth 2 (relative: "a/file2.txt", 1 slash) — exclude
-                    make_entry("p/a/b/file3.txt"),    // depth 3 — exclude
+                    make_entry("p/file1.txt"),       // depth 1 — include as object
+                    make_entry("p/a/file2.txt"),      // depth 2 — becomes CommonPrefix "p/a/"
+                    make_entry("p/a/b/file3.txt"),    // depth 3 — same CommonPrefix "p/a/" (deduped)
                 ],
                 sub_prefixes: vec![],
                 is_truncated: false,
@@ -1521,18 +1571,17 @@ mod tests {
                 version_id_marker: None,
             }],
         );
-        // Sequential (max_parallel=1), with content max_depth=1
         let engine = make_engine_with_max_depth(
             fetcher, "bucket", Some("p/"), None, 1, 3, false, Some(1),
         );
         let entries = collect_entries(&engine, ListingMode::Objects, 1000).await.unwrap();
 
-        let keys: Vec<String> = entries.iter().map(|e| e.key().to_string()).collect();
-        // Depth counting: depth = (slashes in relative part) + 1
-        // "file1.txt" -> 0 slashes -> depth 1 -> include (max_depth=1)
-        // "a/file2.txt" -> 1 slash -> depth 2 -> exclude
-        // "a/b/file3.txt" -> 2 slashes -> depth 3 -> exclude
-        assert_eq!(keys, vec!["p/file1.txt"]);
+        let mut keys: Vec<String> = entries.iter().map(|e| e.key().to_string()).collect();
+        keys.sort();
+        // p/a/file2.txt and p/a/b/file3.txt both collapse into one "p/a/" prefix
+        assert_eq!(keys, vec!["p/a/", "p/file1.txt"]);
+        // Verify the CommonPrefix entry type
+        assert!(entries.iter().any(|e| matches!(e, ListEntry::CommonPrefix(p) if p == "p/a/")));
     }
 
     // 14. sequential_max_depth_with_no_prefix
@@ -1544,8 +1593,8 @@ mod tests {
             vec![ListPage {
                 objects: vec![
                     make_entry("file.txt"),           // depth 1 — include
-                    make_entry("a/file.txt"),          // depth 2 — exclude
-                    make_entry("a/b/file.txt"),        // depth 3 — exclude
+                    make_entry("a/file.txt"),          // depth 2 — becomes CommonPrefix "a/"
+                    make_entry("a/b/file.txt"),        // depth 3 — same CommonPrefix "a/" (deduped)
                 ],
                 sub_prefixes: vec![],
                 is_truncated: false,
@@ -1559,8 +1608,9 @@ mod tests {
         );
         let entries = collect_entries(&engine, ListingMode::Objects, 1000).await.unwrap();
 
-        let keys: Vec<String> = entries.iter().map(|e| e.key().to_string()).collect();
-        assert_eq!(keys, vec!["file.txt"]);
+        let mut keys: Vec<String> = entries.iter().map(|e| e.key().to_string()).collect();
+        keys.sort();
+        assert_eq!(keys, vec!["a/", "file.txt"]);
     }
 
     // 15. parallel_fallback_to_sequential_respects_max_depth
@@ -1619,6 +1669,7 @@ mod tests {
 
         let mut keys: Vec<String> = entries.iter().map(|e| e.key().to_string()).collect();
         keys.sort();
-        assert_eq!(keys, vec!["p/a/file.txt", "p/root.txt"]);
+        // p/a/b/file.txt and p/a/b/c/file.txt collapse into CommonPrefix "p/a/b/"
+        assert_eq!(keys, vec!["p/a/b/", "p/a/file.txt", "p/root.txt"]);
     }
 }

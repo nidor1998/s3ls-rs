@@ -5,7 +5,7 @@ use byte_unit::Byte;
 #[derive(Default)]
 pub struct FormatOptions {
     pub human: bool,
-    pub show_fullpath: bool,
+    pub show_relative_path: bool,
     pub show_etag: bool,
     pub show_storage_class: bool,
     pub show_checksum_algorithm: bool,
@@ -25,7 +25,7 @@ impl FormatOptions {
     ) -> Self {
         FormatOptions {
             human: display_config.human,
-            show_fullpath: display_config.show_fullpath,
+            show_relative_path: display_config.show_relative_path,
             show_etag: display_config.show_etag,
             show_storage_class: display_config.show_storage_class,
             show_checksum_algorithm: display_config.show_checksum_algorithm,
@@ -56,9 +56,10 @@ fn format_size(size: u64, human: bool) -> String {
 }
 
 fn format_key_display(entry_key: &str, opts: &FormatOptions) -> String {
-    if opts.show_fullpath {
-        entry_key.to_string()
-    } else if let Some(ref prefix) = opts.prefix {
+    if !opts.show_relative_path {
+        return entry_key.to_string();
+    }
+    if let Some(ref prefix) = opts.prefix {
         let stripped = entry_key
             .strip_prefix(prefix.as_str())
             .unwrap_or(entry_key)
@@ -683,9 +684,10 @@ mod tests {
     }
 
     #[test]
-    fn format_text_strips_prefix_by_default() {
+    fn format_text_strips_prefix_with_relative_path() {
         let entry = make_entry("logs/2024/data.csv", 100, 2024, 1);
         let opts = FormatOptions {
+            show_relative_path: true,
             prefix: Some("logs/2024/".to_string()),
             ..Default::default()
         };
@@ -695,10 +697,10 @@ mod tests {
     }
 
     #[test]
-    fn format_text_show_fullpath_keeps_full_key() {
+    fn format_text_default_shows_fullpath() {
         let entry = make_entry("logs/2024/data.csv", 100, 2024, 1);
         let opts = FormatOptions {
-            show_fullpath: true,
+            show_relative_path: false,
             prefix: Some("logs/2024/".to_string()),
             ..Default::default()
         };
@@ -707,9 +709,10 @@ mod tests {
     }
 
     #[test]
-    fn format_text_common_prefix_strips_prefix() {
+    fn format_text_common_prefix_strips_prefix_with_relative_path() {
         let entry = ListEntry::CommonPrefix("logs/2024/".to_string());
         let opts = FormatOptions {
+            show_relative_path: true,
             prefix: Some("logs/".to_string()),
             ..Default::default()
         };

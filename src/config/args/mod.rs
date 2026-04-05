@@ -180,9 +180,9 @@ pub struct CLIArgs {
     #[arg(long, default_value_t = false, help_heading = "Display")]
     pub human: bool,
 
-    /// Show full key instead of relative to prefix
+    /// Show key relative to prefix instead of full path
     #[arg(long, default_value_t = false, help_heading = "Display")]
-    pub show_fullpath: bool,
+    pub show_relative_path: bool,
 
     /// Show ETag column
     #[arg(long, default_value_t = false, help_heading = "Display")]
@@ -529,7 +529,7 @@ impl TryFrom<CLIArgs> for crate::config::Config {
             display_config: crate::config::DisplayConfig {
                 summary: args.summary,
                 human: args.human,
-                show_fullpath: args.show_fullpath,
+                show_relative_path: args.show_relative_path,
                 show_etag: args.show_etag,
                 show_storage_class: args.show_storage_class,
                 show_checksum_algorithm: args.show_checksum_algorithm,

@@ -105,7 +105,7 @@ pub struct FilterConfig {
 pub struct DisplayConfig {
     pub summary: bool,
     pub human: bool,
-    pub show_fullpath: bool,
+    pub show_relative_path: bool,
     pub show_etag: bool,
     pub show_storage_class: bool,
     pub show_checksum_algorithm: bool,
