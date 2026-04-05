@@ -147,7 +147,24 @@ s3ls --recursive --json s3://my-bucket/ | jq 'select(.Size > 1000000)'
 s3ls --recursive --json --summarize s3://my-bucket/
 ```
 
-JSON output uses PascalCase keys matching the S3 API (`Key`, `Size`, `LastModified`, `ETag`, `StorageClass`, etc.) and always includes all available fields regardless of `--show-*` flags.
+JSON output is **S3 API-compliant** — field names, types, and structure match the actual S3 `ListObjectsV2` and `ListObjectVersions` API responses:
+
+```json
+{
+  "Key": "test_files/dir_99/file_100000.txt",
+  "LastModified": "2026-03-28T11:55:11+00:00",
+  "ETag": "\"41895e43efae08f72b75dfcf35e3ed69\"",
+  "ChecksumAlgorithm": ["CRC64NVME"],
+  "ChecksumType": "FULL_OBJECT",
+  "Size": 49,
+  "StorageClass": "STANDARD",
+  "Owner": {
+    "ID": "b7673edd784a8e1e83b264bf4f3cce1bf277b9f6e7e6e5118d1c3bee880d406f"
+  }
+}
+```
+
+This means you can process s3ls JSON output with the same tools and scripts that parse `aws s3api` responses — no field name translation required. All available fields are always included regardless of `--show-*` flags.
 
 ### Version Listing
 
