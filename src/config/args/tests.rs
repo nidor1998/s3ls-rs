@@ -65,6 +65,12 @@ fn max_depth_default_is_none() {
     assert!(cli.max_depth.is_none());
 }
 
+#[test]
+fn max_depth_rejects_zero() {
+    let result = parse_from_args(args(&["s3://bucket", "--recursive", "--max-depth", "0"]));
+    assert!(result.is_err());
+}
+
 // ===========================================================================
 // 3. Filtering
 // ===========================================================================

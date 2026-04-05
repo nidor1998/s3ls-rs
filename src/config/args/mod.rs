@@ -91,7 +91,7 @@ pub struct CLIArgs {
     pub all_versions: bool,
 
     /// Maximum depth for recursive listing (requires --recursive)
-    #[arg(long, requires = "recursive", env = "MAX_DEPTH", help_heading = "General")]
+    #[arg(long, requires = "recursive", env = "MAX_DEPTH", value_parser = clap::value_parser!(u16).range(1..), help_heading = "General")]
     pub max_depth: Option<u16>,
 
     /// List only Express One Zone directory buckets (when listing buckets)
