@@ -114,8 +114,11 @@ When no `[TARGET]` is specified, s3ls enters **bucket listing mode** — lists a
 
 | Flag | Description | Env | Default |
 |------|-------------|-----|---------|
-| `--all-versions` | All versions including delete markers | `LIST_ALL_VERSIONS` | false |
 | `--recursive` | List all objects recursively | `RECURSIVE` | false |
+| `--all-versions` | All versions including delete markers | `LIST_ALL_VERSIONS` | false |
+| `--hide-delete-marker` | Hide delete markers from version listing (requires `--all-versions`) | - | false |
+| `--max-depth <N>` | Maximum depth for recursive listing, minimum 1 (requires `--recursive`) | `MAX_DEPTH` | - |
+| `--bucket-name-prefix <PREFIX>` | Filter buckets by name prefix (bucket listing mode) | - | - |
 | `--list-express-one-zone-buckets` | List only Express One Zone directory buckets (bucket listing mode) | - | false |
 
 ### Filtering
@@ -147,16 +150,17 @@ When `--all-versions` is enabled and only one sort field is specified, `date` is
 |------|-------------|
 | `--summary` | Append summary line (total count, total size) |
 | `--human` | Human-readable sizes (e.g., `1.2KiB`); also affects `--summary` |
-| `--show-fullpath` | Show full key instead of relative to prefix |
-| `--show-etag` | Show ETag column (quotes stripped) |
+| `--show-relative-path` | Show key relative to prefix instead of full path (default: full path) |
+| `--show-etag` | Show ETag column |
 | `--show-storage-class` | Show storage class column |
 | `--show-checksum-algorithm` | Show checksum algorithm column |
 | `--show-checksum-type` | Show checksum type column |
 | `--show-is-latest` | Show LATEST/NOT_LATEST column (requires `--all-versions`) |
 | `--show-owner` | Show owner DisplayName and ID columns; enables `fetch-owner` on S3 API |
 | `--show-restore-status` | Show restore status column; enables `OptionalObjectAttributes=RestoreStatus` on S3 API |
+| `--show-bucket-arn` | Show bucket ARN column (bucket listing mode) |
 | `--header` | Add a header row with column names (text mode only) |
-| `--json` | Output as NDJSON (one JSON object per line) |
+| `--json` | Output as NDJSON (one JSON object per line); includes all available fields |
 
 ### Tracing/Logging
 
@@ -341,6 +345,9 @@ pub struct Config {
     // Listing mode
     pub recursive: bool,
     pub all_versions: bool,
+    pub hide_delete_marker: bool,
+    pub max_depth: Option<u16>,
+    pub bucket_name_prefix: Option<String>,
     pub list_express_one_zone_bucket: bool,
 
     // Filtering (nested)
@@ -383,7 +390,7 @@ pub struct FilterConfig {
 pub struct DisplayConfig {
     pub summary: bool,
     pub human: bool,
-    pub show_fullpath: bool,
+    pub show_relative_path: bool,
     pub show_etag: bool,
     pub show_storage_class: bool,
     pub show_checksum_algorithm: bool,
@@ -391,6 +398,7 @@ pub struct DisplayConfig {
     pub show_is_latest: bool,
     pub show_owner: bool,         // enables fetch-owner on ListObjectsV2; also works in bucket listing
     pub show_restore_status: bool, // enables OptionalObjectAttributes=RestoreStatus on ListObjectsV2
+    pub show_bucket_arn: bool,    // bucket ARN column in bucket listing mode
     pub header: bool,
     pub json: bool,
 }
@@ -546,8 +554,11 @@ Filters are applied inline within the lister. CommonPrefix entries bypass all fi
 | Recursive (`--recursive`) | None | Yes | `Object` only |
 | Recursive + `--all-versions` | None | Yes (via `list_object_versions`) | `Object` + `DeleteMarker` |
 | Non-recursive + `--all-versions` | `/` | No | `Object` + `DeleteMarker` + `CommonPrefix` |
+| Recursive + `--max-depth N` | None/`/` | Yes | `Object` + `CommonPrefix` at boundary |
 
 Non-recursive mode uses the S3 API's delimiter feature directly. Parallel listing only applies to recursive mode.
+
+When `--max-depth N` is set with `--recursive`, the listing engine limits recursion depth. At the boundary depth, sub-prefixes are emitted as `CommonPrefix` ("PRE") entries instead of being recursed into, mimicking non-recursive listing at that level. In sequential fallback mode, objects beyond the depth limit are replaced with synthetic deduplicated `CommonPrefix` entries.
 
 ## Aggregate Stage
 
@@ -585,7 +596,7 @@ DATE	SIZE	KEY
 ```
 2024-01-15T10:30:00Z	1234	STANDARD	abc123	readme.txt
 ```
-ETag quotes are stripped. PRE rows show empty strings for optional columns.
+PRE rows show empty strings for optional columns.
 
 **With `--all-versions` (versioned objects and delete markers):**
 ```
@@ -603,13 +614,18 @@ Column values are padded to equal width (10 chars).
 
 **With `--json` (NDJSON):**
 ```json
-{"key":"readme.txt","size":1234,"last_modified":"2024-01-15T10:30:00+00:00"}
-{"key":"data.csv","size":5678901,"last_modified":"2024-01-15T11:00:00+00:00"}
+{"Key":"readme.txt","LastModified":"2024-01-15T10:30:00+00:00","ETag":"\"abc123\"","Size":1234,"StorageClass":"STANDARD"}
+{"Key":"data.csv","LastModified":"2024-01-15T11:00:00+00:00","ETag":"\"def456\"","Size":5678901,"StorageClass":"STANDARD"}
 ```
-- JSON includes all available fields regardless of display flags
+- JSON uses PascalCase keys matching the S3 API (Key, Size, LastModified, ETag, StorageClass, etc.)
+- JSON always includes all available fields regardless of `--show-*` flags
+- ETag includes double quotes as returned by the S3 API
+- `ChecksumAlgorithm` is an array (e.g., `["CRC64NVME"]`)
+- `Owner` is a nested object: `{"DisplayName":"...","ID":"..."}`
+- `RestoreStatus` is a nested object: `{"IsRestoreInProgress":true,"RestoreExpiryDate":"..."}`
 - `--summary` appends: `{"summary":{"total_objects":2,"total_size":5680135}}`
-- `--show-owner` adds `owner_display_name` and `owner_id` fields
-- `--show-restore-status` adds `restore_status` field (format: `in_progress=bool,expiry=RFC3339`)
+- CommonPrefix entries: `{"Prefix":"logs/"}`
+- Delete markers: `{"Key":"...","VersionId":"...","IsLatest":true,"LastModified":"..."}`
 
 **With `--show-owner`:**
 ```
@@ -636,7 +652,11 @@ DATE	REGION	BUCKET
 2026-01-15T10:30:00Z	us-east-1	my-bucket
 2026-03-28T11:55:00Z	ap-northeast-1	data.cpp17.org
 ```
-Columns: DATE, REGION, BUCKET. Region is returned by S3 when using paginated `ListBuckets` (`max-buckets`). With `--show-owner`, adds OWNER_DISPLAY_NAME and OWNER_ID columns (from top-level `Owner` in `ListBuckets` response). Supports `--header`, `--json`, `--sort`, `--reverse`, `--show-owner`.
+Columns: DATE, REGION, BUCKET. Region is returned by S3 when using paginated `ListBuckets` (`max-buckets`). Supports `--header`, `--json`, `--sort`, `--reverse`, `--show-owner`, `--show-bucket-arn`, `--bucket-name-prefix`.
+
+With `--show-owner`, adds OWNER_DISPLAY_NAME and OWNER_ID columns. With `--show-bucket-arn`, adds BUCKET_ARN column. With `--bucket-name-prefix`, filters buckets by name prefix (server-side for general buckets via S3 API, client-side for directory buckets).
+
+**Bucket JSON output** uses S3 API field names: `Name`, `CreationDate`, `BucketRegion`, `BucketArn`, `Owner: {DisplayName, ID}`.
 
 ## Testing Strategy
 

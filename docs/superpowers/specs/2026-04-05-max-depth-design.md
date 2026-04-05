@@ -28,7 +28,10 @@ With `--max-depth 2`, only objects at depth 1 and 2 are returned. Objects at dep
 ## Behavior
 
 - Objects beyond `max-depth` are **excluded** — they are not fetched from S3 and do not appear in output.
-- No collapsed prefix entries are shown at the boundary (unlike non-recursive mode).
+- Sub-prefixes at the depth boundary are emitted as `CommonPrefix` ("PRE") entries, mimicking non-recursive listing at that level.
+- In the parallel listing path, discovered sub-prefixes at the boundary are sent directly as `CommonPrefix` entries.
+- In the sequential fallback path, objects beyond max-depth are replaced with synthetic deduplicated `CommonPrefix` entries computed from the key at the boundary depth.
+- Minimum value is 1 (0 is rejected by clap validation).
 
 ## Implementation
 
