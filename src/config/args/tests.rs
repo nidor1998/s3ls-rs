@@ -288,6 +288,28 @@ fn sort_and_reverse_combo() {
 }
 
 // ===========================================================================
+// 4b. --no-sort
+// ===========================================================================
+
+#[test]
+fn no_sort_flag() {
+    let cli = parse_from_args(args(&["s3://bucket", "--no-sort"])).unwrap();
+    assert!(cli.no_sort);
+}
+
+#[test]
+fn no_sort_conflicts_with_sort() {
+    let result = parse_from_args(args(&["s3://bucket", "--no-sort", "--sort", "size"]));
+    assert!(result.is_err());
+}
+
+#[test]
+fn no_sort_conflicts_with_reverse() {
+    let result = parse_from_args(args(&["s3://bucket", "--no-sort", "--reverse"]));
+    assert!(result.is_err());
+}
+
+// ===========================================================================
 // 5. Display
 // ===========================================================================
 
@@ -673,6 +695,7 @@ fn verify_all_defaults() {
     // Sort
     assert_eq!(cli.sort, vec![SortField::Key]);
     assert!(!cli.reverse);
+    assert!(!cli.no_sort);
 
     // Display
     assert!(!cli.summary);

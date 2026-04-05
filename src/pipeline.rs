@@ -1,6 +1,6 @@
 use crate::aggregate::{
-    compute_statistics, format_entry, format_entry_json, format_header, format_summary,
-    sort_entries, FormatOptions,
+    accumulate_statistics, compute_statistics, format_entry, format_entry_json, format_header,
+    format_summary, sort_entries, FormatOptions,
 };
 use crate::config::Config;
 use crate::filters::build_filter_chain;
@@ -108,59 +108,95 @@ impl ListingPipeline {
             }
         });
 
-        // Aggregate: collect all filtered entries
-        let mut entries = Vec::new();
-        while let Some(entry) = rx.recv().await {
-            entries.push(entry);
-        }
-
-        match lister_handle.await {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => return Err(e),
-            Err(join_err) => {
-                return Err(anyhow::anyhow!("Lister+filter task panicked: {}", join_err));
-            }
-        }
-
-        // Sort
-        sort_entries(
-            &mut entries,
-            &self.config.sort,
-            self.config.reverse,
-        );
-
-        // Format and write output
-        let stdout = std::io::stdout();
-        let mut writer = std::io::BufWriter::new(stdout.lock());
-
+        // Format options and output setup
         let opts = FormatOptions::from_display_config(
             &self.config.display_config,
             self.config.target.prefix.clone(),
             self.config.all_versions,
         );
         let use_json = self.config.display_config.json;
+        let stdout = std::io::stdout();
+        let mut writer = std::io::BufWriter::new(stdout.lock());
 
         if !use_json && self.config.display_config.header {
             writeln!(writer, "{}", format_header(&opts))?;
         }
 
-        for entry in &entries {
-            let line = if use_json {
-                format_entry_json(entry)
-            } else {
-                format_entry(entry, &opts)
+        if self.config.no_sort {
+            // Streaming mode: write entries directly as they arrive
+            let mut stats = crate::types::ListingStatistics {
+                total_objects: 0,
+                total_size: 0,
+                total_versions: 0,
+                total_delete_markers: 0,
             };
-            writeln!(writer, "{line}")?;
-        }
+            let track_summary = self.config.display_config.summary;
 
-        // Summary
-        if self.config.display_config.summary {
-            let stats = compute_statistics(&entries);
-            let summary = format_summary(&stats, use_json, self.config.display_config.human, self.config.all_versions);
-            if !use_json {
-                writeln!(writer)?;
+            while let Some(entry) = rx.recv().await {
+                if track_summary {
+                    accumulate_statistics(&entry, &mut stats);
+                }
+                let line = if use_json {
+                    format_entry_json(&entry)
+                } else {
+                    format_entry(&entry, &opts)
+                };
+                writeln!(writer, "{line}")?;
             }
-            writeln!(writer, "{summary}")?;
+
+            match lister_handle.await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => return Err(e),
+                Err(join_err) => {
+                    return Err(anyhow::anyhow!("Lister+filter task panicked: {}", join_err));
+                }
+            }
+
+            if track_summary {
+                let summary = format_summary(&stats, use_json, self.config.display_config.human, self.config.all_versions);
+                if !use_json {
+                    writeln!(writer)?;
+                }
+                writeln!(writer, "{summary}")?;
+            }
+        } else {
+            // Aggregate mode: collect, sort, then output
+            let mut entries = Vec::new();
+            while let Some(entry) = rx.recv().await {
+                entries.push(entry);
+            }
+
+            match lister_handle.await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => return Err(e),
+                Err(join_err) => {
+                    return Err(anyhow::anyhow!("Lister+filter task panicked: {}", join_err));
+                }
+            }
+
+            sort_entries(
+                &mut entries,
+                &self.config.sort,
+                self.config.reverse,
+            );
+
+            for entry in &entries {
+                let line = if use_json {
+                    format_entry_json(entry)
+                } else {
+                    format_entry(entry, &opts)
+                };
+                writeln!(writer, "{line}")?;
+            }
+
+            if self.config.display_config.summary {
+                let stats = compute_statistics(&entries);
+                let summary = format_summary(&stats, use_json, self.config.display_config.human, self.config.all_versions);
+                if !use_json {
+                    writeln!(writer)?;
+                }
+                writeln!(writer, "{summary}")?;
+            }
         }
 
         writer.flush()?;

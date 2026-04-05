@@ -25,6 +25,7 @@ pub struct Config {
     // Sort
     pub sort: Vec<SortField>,
     pub reverse: bool,
+    pub no_sort: bool,
 
     // Display
     pub display_config: DisplayConfig,
@@ -79,6 +80,7 @@ impl Default for Config {
             filter_config: FilterConfig::default(),
             sort: vec![SortField::Key],
             reverse: false,
+            no_sort: false,
             display_config: DisplayConfig::default(),
             max_parallel_listings: 32,
             max_parallel_listing_max_depth: 2,

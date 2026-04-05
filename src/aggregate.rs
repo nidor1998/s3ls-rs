@@ -327,6 +327,23 @@ pub fn format_entry_json(entry: &ListEntry) -> String {
     }
 }
 
+/// Incrementally accumulate statistics for a single entry (streaming mode).
+pub fn accumulate_statistics(entry: &ListEntry, stats: &mut crate::types::ListingStatistics) {
+    match entry {
+        ListEntry::Object(obj) => {
+            stats.total_objects += 1;
+            stats.total_size += obj.size();
+            if obj.version_id().is_some() {
+                stats.total_versions += 1;
+            }
+        }
+        ListEntry::CommonPrefix(_) => {}
+        ListEntry::DeleteMarker { .. } => {
+            stats.total_delete_markers += 1;
+        }
+    }
+}
+
 pub fn compute_statistics(entries: &[ListEntry]) -> crate::types::ListingStatistics {
     let mut total_objects: u64 = 0;
     let mut total_size: u64 = 0;

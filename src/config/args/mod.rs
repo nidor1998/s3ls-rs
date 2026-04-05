@@ -177,6 +177,10 @@ pub struct CLIArgs {
     #[arg(long, default_value_t = false, help_heading = "Sort")]
     pub reverse: bool,
 
+    /// Disable sorting and stream results directly (reduces memory usage)
+    #[arg(long, default_value_t = false, conflicts_with_all = ["sort", "reverse"], help_heading = "Sort")]
+    pub no_sort: bool,
+
     // -----------------------------------------------------------------------
     // Display options
     // -----------------------------------------------------------------------
@@ -540,6 +544,7 @@ impl TryFrom<CLIArgs> for crate::config::Config {
             filter_config,
             sort,
             reverse: args.reverse,
+            no_sort: args.no_sort,
             display_config: crate::config::DisplayConfig {
                 summary: args.summary,
                 human: args.human,
