@@ -92,6 +92,10 @@ pub struct CLIArgs {
     #[arg(long, env = "LIST_ALL_VERSIONS", default_value_t = false, help_heading = "General")]
     pub all_versions: bool,
 
+    /// Maximum depth for recursive listing (requires --recursive)
+    #[arg(long, requires = "recursive", env = "MAX_DEPTH", help_heading = "General")]
+    pub max_depth: Option<u16>,
+
     /// List only Express One Zone directory buckets (when listing buckets)
     #[arg(long, default_value_t = false, help_heading = "General")]
     pub list_express_one_zone_buckets: bool,
@@ -519,6 +523,7 @@ impl TryFrom<CLIArgs> for crate::config::Config {
             target,
             recursive: args.recursive,
             all_versions: args.all_versions,
+            max_depth: args.max_depth,
             list_express_one_zone_buckets: args.list_express_one_zone_buckets,
             filter_config,
             sort,

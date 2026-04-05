@@ -44,6 +44,28 @@ fn all_versions() {
 }
 
 // ===========================================================================
+// 2b. --max-depth
+// ===========================================================================
+
+#[test]
+fn max_depth_with_recursive() {
+    let cli = parse_from_args(args(&["s3://bucket", "--recursive", "--max-depth", "3"])).unwrap();
+    assert_eq!(cli.max_depth, Some(3));
+}
+
+#[test]
+fn max_depth_without_recursive_rejected() {
+    let result = parse_from_args(args(&["s3://bucket", "--max-depth", "3"]));
+    assert!(result.is_err());
+}
+
+#[test]
+fn max_depth_default_is_none() {
+    let cli = parse_from_args(args(&["s3://bucket", "--recursive"])).unwrap();
+    assert!(cli.max_depth.is_none());
+}
+
+// ===========================================================================
 // 3. Filtering
 // ===========================================================================
 
@@ -591,6 +613,7 @@ fn verify_all_defaults() {
     // General
     assert!(!cli.recursive);
     assert!(!cli.all_versions);
+    assert!(cli.max_depth.is_none());
 
     // Filtering
     assert!(cli.filter_include_regex.is_none());
