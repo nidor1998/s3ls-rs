@@ -63,7 +63,7 @@ impl std::fmt::Display for SortField {
 ///
 /// Example:
 ///   s3ls s3://my-bucket/logs/
-///   s3ls s3://my-bucket/ --recursive --human --summary
+///   s3ls s3://my-bucket/ --recursive --human-readable --summarize
 ///   s3ls s3://my-bucket/data/ --sort size --reverse --json
 #[derive(Parser, Clone, Debug)]
 #[command(name = "s3ls", about, long_about = None, version)]

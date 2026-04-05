@@ -36,7 +36,7 @@ Filters are applied inline within the lister task as synchronous function calls,
    b. Create Lister stage with FilterChain (spawn async task)
    c. Create Aggregate stage (spawn async task)
    d. Wait for Aggregate to complete
-3. Return exit code (and statistics if --summary)
+3. Return exit code (and statistics if --summarize)
 ```
 
 The pipeline accepts a `PipelineCancellationToken` (a `tokio_util::sync::CancellationToken` type alias) that enables graceful shutdown. The Ctrl+C handler in the binary cancels this token to stop the pipeline.
@@ -139,17 +139,20 @@ When no `[TARGET]` is specified, s3ls enters **bucket listing mode** — lists a
 |------|-------------|---------|
 | `--sort <FIELD>[,<FIELD>]` | Sort by up to 2 comma-separated fields: `key`, `size`, `date`, `bucket` | `key` |
 | `--reverse` | Reverse sort order | false |
+| `--no-sort` | Disable sorting and stream results directly (reduces memory usage; conflicts with `--sort`, `--reverse`) | false |
 
 Sort accepts up to 2 comma-separated fields (e.g. `--sort date,key`). No duplicate fields allowed. The user's specification is the complete sort order — no hidden tie-breakers.
 
 When `--all-versions` is enabled and only one sort field is specified, `date` is automatically appended as a secondary sort so versions of the same key appear in chronological order. The `bucket` sort field is intended for bucket listing mode but also works in object listings (behaves same as `key`).
 
+When `--no-sort` is set, entries are streamed directly to stdout as they arrive from the lister, bypassing the collect-sort-output aggregate path. This eliminates memory buffering and is useful for large listings where order doesn't matter. Summary statistics (`--summarize`) are computed incrementally in this mode.
+
 ### Display
 
 | Flag | Description |
 |------|-------------|
-| `--summary` | Append summary line (total count, total size) |
-| `--human` | Human-readable sizes (e.g., `1.2KiB`); also affects `--summary` |
+| `--summarize` | Append summary line (total count, total size) |
+| `--human-readable` | Human-readable sizes (e.g., `1.2KiB`); also affects `--summarize` |
 | `--show-relative-path` | Show key relative to prefix instead of full path (default: full path) |
 | `--show-etag` | Show ETag column |
 | `--show-storage-class` | Show storage class column |
@@ -282,7 +285,7 @@ pub enum SortField {
 }
 ```
 
-### ListingStatistics (only computed when --summary)
+### ListingStatistics (only computed when --summarize)
 
 ```rust
 pub struct ListingStatistics {
@@ -356,6 +359,7 @@ pub struct Config {
     // Sort — always set, defaults to vec![Key]
     pub sort: Vec<SortField>,
     pub reverse: bool,
+    pub no_sort: bool,
 
     // Display (nested)
     pub display_config: DisplayConfig,
@@ -573,7 +577,7 @@ When `--max-depth N` is set with `--recursive`, the listing engine limits recurs
 3. If `--reverse`: reverse the combined comparison
 4. If `--header` and not `--json`: write header row
 5. Format and write each entry to `BufWriter<Stdout>` (tab-delimited)
-6. If `--summary`: write blank line then summary line
+6. If `--summarize`: write blank line then summary line
 
 ### Output Formats
 
@@ -623,7 +627,7 @@ Column values are padded to equal width (10 chars).
 - `ChecksumAlgorithm` is an array (e.g., `["CRC64NVME"]`)
 - `Owner` is a nested object: `{"DisplayName":"...","ID":"..."}`
 - `RestoreStatus` is a nested object: `{"IsRestoreInProgress":true,"RestoreExpiryDate":"..."}`
-- `--summary` appends: `{"summary":{"total_objects":2,"total_size":5680135}}`
+- `--summarize` appends: `{"summary":{"total_objects":2,"total_size":5680135}}`
 - CommonPrefix entries: `{"Prefix":"logs/"}`
 - Delete markers: `{"Key":"...","VersionId":"...","IsLatest":true,"LastModified":"..."}`
 
@@ -644,7 +648,7 @@ Enables `OptionalObjectAttributes=RestoreStatus` on `ListObjectsV2`.
 
 Total: 2 objects, 5.4MiB
 ```
-A blank line separates data from summary. With `--human`, sizes are human-readable; without, raw bytes: `Total: 2 objects, 5680135 bytes`.
+A blank line separates data from summary. With `--human-readable`, sizes are human-readable; without, raw bytes: `Total: 2 objects, 5680135 bytes`.
 
 **Bucket listing mode (no target):**
 ```
@@ -733,7 +737,7 @@ impl StorageTrait for MockStorage {
 ### Step 5: Aggregate Stage
 - Implement collect, sort, format, output
 - All display options: text, human, NDJSON, extra columns
-- Summary line (when `--summary`)
+- Summary line (when `--summarize`)
 - Non-recursive `PRE` formatting
 - Unit tests: sort by key/size/date, reverse, all formatting combinations (text, human, NDJSON, extra columns), summary output, PRE formatting
 - Deliverable: complete s3ls tool, all tests pass

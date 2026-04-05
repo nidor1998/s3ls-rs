@@ -29,7 +29,7 @@ s3ls --group-by-prefix --filter-include-regex '\.parquet$' s3://bucket/data/
 s3ls --group-by-prefix --json s3://bucket/
 
 # Human-readable sizes
-s3ls --group-by-prefix --human s3://bucket/
+s3ls --group-by-prefix --human-readable s3://bucket/
 ```
 
 ### Flag Compatibility
@@ -37,16 +37,16 @@ s3ls --group-by-prefix --human s3://bucket/
 **Incompatible flags** (rejected at parse time with a clear error):
 
 - `--sort` / `--reverse` — grouping produces its own ordering (alphabetical by prefix)
-- `--show-etag`, `--show-storage-class`, `--show-checksum-algorithm`, `--show-checksum-type`, `--show-owner`, `--show-restore-status`, `--show-is-latest`, `--show-fullpath` — per-object columns don't apply to groups
+- `--show-etag`, `--show-storage-class`, `--show-checksum-algorithm`, `--show-checksum-type`, `--show-owner`, `--show-restore-status`, `--show-is-latest`, `--show-relative-path` — per-object columns don't apply to groups
 - `--all-versions` — delete markers / version semantics don't map to group stats
 
 **Compatible flags:**
 
 - All filters (`--filter-include-regex`, `--filter-exclude-regex`, `--filter-mtime-before`, `--filter-mtime-after`, `--filter-smaller-size`, `--filter-larger-size`, `--storage-class`) — applied before grouping
-- `--human` — affects all size columns (TOTAL_SIZE, MIN_SIZE, MAX_SIZE, AVG_SIZE)
+- `--human-readable` — affects all size columns (TOTAL_SIZE, MIN_SIZE, MAX_SIZE, AVG_SIZE)
 - `--json` — NDJSON output per group
 - `--header` — column headers
-- `--summary` — grand total line after grouped output
+- `--summarize` — grand total line after grouped output
 - `--recursive` — implied by `--group-by-prefix` (grouping non-recursive listing is meaningless)
 
 ### Validation Rules
@@ -99,7 +99,7 @@ logs/	73001	483183820	64	1048576	6619	2024-06-01T00:00:00Z	2025-04-01T08:00:00Z
 ```
 
 - `--header` adds the header row; without it, data rows only
-- `--human` affects TOTAL_SIZE, MIN_SIZE, MAX_SIZE, AVG_SIZE
+- `--human-readable` affects TOTAL_SIZE, MIN_SIZE, MAX_SIZE, AVG_SIZE
 - AVG_SIZE is integer (floor division), displayed same as other sizes
 
 ### JSON Output (`--json`)
@@ -111,7 +111,7 @@ NDJSON, one line per group:
 {"prefix":"data/2025/","count":82000,"total_size":2638827906,"min_size":256,"max_size":104857600,"avg_size":32180,"oldest":"2025-01-01T00:00:00Z","newest":"2025-03-15T12:00:00Z"}
 ```
 
-### Summary (`--summary`)
+### Summary (`--summarize`)
 
 Text:
 ```
