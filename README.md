@@ -256,43 +256,43 @@ There are several tools that can list S3 objects, but none of them expose the fu
 
 ### Feature Comparison
 
-| Feature | s3ls | aws s3 ls | s5cmd ls | rclone lsl |
-|---------|:----:|:---------:|:--------:|:----------:|
+| Feature | s3ls | aws s3 ls | s5cmd ls | rclone lsl/lsjson |
+|---------|:----:|:---------:|:--------:|:-----------------:|
 | **Speed** | | | | |
-| Parallel listing | 32 concurrent | Sequential | Parallel | Parallel |
+| Parallel listing | 32 concurrent | Sequential | Parallel | Parallel (`--fast-list`) |
 | Throughput (200K objects) | ~1.5s | ~30s | ~24s | ~22s |
 | Streaming mode (no buffering) | `--no-sort` | - | - | - |
 | **Object Metadata** | | | | |
 | Key, Size, LastModified | Yes | Yes | Yes | Yes |
-| ETag | `--show-etag` | - | - | - |
-| StorageClass | `--show-storage-class` | - | Yes | - |
+| ETag | `--show-etag` | - | `--etag` | - |
+| StorageClass | `--show-storage-class` | - | `--storage-class` | Tier (via lsf/lsjson) |
 | ChecksumAlgorithm | `--show-checksum-algorithm` | - | - | - |
 | ChecksumType | `--show-checksum-type` | - | - | - |
 | Owner (DisplayName + ID) | `--show-owner` | - | - | - |
 | RestoreStatus | `--show-restore-status` | - | - | - |
 | **Versioning** | | | | |
-| List all versions | `--all-versions` | - | - | - |
+| List all versions | `--all-versions` | - | `--all-versions` | `--s3-versions` |
 | Show IsLatest | `--show-is-latest` | - | - | - |
 | Hide delete markers | `--hide-delete-marker` | - | - | - |
 | **Filtering** | | | | |
-| Regex include/exclude | Yes | - | Glob only | Filter |
-| Modified time range | Yes | - | Before/After | Time range |
-| Size range | Yes | - | Size filter | Size filter |
+| Regex include/exclude | Yes | - | `--exclude` (glob) | `--include`/`--exclude` (glob) |
+| Modified time range | Yes | - | - | `--max-age`/`--min-age` |
+| Size range | Yes | - | - | `--max-size`/`--min-size` |
 | Storage class filter | Yes | - | - | - |
 | **Output** | | | | |
 | Tab-delimited text | Yes | Space-padded | Space-padded | Space-padded |
-| NDJSON (S3 API-aligned) | `--json` | - | `--json` | `--json` |
+| NDJSON (S3 API-aligned keys) | `--json` | - | `--json` | lsjson |
 | Column headers | `--header` | - | - | - |
-| Human-readable sizes | `--human-readable` | Yes | Yes | - |
-| Summary statistics | `--summarize` | Yes | - | - |
-| Full path / relative path | Default full | Relative | Full | Relative |
+| Human-readable sizes | `--human-readable` | `--human-readable` | `--humanize` | rclone ls |
+| Summary statistics | `--summarize` | `--summarize` | - | - |
+| Full path / relative path | Default full | Relative | `--show-fullpath` | Relative |
 | **Listing Control** | | | | |
 | Depth-limited recursion | `--max-depth` | - | - | `--max-depth` |
 | PRE at depth boundary | Yes | - | - | - |
-| Non-recursive (PRE display) | Yes | Yes | Yes | - |
+| Non-recursive (PRE/DIR) | Yes (PRE) | Yes (PRE) | Yes (DIR) | `--max-depth 1` |
 | **Bucket Listing** | | | | |
 | List buckets | Yes | Yes | Yes | Yes |
-| Filter by name prefix | `--bucket-name-prefix` | - | - | - |
+| Filter by name prefix | `--bucket-name-prefix` | `--bucket-name-prefix` | - | - |
 | Show bucket ARN | `--show-bucket-arn` | - | - | - |
 | Express One Zone buckets | Yes | - | - | - |
 | **Sorting** | | | | |
@@ -302,10 +302,10 @@ There are several tools that can list S3 objects, but none of them expose the fu
 | **Infrastructure** | | | | |
 | Custom endpoint (MinIO, etc.) | Yes | Yes | Yes | Yes |
 | AWS profile support | Yes | Yes | Yes | Yes |
-| S3 Transfer Acceleration | Yes | Yes | - | - |
-| Requester-pays | Yes | Yes | - | - |
-| Shell completions | bash/zsh/fish/pwsh | - | - | bash |
-| Single static binary | Yes | No (Python) | Yes | Yes |
+| S3 Transfer Acceleration | Yes | Yes | - | Yes |
+| Requester-pays | Yes | Yes | Yes | Yes |
+| Shell completions | bash/zsh/fish/pwsh | - | bash/zsh/pwsh | bash/zsh/fish/pwsh |
+| Single static binary | Yes | No (Python) | Yes (Go) | Yes (Go) |
 
 ### Key Differentiators
 
@@ -315,15 +315,17 @@ There are several tools that can list S3 objects, but none of them expose the fu
 
 - **RestoreStatus** — When you restore objects from Glacier/Deep Archive, S3 tracks whether the restore is in progress and when it expires. This requires the `OptionalObjectAttributes=RestoreStatus` request parameter. s3ls is the only listing tool that supports this.
 
-- **Owner information** — S3 can return the object owner's DisplayName and ID, but it requires `fetch-owner=true` on the API call (which costs slightly more). Most tools skip this entirely. s3ls exposes it with `--show-owner` and renders it as a nested `Owner` object in JSON, matching the S3 API structure.
+- **Owner information** — S3 can return the object owner's DisplayName and ID, but it requires `fetch-owner=true` on the API call. No other CLI listing tool exposes this. s3ls shows it with `--show-owner` and renders it as a nested `Owner` object in JSON, matching the S3 API structure.
 
-- **Hide delete markers** — When listing versions, delete markers clutter the output. No other listing tool offers a way to filter them out. s3ls provides `--hide-delete-marker`.
+- **Hide delete markers** — When listing versions, delete markers clutter the output. While s5cmd and rclone support listing versions, neither offers a way to filter out delete markers. s3ls provides `--hide-delete-marker`.
 
-- **Depth-limited recursion with PRE** — `--max-depth` with `--recursive` lets you explore a bucket hierarchy level by level, showing "PRE" entries at the boundary just like non-recursive mode. This is invaluable for understanding the structure of unfamiliar buckets without listing millions of objects.
+- **Depth-limited recursion with PRE** — `--max-depth` with `--recursive` lets you explore a bucket hierarchy level by level, showing "PRE" entries at the boundary just like non-recursive mode. rclone supports `--max-depth` but does not emit prefix entries at the boundary.
 
-- **S3 API-aligned JSON** — The `--json` output uses PascalCase keys (`Key`, `Size`, `LastModified`, `ETag`, `StorageClass`) matching the S3 API exactly. Other tools use their own key naming conventions, making it harder to integrate with tools that already parse S3 API responses.
+- **S3 API-aligned JSON** — The `--json` output uses PascalCase keys (`Key`, `Size`, `LastModified`, `ETag`, `StorageClass`) matching the S3 API exactly. s5cmd uses snake_case (`key`, `size`, `last_modified`), and rclone lsjson uses its own schema (`Path`, `Name`, `Size`, `Tier`). s3ls is the only tool whose JSON can be processed with the same scripts that parse S3 API responses.
 
 - **Streaming mode** — `--no-sort` writes results directly as they arrive from S3, with zero memory buffering. For a bucket with 10 million objects, this is the difference between needing gigabytes of RAM and needing almost none.
+
+- **Comprehensive filtering** — s3ls combines regex include/exclude, time range, size range, and storage class filtering in a single tool. s5cmd only offers glob-based `--exclude`. rclone has include/exclude globs with age/size filters but lacks storage class filtering. Neither supports regex patterns.
 
 ## Shell Completions
 
