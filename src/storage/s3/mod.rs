@@ -264,6 +264,7 @@ pub(crate) struct ListingEngine<F: PageFetcher + Clone> {
     max_parallel_listing_max_depth: u16,
     allow_parallel_listings_in_express_one_zone: bool,
     listing_worker_semaphore: Arc<tokio::sync::Semaphore>,
+    max_depth: Option<u16>,
 }
 
 impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
@@ -571,6 +572,7 @@ impl S3Storage {
         request_payer: Option<RequestPayer>,
         max_parallel_listings: u16,
         max_parallel_listing_max_depth: u16,
+        max_depth: Option<u16>,
         allow_parallel_listings_in_express_one_zone: bool,
         fetch_owner: bool,
     ) -> Self {
@@ -600,6 +602,7 @@ impl S3Storage {
             max_parallel_listing_max_depth,
             allow_parallel_listings_in_express_one_zone,
             listing_worker_semaphore: Arc::new(tokio::sync::Semaphore::new(semaphore_size)),
+            max_depth,
         };
 
         Self { engine }
@@ -916,6 +919,7 @@ mod tests {
             listing_worker_semaphore: Arc::new(tokio::sync::Semaphore::new(
                 max_parallel.max(1) as usize,
             )),
+            max_depth: None,
         }
     }
 
@@ -1376,5 +1380,93 @@ mod tests {
         );
         // Token should have been cancelled
         assert!(token_check.is_cancelled());
+    }
+
+    // Helper: make_engine_with_max_depth — allows setting content max_depth
+    #[allow(clippy::too_many_arguments)]
+    fn make_engine_with_max_depth<F: PageFetcher + Clone + 'static>(
+        fetcher: F,
+        bucket: &str,
+        prefix: Option<&str>,
+        delimiter: Option<&str>,
+        max_parallel: u16,
+        max_depth: u16,
+        allow_express: bool,
+        content_max_depth: Option<u16>,
+    ) -> ListingEngine<F> {
+        let token = create_pipeline_cancellation_token();
+        ListingEngine {
+            fetcher,
+            bucket: bucket.to_string(),
+            prefix: prefix.map(|s| s.to_string()),
+            delimiter: delimiter.map(|s| s.to_string()),
+            cancellation_token: token,
+            max_parallel_listings: max_parallel,
+            max_parallel_listing_max_depth: max_depth,
+            allow_parallel_listings_in_express_one_zone: allow_express,
+            listing_worker_semaphore: Arc::new(tokio::sync::Semaphore::new(
+                max_parallel.max(1) as usize,
+            )),
+            max_depth: content_max_depth,
+        }
+    }
+
+    // 12. parallel_respects_max_depth
+    #[tokio::test]
+    async fn parallel_respects_max_depth() {
+        // Structure: p/ -> p/a/ -> p/a/deep/ -> p/a/deep/file.txt
+        // With max_depth=1, only objects directly in p/ and p/a/ should appear.
+        // p/a/deep/ should NOT be recursed into.
+        let mut map: HashMap<(Option<String>, Option<String>), Vec<ListPage>> = HashMap::new();
+
+        // Top level (depth 0): discovers sub-prefix a/
+        map.insert(
+            (Some("p/".to_string()), Some("/".to_string())),
+            vec![ListPage {
+                objects: vec![make_entry("p/root.txt")],
+                sub_prefixes: vec!["p/a/".to_string()],
+                is_truncated: false,
+                continuation_token: None,
+                key_marker: None,
+                version_id_marker: None,
+            }],
+        );
+
+        // Depth 1 (a/): discovers sub-prefix deep/, has direct objects
+        map.insert(
+            (Some("p/a/".to_string()), Some("/".to_string())),
+            vec![ListPage {
+                objects: vec![make_entry("p/a/file.txt")],
+                sub_prefixes: vec!["p/a/deep/".to_string()],
+                is_truncated: false,
+                continuation_token: None,
+                key_marker: None,
+                version_id_marker: None,
+            }],
+        );
+
+        // Depth 2 (deep/) — should NOT be reached with max_depth=1
+        map.insert(
+            (Some("p/a/deep/".to_string()), Some("/".to_string())),
+            vec![ListPage {
+                objects: vec![make_entry("p/a/deep/should_not_appear.txt")],
+                sub_prefixes: vec![],
+                is_truncated: false,
+                continuation_token: None,
+                key_marker: None,
+                version_id_marker: None,
+            }],
+        );
+
+        let fetcher = MockPageFetcher::from_map(map);
+        // max_depth content limit = 1 (only 1 level of sub-prefixes)
+        let engine = make_engine_with_max_depth(
+            fetcher, "bucket", Some("p/"), None, 4, 5, false, Some(1),
+        );
+        let entries = collect_entries(&engine, ListingMode::Objects, 1000).await.unwrap();
+
+        let mut keys: Vec<String> = entries.iter().map(|e| e.key().to_string()).collect();
+        keys.sort();
+        assert_eq!(keys, vec!["p/a/file.txt", "p/root.txt"]);
     }
 }
