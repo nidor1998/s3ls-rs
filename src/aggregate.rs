@@ -286,7 +286,6 @@ pub fn format_entry_json(entry: &ListEntry) -> String {
                 map.insert("VersionId".to_string(), serde_json::Value::String(vid.to_string()));
                 map.insert("IsLatest".to_string(), serde_json::json!(obj.is_latest()));
             }
-            // Owner as nested object matching S3 API structure
             let owner_id = obj.owner_id();
             let owner_name = obj.owner_display_name();
             if owner_id.is_some() || owner_name.is_some() {
