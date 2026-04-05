@@ -14,7 +14,7 @@ mod tests;
 // Default constants
 // ---------------------------------------------------------------------------
 
-const DEFAULT_MAX_PARALLEL_LISTINGS: u16 = 16;
+const DEFAULT_MAX_PARALLEL_LISTINGS: u16 = 32;
 const DEFAULT_PARALLEL_LISTING_MAX_DEPTH: u16 = 2;
 const DEFAULT_OBJECT_LISTING_QUEUE_SIZE: u32 = 200000;
 const DEFAULT_AWS_MAX_ATTEMPTS: u32 = 10;
@@ -139,6 +139,7 @@ pub struct CLIArgs {
         long,
         env,
         value_delimiter = ',',
+        value_parser = value_parser::storage_class::parse_storage_class,
         help_heading = "Filtering",
         long_help = "List only objects whose storage class is in the given list.\nMultiple classes can be separated by commas.\n\nExample: --storage-class STANDARD,GLACIER,DEEP_ARCHIVE"
     )]
@@ -185,6 +186,10 @@ pub struct CLIArgs {
     /// Show checksum type column
     #[arg(long, default_value_t = false, help_heading = "Display")]
     pub show_checksum_type: bool,
+
+    /// Show is_latest column (requires --all-versions)
+    #[arg(long, default_value_t = false, requires = "all_versions", help_heading = "Display")]
+    pub show_is_latest: bool,
 
     /// Output as NDJSON (one JSON object per line)
     #[arg(long, default_value_t = false, help_heading = "Display")]
@@ -466,12 +471,20 @@ impl TryFrom<CLIArgs> for crate::config::Config {
         let target_client_config = args.build_client_config();
         let tracing_config = args.build_tracing_config();
 
+        // When --all-versions is set and the user specified only one sort field,
+        // append Date as a secondary sort so versions of the same key appear in
+        // chronological order.
+        let mut sort = args.sort;
+        if args.all_versions && sort.len() == 1 && !sort.contains(&crate::config::args::SortField::Date) {
+            sort.push(crate::config::args::SortField::Date);
+        }
+
         Ok(crate::config::Config {
             target,
             recursive: args.recursive,
             all_versions: args.all_versions,
             filter_config,
-            sort: args.sort,
+            sort,
             reverse: args.reverse,
             display_config: crate::config::DisplayConfig {
                 summary: args.summary,
@@ -481,6 +494,7 @@ impl TryFrom<CLIArgs> for crate::config::Config {
                 show_storage_class: args.show_storage_class,
                 show_checksum_algorithm: args.show_checksum_algorithm,
                 show_checksum_type: args.show_checksum_type,
+                show_is_latest: args.show_is_latest,
                 json: args.json,
             },
             max_parallel_listings: args.max_parallel_listings,

@@ -10,6 +10,7 @@ pub struct FormatOptions {
     pub show_storage_class: bool,
     pub show_checksum_algorithm: bool,
     pub show_checksum_type: bool,
+    pub show_is_latest: bool,
     pub prefix: Option<String>,
 }
 
@@ -25,6 +26,7 @@ impl FormatOptions {
             show_storage_class: display_config.show_storage_class,
             show_checksum_algorithm: display_config.show_checksum_algorithm,
             show_checksum_type: display_config.show_checksum_type,
+            show_is_latest: display_config.show_is_latest,
             prefix,
         }
     }
@@ -50,10 +52,15 @@ fn format_key_display(entry_key: &str, opts: &FormatOptions) -> String {
     if opts.show_fullpath {
         entry_key.to_string()
     } else if let Some(ref prefix) = opts.prefix {
-        entry_key
+        let stripped = entry_key
             .strip_prefix(prefix.as_str())
             .unwrap_or(entry_key)
-            .to_string()
+            .trim_start_matches('/');
+        if stripped.is_empty() {
+            entry_key.to_string()
+        } else {
+            stripped.to_string()
+        }
     } else {
         entry_key.to_string()
     }
@@ -64,54 +71,90 @@ fn format_rfc3339(dt: &chrono::DateTime<chrono::Utc>) -> String {
 }
 
 pub fn format_entry(entry: &ListEntry, opts: &FormatOptions) -> String {
+    let mut cols: Vec<String> = Vec::new();
+
     match entry {
         ListEntry::CommonPrefix(_) => {
-            let key_display = format_key_display(entry.key(), opts);
-            format!("{:>30} PRE {}", "", key_display)
-        }
-        ListEntry::Object(obj) => {
-            let date = format_rfc3339(obj.last_modified());
-            let size = format_size(obj.size(), opts.human);
-            let key_display = format_key_display(entry.key(), opts);
-
-            // Build middle columns: extra columns then version_id, all before key
-            let mut middle = String::new();
+            // date
+            cols.push(String::new());
+            // size
+            cols.push("PRE".to_string());
+            // optional columns
             if opts.show_storage_class {
-                middle.push_str(&format!(
-                    " {}",
-                    obj.storage_class().unwrap_or("STANDARD")
-                ));
+                cols.push(String::new());
             }
             if opts.show_etag {
-                middle.push_str(&format!(" {}", obj.e_tag()));
+                cols.push(String::new());
             }
-            if opts.show_checksum_algorithm
-                && let Some(algo) = obj.checksum_algorithm()
-            {
-                middle.push_str(&format!(" {algo}"));
+            if opts.show_checksum_algorithm {
+                cols.push(String::new());
             }
-            if opts.show_checksum_type
-                && let Some(ctype) = obj.checksum_type()
-            {
-                middle.push_str(&format!(" {ctype}"));
+            if opts.show_checksum_type {
+                cols.push(String::new());
             }
-            if let Some(version_id) = obj.version_id() {
-                middle.push_str(&format!(" {version_id}"));
+            // version_id is only present in versioned entries; PRE never has one,
+            // but we still need the placeholder when other versioned rows exist.
+            // However, we can't know here whether the listing has versions, so
+            // we skip — version_id is always the last optional column before key
+            // and only appears on versioned objects/delete markers.
+            if opts.show_is_latest {
+                cols.push(String::new());
             }
-
-            format!("{date} {size:>10}{middle} {key_display}")
+            // key
+            cols.push(format_key_display(entry.key(), opts));
+        }
+        ListEntry::Object(obj) => {
+            cols.push(format_rfc3339(obj.last_modified()));
+            cols.push(format_size(obj.size(), opts.human));
+            if opts.show_storage_class {
+                cols.push(obj.storage_class().unwrap_or("STANDARD").to_string());
+            }
+            if opts.show_etag {
+                cols.push(obj.e_tag().trim_matches('"').to_string());
+            }
+            if opts.show_checksum_algorithm {
+                cols.push(obj.checksum_algorithm().unwrap_or("").to_string());
+            }
+            if opts.show_checksum_type {
+                cols.push(obj.checksum_type().unwrap_or("").to_string());
+            }
+            if let Some(vid) = obj.version_id() {
+                cols.push(vid.to_string());
+            }
+            if opts.show_is_latest && obj.version_id().is_some() {
+                cols.push(if obj.is_latest() { "LATEST".to_string() } else { "NOT_LATEST".to_string() });
+            }
+            cols.push(format_key_display(entry.key(), opts));
         }
         ListEntry::DeleteMarker {
             key,
             version_id,
             last_modified,
-            ..
+            is_latest,
         } => {
-            let date = format_rfc3339(last_modified);
-            let key_display = format_key_display(key, opts);
-            format!("{date} {:>10} {version_id} (delete marker) {key_display}", "0")
+            cols.push(format_rfc3339(last_modified));
+            cols.push("DELETE".to_string());
+            if opts.show_storage_class {
+                cols.push(String::new());
+            }
+            if opts.show_etag {
+                cols.push(String::new());
+            }
+            if opts.show_checksum_algorithm {
+                cols.push(String::new());
+            }
+            if opts.show_checksum_type {
+                cols.push(String::new());
+            }
+            cols.push(version_id.clone());
+            if opts.show_is_latest {
+                cols.push(if *is_latest { "LATEST".to_string() } else { "NOT_LATEST".to_string() });
+            }
+            cols.push(format_key_display(key, opts));
         }
     }
+
+    cols.join("\t")
 }
 
 fn cmp_mtime(a: &ListEntry, b: &ListEntry) -> std::cmp::Ordering {
@@ -156,7 +199,7 @@ pub fn format_entry_json(entry: &ListEntry) -> String {
                 "last_modified".to_string(),
                 serde_json::Value::String(obj.last_modified().to_rfc3339()),
             );
-            map.insert("e_tag".to_string(), serde_json::Value::String(obj.e_tag().to_string()));
+            map.insert("e_tag".to_string(), serde_json::Value::String(obj.e_tag().trim_matches('"').to_string()));
             if let Some(sc) = obj.storage_class() {
                 map.insert("storage_class".to_string(), serde_json::Value::String(sc.to_string()));
             }
@@ -231,6 +274,7 @@ pub fn compute_statistics(entries: &[ListEntry]) -> crate::types::ListingStatist
 pub fn format_summary(
     stats: &crate::types::ListingStatistics,
     json: bool,
+    human: bool,
     all_versions: bool,
 ) -> String {
     if json {
@@ -248,7 +292,11 @@ pub fn format_summary(
         map.insert("summary".to_string(), serde_json::Value::Object(summary));
         serde_json::to_string(&map).unwrap()
     } else {
-        let size_str = format_size(stats.total_size, true);
+        let size_str = if human {
+            format_size(stats.total_size, true)
+        } else {
+            format!("{} bytes", stats.total_size)
+        };
         let mut line = format!("Total: {} objects, {}", stats.total_objects, size_str);
         if all_versions {
             line.push_str(&format!(
@@ -404,7 +452,6 @@ mod tests {
 
     #[test]
     fn format_text_extra_columns_before_key() {
-        // Spec: 2024-01-15T10:30:00Z       1234 STANDARD "abc123" readme.txt
         let entry = make_entry("readme.txt", 1234, 2024, 1);
         let opts = FormatOptions {
             show_etag: true,
@@ -412,14 +459,14 @@ mod tests {
             ..Default::default()
         };
         let line = format_entry(&entry, &opts);
-        // storage_class and etag appear between size and key
-        let size_pos = line.find("1234").unwrap();
-        let class_pos = line.find("STANDARD").unwrap();
-        let etag_pos = line.find("\"e\"").unwrap();
-        let key_pos = line.find("readme.txt").unwrap();
-        assert!(size_pos < class_pos, "size before class");
-        assert!(class_pos < etag_pos, "class before etag");
-        assert!(etag_pos < key_pos, "etag before key");
+        // Tab-delimited: date \t size \t storage_class \t etag \t key
+        let fields: Vec<&str> = line.split('\t').collect();
+        assert_eq!(fields.len(), 5);
+        assert!(fields[0].contains("2024-01-01"));
+        assert_eq!(fields[1], "1234");
+        assert_eq!(fields[2], "STANDARD");
+        assert_eq!(fields[3], "e"); // quotes stripped
+        assert_eq!(fields[4], "readme.txt");
     }
 
     #[test]
@@ -448,7 +495,7 @@ mod tests {
 
     #[test]
     fn format_text_delete_marker() {
-        // Spec: 2024-01-16T09:00:00Z          0 def456-version-id (delete marker) readme.txt
+        // Spec: 2024-01-16T09:00:00Z     DELETE def456-version-id readme.txt
         let entry = ListEntry::DeleteMarker {
             key: "readme.txt".to_string(),
             version_id: "def456-version-id".to_string(),
@@ -458,13 +505,13 @@ mod tests {
         let opts = FormatOptions::default();
         let line = format_entry(&entry, &opts);
         assert!(line.contains("2024-01-16T09:00:00Z"));
-        let zero_pos = line.find('0').unwrap();
+        assert!(line.contains("DELETE"));
+        assert!(!line.contains("(delete marker)"));
+        let delete_pos = line.find("DELETE").unwrap();
         let vid_pos = line.find("def456-version-id").unwrap();
-        let marker_pos = line.find("(delete marker)").unwrap();
         let key_pos = line.rfind("readme.txt").unwrap();
-        assert!(zero_pos < vid_pos, "0 before version_id");
-        assert!(vid_pos < marker_pos, "version_id before (delete marker)");
-        assert!(marker_pos < key_pos, "(delete marker) before key");
+        assert!(delete_pos < vid_pos, "DELETE before version_id");
+        assert!(vid_pos < key_pos, "version_id before key");
     }
 
     #[test]
@@ -517,7 +564,7 @@ mod tests {
             total_versions: 0,
             total_delete_markers: 0,
         };
-        let summary = format_summary(&stats, false, false);
+        let summary = format_summary(&stats, false, true, false);
         assert!(summary.contains("42 objects"));
         assert!(summary.contains("5.4MiB"));
     }
@@ -530,7 +577,7 @@ mod tests {
             total_versions: 0,
             total_delete_markers: 0,
         };
-        let summary = format_summary(&stats, true, false);
+        let summary = format_summary(&stats, true, false, false);
         let parsed: serde_json::Value = serde_json::from_str(&summary).unwrap();
         assert_eq!(parsed["summary"]["total_objects"], 10);
         assert_eq!(parsed["summary"]["total_size"], 1024);
@@ -544,7 +591,7 @@ mod tests {
             total_versions: 15,
             total_delete_markers: 3,
         };
-        let summary = format_summary(&stats, false, true);
+        let summary = format_summary(&stats, false, false, true);
         assert!(summary.contains("15 versions"));
         assert!(summary.contains("3 delete markers"));
     }

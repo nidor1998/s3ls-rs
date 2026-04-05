@@ -72,7 +72,7 @@ impl Default for Config {
             sort: vec![SortField::Key],
             reverse: false,
             display_config: DisplayConfig::default(),
-            max_parallel_listings: 16,
+            max_parallel_listings: 32,
             max_parallel_listing_max_depth: 2,
             object_listing_queue_size: 200_000,
             allow_parallel_listings_in_express_one_zone: false,
@@ -106,6 +106,7 @@ pub struct DisplayConfig {
     pub show_storage_class: bool,
     pub show_checksum_algorithm: bool,
     pub show_checksum_type: bool,
+    pub show_is_latest: bool,
     pub json: bool,
 }
 

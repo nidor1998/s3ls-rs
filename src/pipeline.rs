@@ -147,7 +147,7 @@ impl ListingPipeline {
         // Summary
         if self.config.display_config.summary {
             let stats = compute_statistics(&entries);
-            let summary = format_summary(&stats, use_json, self.config.all_versions);
+            let summary = format_summary(&stats, use_json, self.config.display_config.human, self.config.all_versions);
             writeln!(writer, "{summary}")?;
         }
 

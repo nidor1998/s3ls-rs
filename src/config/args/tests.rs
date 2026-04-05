@@ -636,7 +636,7 @@ fn verify_all_defaults() {
     assert!(!cli.disable_stalled_stream_protection);
 
     // Performance
-    assert_eq!(cli.max_parallel_listings, 16);
+    assert_eq!(cli.max_parallel_listings, 32);
     assert_eq!(cli.max_parallel_listing_max_depth, 2);
     assert_eq!(cli.object_listing_queue_size, 200000);
     assert!(!cli.allow_parallel_listings_in_express_one_zone);
