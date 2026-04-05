@@ -285,12 +285,11 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
             if self.cancellation_token.is_cancelled() {
                 return Ok(true);
             }
-            if let Some(max_depth) = self.max_depth {
-                if let Some(depth) = self.key_depth(entry.key()) {
-                    if depth > max_depth {
-                        continue;
-                    }
-                }
+            if let Some(max_depth) = self.max_depth
+                && let Some(depth) = self.key_depth(entry.key())
+                && depth > max_depth
+            {
+                continue;
             }
             if sender.send(entry).await.is_err() {
                 return Ok(true); // receiver dropped
@@ -445,10 +444,10 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
 
             // Content depth limit: at recursion depth D, objects have key-depth D+1.
             // Stop fetching when key-depth would exceed max_depth.
-            if let Some(max_depth) = self.max_depth {
-                if depth >= max_depth {
-                    return Ok(());
-                }
+            if let Some(max_depth) = self.max_depth
+                && depth >= max_depth
+            {
+                return Ok(());
             }
 
             // Beyond max parallel depth: switch to sequential with no delimiter

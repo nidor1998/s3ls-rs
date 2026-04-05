@@ -68,10 +68,10 @@ async fn run(config: Config) -> Result<()> {
         return match bucket_lister::list_buckets(&config).await {
             Ok(()) => Ok(()),
             Err(e) => {
-                if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
-                    if io_err.kind() == std::io::ErrorKind::BrokenPipe {
-                        return Ok(());
-                    }
+                if let Some(io_err) = e.downcast_ref::<std::io::Error>()
+                    && io_err.kind() == std::io::ErrorKind::BrokenPipe
+                {
+                    return Ok(());
                 }
                 error!("{}", e);
                 std::process::exit(1);
@@ -96,10 +96,10 @@ async fn run(config: Config) -> Result<()> {
         }
         Err(e) => {
             // Broken pipe is expected when piped to head/tail — exit silently.
-            if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
-                if io_err.kind() == std::io::ErrorKind::BrokenPipe {
-                    return Ok(());
-                }
+            if let Some(io_err) = e.downcast_ref::<std::io::Error>()
+                && io_err.kind() == std::io::ErrorKind::BrokenPipe
+            {
+                return Ok(());
             }
             let duration_sec = format!("{:.3}", start_time.elapsed().as_secs_f32());
             if is_cancelled_error(&e) {

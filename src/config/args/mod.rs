@@ -24,9 +24,7 @@ const DEFAULT_MAX_KEYS: i32 = 1000;
 const ERROR_MESSAGE_INVALID_TARGET: &str = "target must be an S3 path (e.g. s3://bucket/prefix)";
 
 fn check_s3_target(s: &str) -> Result<String, String> {
-    if s.is_empty() {
-        Ok(s.to_string())
-    } else if s.starts_with("s3://") && s.len() > 5 {
+    if s.is_empty() || (s.starts_with("s3://") && s.len() > 5) {
         Ok(s.to_string())
     } else {
         Err(ERROR_MESSAGE_INVALID_TARGET.to_string())

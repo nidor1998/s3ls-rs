@@ -928,3 +928,23 @@ fn config_tracing_config_info_with_verbose() {
         clap_verbosity_flag::log::Level::Info
     );
 }
+
+#[test]
+fn config_max_depth_wired_through() {
+    let config = build_config_from_args(vec![
+        "s3ls",
+        "s3://bucket/prefix/",
+        "--recursive",
+        "--max-depth",
+        "5",
+    ])
+    .unwrap();
+    assert_eq!(config.max_depth, Some(5));
+    assert!(config.recursive);
+}
+
+#[test]
+fn config_max_depth_none_by_default() {
+    let config = build_config_from_args(vec!["s3ls", "s3://bucket/", "--recursive"]).unwrap();
+    assert!(config.max_depth.is_none());
+}
