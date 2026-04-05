@@ -1,0 +1,236 @@
+# s3ls
+
+Ultra-fast S3 object listing tool written in Rust.
+
+**200,000 objects listed in 1.4 seconds** — that's ~145,000 objects/sec, achieved through massively parallel S3 API calls.
+
+```
+$ time s3ls --recursive s3://data.cpp17.org | wc -l
+  200002
+
+real    1.38s
+```
+
+For comparison, `aws s3 ls --recursive` typically processes around 5,000-8,000 objects/sec on the same bucket. s3ls is **~20x faster**.
+
+## Why s3ls?
+
+The standard `aws s3 ls` command makes sequential `ListObjectsV2` API calls — one page at a time. When you have hundreds of thousands or millions of objects, this becomes painfully slow.
+
+s3ls takes a fundamentally different approach:
+
+1. **Parallel prefix discovery** — It uses the S3 delimiter feature to discover "virtual directories" (common prefixes) at the top levels of your bucket hierarchy.
+2. **Concurrent listing** — Each discovered prefix is listed independently and concurrently, with up to 32 parallel listing operations by default.
+3. **Semaphore-gated parallelism** — A configurable semaphore prevents overwhelming S3 while maximizing throughput.
+
+This architecture means s3ls gets faster on buckets with well-distributed prefix hierarchies — exactly the kind of buckets that are slowest with sequential tools.
+
+## Installation
+
+Download a pre-built binary from [GitHub Releases](https://github.com/nidor1998/s3ls-rs/releases) for your platform:
+
+| Platform | Binary |
+|----------|--------|
+| Linux x86_64 (glibc 2.28+) | `s3ls-*-linux-glibc2.28-x86_64.tar.gz` |
+| Linux x86_64 (musl, static) | `s3ls-*-linux-musl-x86_64.tar.gz` |
+| Linux aarch64 (glibc 2.28+) | `s3ls-*-linux-glibc2.28-aarch64.tar.gz` |
+| Linux aarch64 (musl, static) | `s3ls-*-linux-musl-aarch64.tar.gz` |
+| macOS Apple Silicon | `s3ls-*-macos-aarch64.tar.gz` |
+| Windows x86_64 | `s3ls-*-windows-x86_64.tar.gz` |
+| Windows ARM64 | `s3ls-*-windows-aarch64.tar.gz` |
+
+Or build from source:
+
+```bash
+cargo install --git https://github.com/nidor1998/s3ls-rs.git
+```
+
+## Quick Start
+
+```bash
+# List objects in a bucket (non-recursive, like `ls`)
+s3ls s3://my-bucket/
+
+# List all objects recursively
+s3ls --recursive s3://my-bucket/
+
+# List with human-readable sizes and summary
+s3ls --recursive --human-readable --summarize s3://my-bucket/
+
+# List all your buckets
+s3ls
+```
+
+## Usage Examples
+
+### Basic Listing
+
+```bash
+# Non-recursive — shows objects and prefixes (PRE) at the current level
+$ s3ls s3://my-bucket/data/
+                                 	PRE	data/2024/
+                                 	PRE	data/2025/
+2024-01-15T10:30:00Z	1234	data/readme.txt
+
+# Recursive — all objects under a prefix
+$ s3ls --recursive s3://my-bucket/data/
+2024-01-15T10:30:00Z	1234	data/readme.txt
+2024-06-01T08:00:00Z	5678	data/2024/report.csv
+2025-01-20T14:30:00Z	9012	data/2025/summary.json
+```
+
+### Filtering
+
+```bash
+# Only .csv files
+s3ls --recursive --filter-include-regex '\.csv$' s3://my-bucket/
+
+# Exclude temporary files
+s3ls --recursive --filter-exclude-regex '^tmp/' s3://my-bucket/
+
+# Files modified after a date
+s3ls --recursive --filter-mtime-after 2025-01-01T00:00:00Z s3://my-bucket/
+
+# Files larger than 100MB
+s3ls --recursive --filter-larger-size 100MiB s3://my-bucket/
+
+# Only GLACIER storage class
+s3ls --recursive --storage-class GLACIER s3://my-bucket/
+
+# Combine multiple filters (AND logic)
+s3ls --recursive \
+  --filter-include-regex '\.parquet$' \
+  --filter-larger-size 1GiB \
+  --filter-mtime-after 2025-01-01T00:00:00Z \
+  s3://my-bucket/data/
+```
+
+### Sorting
+
+```bash
+# Sort by size (largest first)
+s3ls --recursive --sort size --reverse s3://my-bucket/
+
+# Sort by date, then by key
+s3ls --recursive --sort date,key s3://my-bucket/
+
+# Stream results without sorting (lower memory usage for huge buckets)
+s3ls --recursive --no-sort s3://my-bucket/
+```
+
+### Display Options
+
+```bash
+# Human-readable sizes with summary
+s3ls --recursive --human-readable --summarize s3://my-bucket/
+
+# Show extra columns
+s3ls --recursive --show-etag --show-storage-class s3://my-bucket/
+
+# Add column headers
+s3ls --recursive --header --show-storage-class s3://my-bucket/
+
+# Show relative paths instead of full keys
+s3ls --recursive --show-relative-path s3://my-bucket/data/
+```
+
+### JSON Output
+
+```bash
+# NDJSON output (one JSON object per line) — includes all available fields
+s3ls --recursive --json s3://my-bucket/
+
+# Pipe to jq for further processing
+s3ls --recursive --json s3://my-bucket/ | jq 'select(.Size > 1000000)'
+
+# JSON output with summary
+s3ls --recursive --json --summarize s3://my-bucket/
+```
+
+JSON output uses PascalCase keys matching the S3 API (`Key`, `Size`, `LastModified`, `ETag`, `StorageClass`, etc.) and always includes all available fields regardless of `--show-*` flags.
+
+### Version Listing
+
+```bash
+# List all object versions including delete markers
+s3ls --recursive --all-versions s3://my-bucket/
+
+# Show which version is latest
+s3ls --recursive --all-versions --show-is-latest s3://my-bucket/
+
+# Hide delete markers
+s3ls --recursive --all-versions --hide-delete-marker s3://my-bucket/
+```
+
+### Depth-Limited Recursive Listing
+
+```bash
+# Recursive but only 2 levels deep — shows PRE for deeper prefixes
+s3ls --recursive --max-depth 2 s3://my-bucket/
+
+# Useful for exploring bucket structure without listing everything
+s3ls --recursive --max-depth 1 s3://my-bucket/data/
+```
+
+### Bucket Listing
+
+```bash
+# List all buckets
+s3ls
+
+# Filter by name prefix
+s3ls --bucket-name-prefix data
+
+# Show bucket ARNs
+s3ls --show-bucket-arn
+
+# List Express One Zone directory buckets
+s3ls --list-express-one-zone-buckets
+```
+
+### S3-Compatible Services
+
+```bash
+# MinIO
+s3ls --target-endpoint-url http://localhost:9000 \
+     --target-force-path-style \
+     --target-access-key minioadmin \
+     --target-secret-access-key minioadmin \
+     s3://my-bucket/
+
+# Use a named AWS profile
+s3ls --target-profile production s3://my-bucket/
+```
+
+## Performance Tuning
+
+s3ls defaults are tuned for most workloads, but you can adjust for specific scenarios:
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--max-parallel-listings` | 32 | Number of concurrent S3 API listing calls |
+| `--max-parallel-listing-max-depth` | 2 | How deep to discover prefixes before switching to sequential |
+| `--no-sort` | off | Stream results directly without buffering in memory |
+
+For very large buckets (millions of objects), consider:
+
+```bash
+# Stream results without sorting to avoid memory buffering
+s3ls --recursive --no-sort s3://huge-bucket/
+
+# Increase parallelism for deep hierarchies
+s3ls --recursive --max-parallel-listings 64 --max-parallel-listing-max-depth 3 s3://deep-bucket/
+```
+
+## Shell Completions
+
+```bash
+# Generate completions for your shell
+s3ls --auto-complete-shell bash > /etc/bash_completion.d/s3ls
+s3ls --auto-complete-shell zsh > ~/.zfunc/_s3ls
+s3ls --auto-complete-shell fish > ~/.config/fish/completions/s3ls.fish
+```
+
+## License
+
+Apache-2.0
