@@ -18,7 +18,7 @@ const EXIT_CODE_WARNING: i32 = 3;
 #[allow(dead_code)]
 const EXIT_CODE_ABNORMAL_TERMINATION: i32 = 101;
 
-/// s3ls - Ultra-fast S3 object listing tool.
+/// s3ls - Fast S3 object listing tool.
 ///
 /// This binary is a thin wrapper over the s3ls-rs library.
 /// All core functionality is implemented in the library crate.

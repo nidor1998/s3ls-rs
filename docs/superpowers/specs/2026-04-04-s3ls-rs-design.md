@@ -2,7 +2,7 @@
 
 ## Overview
 
-s3ls-rs is an ultra-fast S3 object listing tool that reuses over 95% of the source code from [nidor1998/s3rm-rs](https://github.com/nidor1998/s3rm-rs). Its key feature is ultra-fast object listing (approximately 100,000 objects per second) utilizing s3rm-rs's parallel listing functionality.
+s3ls-rs is a fast S3 object listing tool that reuses over 95% of the source code from [nidor1998/s3rm-rs](https://github.com/nidor1998/s3rm-rs). Its key feature is fast object listing (approximately 100,000 objects per second) utilizing s3rm-rs's parallel listing functionality.
 
 This is a code reuse (copy-and-modify) approach, not a fork. The two codebases are independent going forward.
 

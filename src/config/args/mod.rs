@@ -57,7 +57,7 @@ impl std::fmt::Display for SortField {
     }
 }
 
-/// s3ls - Ultra-fast S3 object listing tool.
+/// s3ls - Fast S3 object listing tool.
 ///
 /// List objects in S3 buckets with filtering, sorting, and multiple output formats.
 ///

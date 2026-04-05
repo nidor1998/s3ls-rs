@@ -1,6 +1,6 @@
 # s3ls
 
-Ultra-fast S3 object listing tool written in Rust.
+Fast S3 object listing tool written in Rust.
 
 **200,000 objects listed in 1.4 seconds** — that's ~145,000 objects/sec, achieved through massively parallel S3 API calls.
 

@@ -3,7 +3,7 @@ name = "s3ls-rs"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-description = "Ultra-fast S3 object listing tool"
+description = "Fast S3 object listing tool"
 repository = "https://github.com/nidor1998/s3ls-rs"
 
 [dependencies]
