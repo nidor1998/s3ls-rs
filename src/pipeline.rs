@@ -190,6 +190,7 @@ impl ListingPipeline {
             self.config.max_parallel_listings,
             self.config.max_parallel_listing_max_depth,
             self.config.allow_parallel_listings_in_express_one_zone,
+            self.config.display_config.show_owner || self.config.display_config.show_restore_status || self.config.display_config.json,
         )
         .await;
 
@@ -215,6 +216,10 @@ mod tests {
                 storage_class: Some("STANDARD".to_string()),
                 checksum_algorithm: None,
                 checksum_type: None,
+            owner_display_name: None,
+            owner_id: None,
+            is_restore_in_progress: None,
+            restore_expiry_date: None,
             }),
             ListEntry::CommonPrefix("logs/".to_string()),
         ]

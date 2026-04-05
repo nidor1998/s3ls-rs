@@ -8,6 +8,9 @@ use std::io::Write;
 struct BucketEntry {
     name: String,
     creation_date: Option<DateTime<Utc>>,
+    region: Option<String>,
+    owner_display_name: Option<String>,
+    owner_id: Option<String>,
 }
 
 pub async fn list_buckets(config: &Config) -> Result<()> {
@@ -18,7 +21,7 @@ pub async fn list_buckets(config: &Config) -> Result<()> {
 
     let client = client_config.create_client().await;
 
-    let mut entries = if config.list_express_one_zone_bucket {
+    let mut entries = if config.list_express_one_zone_buckets {
         list_directory_buckets(&client).await?
     } else {
         list_general_buckets(&client).await?
@@ -31,6 +34,7 @@ pub async fn list_buckets(config: &Config) -> Result<()> {
             cmp = cmp.then_with(|| match field {
                 SortField::Bucket | SortField::Key => a.name.cmp(&b.name),
                 SortField::Date => a.creation_date.cmp(&b.creation_date),
+                SortField::Region => a.region.cmp(&b.region),
                 SortField::Size => std::cmp::Ordering::Equal,
             });
         }
@@ -40,8 +44,14 @@ pub async fn list_buckets(config: &Config) -> Result<()> {
     let stdout = std::io::stdout();
     let mut writer = std::io::BufWriter::new(stdout.lock());
 
+    let show_owner = config.display_config.show_owner;
+
     if config.display_config.header && !config.display_config.json {
-        writeln!(writer, "DATE\tBUCKET")?;
+        let mut header = "DATE\tREGION\tBUCKET".to_string();
+        if show_owner {
+            header.push_str("\tOWNER_DISPLAY_NAME\tOWNER_ID");
+        }
+        writeln!(writer, "{header}")?;
     }
 
     for entry in &entries {
@@ -49,15 +59,35 @@ pub async fn list_buckets(config: &Config) -> Result<()> {
             .creation_date
             .map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
             .unwrap_or_default();
+        let region = entry.region.as_deref().unwrap_or("");
         if config.display_config.json {
             let mut map = serde_json::Map::new();
             map.insert("bucket".to_string(), serde_json::Value::String(entry.name.clone()));
             if let Some(d) = entry.creation_date {
                 map.insert("creation_date".to_string(), serde_json::Value::String(d.to_rfc3339()));
             }
+            if let Some(ref r) = entry.region {
+                map.insert("region".to_string(), serde_json::Value::String(r.clone()));
+            }
+            if show_owner {
+                if let Some(ref name) = entry.owner_display_name {
+                    map.insert("owner_display_name".to_string(), serde_json::Value::String(name.clone()));
+                }
+                if let Some(ref id) = entry.owner_id {
+                    map.insert("owner_id".to_string(), serde_json::Value::String(id.clone()));
+                }
+            }
             writeln!(writer, "{}", serde_json::to_string(&map).unwrap())?;
         } else {
-            writeln!(writer, "{date}\t{}", entry.name)?;
+            let mut line = format!("{date}\t{region}\t{}", entry.name);
+            if show_owner {
+                line.push_str(&format!(
+                    "\t{}\t{}",
+                    entry.owner_display_name.as_deref().unwrap_or(""),
+                    entry.owner_id.as_deref().unwrap_or("")
+                ));
+            }
+            writeln!(writer, "{line}")?;
         }
     }
 
@@ -66,20 +96,40 @@ pub async fn list_buckets(config: &Config) -> Result<()> {
 }
 
 async fn list_general_buckets(client: &Client) -> Result<Vec<BucketEntry>> {
-    let resp = client
-        .list_buckets()
-        .send()
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to list buckets: {e}"))?;
+    let mut entries = Vec::new();
+    let mut continuation_token: Option<String> = None;
 
-    let entries = resp
-        .buckets()
-        .iter()
-        .map(|b| BucketEntry {
-            name: b.name().unwrap_or_default().to_string(),
-            creation_date: b.creation_date().and_then(aws_datetime_to_chrono),
-        })
-        .collect();
+    loop {
+        let mut req = client.list_buckets().max_buckets(1000);
+        if let Some(ref token) = continuation_token {
+            req = req.continuation_token(token);
+        }
+
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to list buckets: {e}"))?;
+
+        let owner_display_name = resp.owner().and_then(|o| o.display_name()).map(|s| s.to_string());
+        let owner_id = resp.owner().and_then(|o| o.id()).map(|s| s.to_string());
+
+        for b in resp.buckets() {
+            entries.push(BucketEntry {
+                name: b.name().unwrap_or_default().to_string(),
+                creation_date: b.creation_date().and_then(aws_datetime_to_chrono),
+                region: b.bucket_region().map(|r| r.to_string()),
+                owner_display_name: owner_display_name.clone(),
+                owner_id: owner_id.clone(),
+            });
+        }
+
+        match resp.continuation_token() {
+            Some(token) if !token.is_empty() => {
+                continuation_token = Some(token.to_string());
+            }
+            _ => break,
+        }
+    }
 
     Ok(entries)
 }
@@ -103,6 +153,9 @@ async fn list_directory_buckets(client: &Client) -> Result<Vec<BucketEntry>> {
             entries.push(BucketEntry {
                 name: b.name().unwrap_or_default().to_string(),
                 creation_date: b.creation_date().and_then(aws_datetime_to_chrono),
+                region: b.bucket_region().map(|r| r.to_string()),
+                owner_display_name: None,
+                owner_id: None,
             });
         }
 

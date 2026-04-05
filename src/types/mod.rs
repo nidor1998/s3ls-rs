@@ -158,6 +158,10 @@ pub enum S3Object {
         storage_class: Option<String>,
         checksum_algorithm: Option<String>,
         checksum_type: Option<String>,
+        owner_display_name: Option<String>,
+        owner_id: Option<String>,
+        is_restore_in_progress: Option<bool>,
+        restore_expiry_date: Option<String>,
     },
     Versioning {
         key: String,
@@ -169,6 +173,10 @@ pub enum S3Object {
         storage_class: Option<String>,
         checksum_algorithm: Option<String>,
         checksum_type: Option<String>,
+        owner_display_name: Option<String>,
+        owner_id: Option<String>,
+        is_restore_in_progress: Option<bool>,
+        restore_expiry_date: Option<String>,
     },
 }
 
@@ -233,6 +241,34 @@ impl S3Object {
         match self {
             Self::NotVersioning { .. } => true,
             Self::Versioning { is_latest, .. } => *is_latest,
+        }
+    }
+
+    pub fn owner_display_name(&self) -> Option<&str> {
+        match self {
+            Self::NotVersioning { owner_display_name, .. } => owner_display_name.as_deref(),
+            Self::Versioning { owner_display_name, .. } => owner_display_name.as_deref(),
+        }
+    }
+
+    pub fn owner_id(&self) -> Option<&str> {
+        match self {
+            Self::NotVersioning { owner_id, .. } => owner_id.as_deref(),
+            Self::Versioning { owner_id, .. } => owner_id.as_deref(),
+        }
+    }
+
+    pub fn is_restore_in_progress(&self) -> Option<bool> {
+        match self {
+            Self::NotVersioning { is_restore_in_progress, .. } => *is_restore_in_progress,
+            Self::Versioning { is_restore_in_progress, .. } => *is_restore_in_progress,
+        }
+    }
+
+    pub fn restore_expiry_date(&self) -> Option<&str> {
+        match self {
+            Self::NotVersioning { restore_expiry_date, .. } => restore_expiry_date.as_deref(),
+            Self::Versioning { restore_expiry_date, .. } => restore_expiry_date.as_deref(),
         }
     }
 }
@@ -368,6 +404,10 @@ mod tests {
             storage_class: Some("STANDARD".to_string()),
             checksum_algorithm: None,
             checksum_type: None,
+            owner_display_name: None,
+            owner_id: None,
+            is_restore_in_progress: None,
+            restore_expiry_date: None,
         };
         assert_eq!(obj.key(), "test/key.txt");
         assert_eq!(obj.size(), 1024);
@@ -389,6 +429,10 @@ mod tests {
             storage_class: Some("GLACIER".to_string()),
             checksum_algorithm: Some("SHA256".to_string()),
             checksum_type: Some("FULL_OBJECT".to_string()),
+            owner_display_name: None,
+            owner_id: None,
+            is_restore_in_progress: None,
+            restore_expiry_date: None,
         };
         assert_eq!(obj.key(), "test/key.txt");
         assert_eq!(obj.size(), 2048);
@@ -409,6 +453,10 @@ mod tests {
             storage_class: None,
             checksum_algorithm: None,
             checksum_type: None,
+            owner_display_name: None,
+            owner_id: None,
+            is_restore_in_progress: None,
+            restore_expiry_date: None,
         });
         assert_eq!(entry.key(), "file.txt");
         assert_eq!(entry.size(), 100);

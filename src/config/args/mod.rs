@@ -44,6 +44,7 @@ pub enum SortField {
     Size,
     Date,
     Bucket,
+    Region,
 }
 
 impl std::fmt::Display for SortField {
@@ -53,6 +54,7 @@ impl std::fmt::Display for SortField {
             SortField::Size => write!(f, "size"),
             SortField::Date => write!(f, "date"),
             SortField::Bucket => write!(f, "bucket"),
+            SortField::Region => write!(f, "region"),
         }
     }
 }
@@ -92,7 +94,7 @@ pub struct CLIArgs {
 
     /// List only Express One Zone directory buckets (when listing buckets)
     #[arg(long, default_value_t = false, help_heading = "General")]
-    pub list_express_one_zone_bucket: bool,
+    pub list_express_one_zone_buckets: bool,
 
     // -----------------------------------------------------------------------
     // Filtering options
@@ -199,6 +201,14 @@ pub struct CLIArgs {
     /// Show is_latest column (requires --all-versions)
     #[arg(long, default_value_t = false, requires = "all_versions", help_heading = "Display")]
     pub show_is_latest: bool,
+
+    /// Show owner DisplayName and ID columns
+    #[arg(long, default_value_t = false, help_heading = "Display")]
+    pub show_owner: bool,
+
+    /// Show restore status column
+    #[arg(long, default_value_t = false, help_heading = "Display")]
+    pub show_restore_status: bool,
 
     /// Add a header row to each column
     #[arg(long, default_value_t = false, help_heading = "Display")]
@@ -492,10 +502,15 @@ impl TryFrom<CLIArgs> for crate::config::Config {
         let target_client_config = args.build_client_config();
         let tracing_config = args.build_tracing_config();
 
+        // In bucket listing mode, replace the default sort field (Key) with Bucket.
+        let mut sort = args.sort;
+        if target.bucket.is_empty() && sort == vec![crate::config::args::SortField::Key] {
+            sort = vec![crate::config::args::SortField::Bucket];
+        }
+
         // When --all-versions is set and the user specified only one sort field,
         // append Date as a secondary sort so versions of the same key appear in
         // chronological order.
-        let mut sort = args.sort;
         if args.all_versions && sort.len() == 1 && !sort.contains(&crate::config::args::SortField::Date) {
             sort.push(crate::config::args::SortField::Date);
         }
@@ -504,7 +519,7 @@ impl TryFrom<CLIArgs> for crate::config::Config {
             target,
             recursive: args.recursive,
             all_versions: args.all_versions,
-            list_express_one_zone_bucket: args.list_express_one_zone_bucket,
+            list_express_one_zone_buckets: args.list_express_one_zone_buckets,
             filter_config,
             sort,
             reverse: args.reverse,
@@ -517,6 +532,8 @@ impl TryFrom<CLIArgs> for crate::config::Config {
                 show_checksum_algorithm: args.show_checksum_algorithm,
                 show_checksum_type: args.show_checksum_type,
                 show_is_latest: args.show_is_latest,
+                show_owner: args.show_owner,
+                show_restore_status: args.show_restore_status,
                 header: args.header,
                 json: args.json,
             },

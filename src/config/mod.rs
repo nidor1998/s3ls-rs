@@ -14,7 +14,7 @@ pub struct Config {
     // Listing mode
     pub recursive: bool,
     pub all_versions: bool,
-    pub list_express_one_zone_bucket: bool,
+    pub list_express_one_zone_buckets: bool,
 
     // Filtering
     pub filter_config: FilterConfig,
@@ -69,7 +69,7 @@ impl Default for Config {
             },
             recursive: false,
             all_versions: false,
-            list_express_one_zone_bucket: false,
+            list_express_one_zone_buckets: false,
             filter_config: FilterConfig::default(),
             sort: vec![SortField::Key],
             reverse: false,
@@ -109,6 +109,8 @@ pub struct DisplayConfig {
     pub show_checksum_algorithm: bool,
     pub show_checksum_type: bool,
     pub show_is_latest: bool,
+    pub show_owner: bool,
+    pub show_restore_status: bool,
     pub header: bool,
     pub json: bool,
 }

@@ -65,6 +65,7 @@ struct S3PageFetcher {
     client: Client,
     bucket: String,
     request_payer: Option<RequestPayer>,
+    fetch_owner: bool,
 }
 
 impl S3PageFetcher {
@@ -92,6 +93,10 @@ impl S3PageFetcher {
         }
         if let Some(ref payer) = self.request_payer {
             req = req.request_payer(payer.clone());
+        }
+        if self.fetch_owner {
+            req = req.optional_object_attributes(aws_sdk_s3::types::OptionalObjectAttributes::RestoreStatus);
+            req = req.fetch_owner(true);
         }
 
         let response = req.send().await.map_err(|e| {
@@ -567,6 +572,7 @@ impl S3Storage {
         max_parallel_listings: u16,
         max_parallel_listing_max_depth: u16,
         allow_parallel_listings_in_express_one_zone: bool,
+        fetch_owner: bool,
     ) -> Self {
         let client = client_config.create_client().await;
         let delimiter = if recursive {
@@ -581,6 +587,7 @@ impl S3Storage {
             client,
             bucket: bucket.clone(),
             request_payer,
+            fetch_owner,
         };
 
         let engine = ListingEngine {
@@ -650,6 +657,16 @@ fn convert_object(object: &aws_sdk_s3::types::Object) -> Option<ListEntry> {
     let checksum_type = object
         .checksum_type()
         .map(|ct| ct.as_str().to_string());
+    let owner_display_name = object.owner().and_then(|o| o.display_name()).map(|s| s.to_string());
+    let owner_id = object.owner().and_then(|o| o.id()).map(|s| s.to_string());
+    let is_restore_in_progress = object
+        .restore_status()
+        .and_then(|rs| rs.is_restore_in_progress());
+    let restore_expiry_date = object
+        .restore_status()
+        .and_then(|rs| rs.restore_expiry_date())
+        .and_then(|dt| aws_datetime_to_chrono(Some(dt)))
+        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
 
     Some(ListEntry::Object(S3Object::NotVersioning {
         key,
@@ -659,6 +676,10 @@ fn convert_object(object: &aws_sdk_s3::types::Object) -> Option<ListEntry> {
         storage_class,
         checksum_algorithm,
         checksum_type,
+        owner_display_name,
+        owner_id,
+        is_restore_in_progress,
+        restore_expiry_date,
     }))
 }
 
@@ -678,6 +699,11 @@ fn convert_object_version(version: &aws_sdk_s3::types::ObjectVersion) -> Option<
     let checksum_type = version
         .checksum_type()
         .map(|ct| ct.as_str().to_string());
+    let owner_display_name = version.owner().and_then(|o| o.display_name()).map(|s| s.to_string());
+    let owner_id = version.owner().and_then(|o| o.id()).map(|s| s.to_string());
+    // ObjectVersion does not have restore_status in the AWS SDK
+    let is_restore_in_progress = None;
+    let restore_expiry_date = None;
 
     Some(ListEntry::Object(S3Object::Versioning {
         key,
@@ -689,6 +715,10 @@ fn convert_object_version(version: &aws_sdk_s3::types::ObjectVersion) -> Option<
         storage_class,
         checksum_algorithm,
         checksum_type,
+        owner_display_name,
+        owner_id,
+        is_restore_in_progress,
+        restore_expiry_date,
     }))
 }
 
@@ -843,6 +873,10 @@ mod tests {
             storage_class: None,
             checksum_algorithm: None,
             checksum_type: None,
+            owner_display_name: None,
+            owner_id: None,
+            is_restore_in_progress: None,
+            restore_expiry_date: None,
         })
     }
 

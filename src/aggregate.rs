@@ -11,6 +11,8 @@ pub struct FormatOptions {
     pub show_checksum_algorithm: bool,
     pub show_checksum_type: bool,
     pub show_is_latest: bool,
+    pub show_owner: bool,
+    pub show_restore_status: bool,
     pub all_versions: bool,
     pub prefix: Option<String>,
 }
@@ -29,6 +31,8 @@ impl FormatOptions {
             show_checksum_algorithm: display_config.show_checksum_algorithm,
             show_checksum_type: display_config.show_checksum_type,
             show_is_latest: display_config.show_is_latest,
+            show_owner: display_config.show_owner,
+            show_restore_status: display_config.show_restore_status,
             all_versions,
             prefix,
         }
@@ -103,6 +107,14 @@ pub fn format_entry(entry: &ListEntry, opts: &FormatOptions) -> String {
             if opts.show_is_latest {
                 cols.push(String::new());
             }
+            if opts.show_owner {
+                cols.push(String::new());
+                cols.push(String::new());
+            }
+            if opts.show_restore_status {
+                cols.push(String::new());
+                cols.push(String::new());
+            }
             // key
             cols.push(format_key_display(entry.key(), opts));
         }
@@ -126,6 +138,14 @@ pub fn format_entry(entry: &ListEntry, opts: &FormatOptions) -> String {
             }
             if opts.show_is_latest && obj.version_id().is_some() {
                 cols.push(if obj.is_latest() { "LATEST".to_string() } else { "NOT_LATEST".to_string() });
+            }
+            if opts.show_owner {
+                cols.push(obj.owner_display_name().unwrap_or("").to_string());
+                cols.push(obj.owner_id().unwrap_or("").to_string());
+            }
+            if opts.show_restore_status {
+                cols.push(obj.is_restore_in_progress().map(|b| b.to_string()).unwrap_or_default());
+                cols.push(obj.restore_expiry_date().unwrap_or("").to_string());
             }
             cols.push(format_key_display(entry.key(), opts));
         }
@@ -152,6 +172,14 @@ pub fn format_entry(entry: &ListEntry, opts: &FormatOptions) -> String {
             cols.push(version_id.clone());
             if opts.show_is_latest {
                 cols.push(if *is_latest { "LATEST".to_string() } else { "NOT_LATEST".to_string() });
+            }
+            if opts.show_owner {
+                cols.push(String::new());
+                cols.push(String::new());
+            }
+            if opts.show_restore_status {
+                cols.push(String::new());
+                cols.push(String::new());
             }
             cols.push(format_key_display(key, opts));
         }
@@ -182,6 +210,14 @@ pub fn format_header(opts: &FormatOptions) -> String {
     if opts.show_is_latest {
         cols.push("IS_LATEST");
     }
+    if opts.show_owner {
+        cols.push("OWNER_DISPLAY_NAME");
+        cols.push("OWNER_ID");
+    }
+    if opts.show_restore_status {
+        cols.push("IS_RESTORE_IN_PROGRESS");
+        cols.push("RESTORE_EXPIRY_DATE");
+    }
     cols.push("KEY");
     cols.join("\t")
 }
@@ -207,6 +243,7 @@ pub fn sort_entries(
                 SortField::Key | SortField::Bucket => a.key().cmp(b.key()),
                 SortField::Size => a.size().cmp(&b.size()),
                 SortField::Date => cmp_mtime(a, b),
+                SortField::Region => std::cmp::Ordering::Equal,
             });
         }
         if reverse { cmp.reverse() } else { cmp }
@@ -247,6 +284,18 @@ pub fn format_entry_json(entry: &ListEntry) -> String {
             if let Some(vid) = obj.version_id() {
                 map.insert("version_id".to_string(), serde_json::Value::String(vid.to_string()));
                 map.insert("is_latest".to_string(), serde_json::json!(obj.is_latest()));
+            }
+            if let Some(name) = obj.owner_display_name() {
+                map.insert("owner_display_name".to_string(), serde_json::Value::String(name.to_string()));
+            }
+            if let Some(id) = obj.owner_id() {
+                map.insert("owner_id".to_string(), serde_json::Value::String(id.to_string()));
+            }
+            if let Some(in_progress) = obj.is_restore_in_progress() {
+                map.insert("is_restore_in_progress".to_string(), serde_json::json!(in_progress));
+            }
+            if let Some(expiry) = obj.restore_expiry_date() {
+                map.insert("restore_expiry_date".to_string(), serde_json::Value::String(expiry.to_string()));
             }
             serde_json::to_string(&map).unwrap()
         }
@@ -353,6 +402,10 @@ mod tests {
             storage_class: Some("STANDARD".to_string()),
             checksum_algorithm: None,
             checksum_type: None,
+            owner_display_name: None,
+            owner_id: None,
+            is_restore_in_progress: None,
+            restore_expiry_date: None,
         })
     }
 
@@ -511,6 +564,10 @@ mod tests {
             storage_class: Some("STANDARD".to_string()),
             checksum_algorithm: None,
             checksum_type: None,
+            owner_display_name: None,
+            owner_id: None,
+            is_restore_in_progress: None,
+            restore_expiry_date: None,
         });
         let opts = FormatOptions::default();
         let line = format_entry(&entry, &opts);
