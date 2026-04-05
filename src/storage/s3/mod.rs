@@ -275,35 +275,20 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
 
     /// Send a batch of entries to the channel, returning `true` if sending
     /// should stop (cancellation or receiver dropped).
+    /// When `max_depth` is set, entries beyond the depth limit are skipped.
     async fn send_listed_entries(
         &self,
         entries: Vec<ListEntry>,
         sender: &Sender<ListEntry>,
     ) -> Result<bool> {
-        self.send_listed_entries_inner(entries, sender, false).await
-    }
-
-    /// Send entries with optional max_depth filtering.
-    /// When `apply_depth_filter` is true, entries beyond max_depth are skipped.
-    /// This is used by the sequential listing fallback path where all objects are
-    /// returned flat (no delimiter), so depth must be enforced per-key.
-    async fn send_listed_entries_inner(
-        &self,
-        entries: Vec<ListEntry>,
-        sender: &Sender<ListEntry>,
-        apply_depth_filter: bool,
-    ) -> Result<bool> {
         for entry in entries {
             if self.cancellation_token.is_cancelled() {
                 return Ok(true);
             }
-            // Apply max_depth filter when set (fallback for sequential listing path)
-            if apply_depth_filter {
-                if let Some(max_depth) = self.max_depth {
-                    if let Some(depth) = self.key_depth(entry.key()) {
-                        if depth > max_depth {
-                            continue;
-                        }
+            if let Some(max_depth) = self.max_depth {
+                if let Some(depth) = self.key_depth(entry.key()) {
+                    if depth > max_depth {
+                        continue;
                     }
                 }
             }
@@ -375,9 +360,6 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
         let mut continuation_token: Option<String> = None;
         let mut key_marker: Option<String> = None;
         let mut version_id_marker: Option<String> = None;
-        // Apply depth filtering when listing without a delimiter (recursive),
-        // since all objects are returned flat and may exceed max_depth.
-        let apply_depth_filter = delimiter.is_none();
 
         loop {
             if self.cancellation_token.is_cancelled() {
@@ -399,7 +381,7 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
                 .await?;
 
             // Send objects
-            if self.send_listed_entries_inner(page.objects, sender, apply_depth_filter).await? {
+            if self.send_listed_entries(page.objects, sender).await? {
                 return Ok(());
             }
 
@@ -409,7 +391,7 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
                 .iter()
                 .map(|p| ListEntry::CommonPrefix(p.clone()))
                 .collect();
-            if self.send_listed_entries_inner(prefix_entries, sender, apply_depth_filter).await? {
+            if self.send_listed_entries(prefix_entries, sender).await? {
                 return Ok(());
             }
 
@@ -461,9 +443,10 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
                 return Ok(());
             }
 
-            // Content depth limit reached: don't fetch anything beyond max_depth
+            // Content depth limit: at recursion depth D, objects have key-depth D+1.
+            // Stop fetching when key-depth would exceed max_depth.
             if let Some(max_depth) = self.max_depth {
-                if depth > max_depth {
+                if depth >= max_depth {
                     return Ok(());
                 }
             }
@@ -541,13 +524,6 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
 
             // Release permit before spawning sub-tasks
             drop(current_permit.take());
-
-            // At max_depth: don't recurse into sub-prefixes
-            if let Some(max_depth) = self.max_depth {
-                if depth >= max_depth {
-                    return Ok(());
-                }
-            }
 
             // Spawn sub-tasks for each sub-prefix
             if !all_sub_prefixes.is_empty() {
@@ -1470,8 +1446,8 @@ mod tests {
     #[tokio::test]
     async fn parallel_respects_max_depth() {
         // Structure: p/ -> p/a/ -> p/a/deep/ -> p/a/deep/file.txt
-        // With max_depth=1, only objects directly in p/ and p/a/ should appear.
-        // p/a/deep/ should NOT be recursed into.
+        // With max_depth=2, objects at key-depth 1 and 2 appear.
+        // p/a/deep/ (key-depth 3) should NOT be fetched.
         let mut map: HashMap<(Option<String>, Option<String>), Vec<ListPage>> = HashMap::new();
 
         // Top level (depth 0): discovers sub-prefix a/
@@ -1500,7 +1476,7 @@ mod tests {
             }],
         );
 
-        // Depth 2 (deep/) — should NOT be reached with max_depth=1
+        // Depth 2 (deep/) — should NOT be reached with max_depth=2
         map.insert(
             (Some("p/a/deep/".to_string()), Some("/".to_string())),
             vec![ListPage {
@@ -1514,9 +1490,9 @@ mod tests {
         );
 
         let fetcher = MockPageFetcher::from_map(map);
-        // max_depth content limit = 1 (only 1 level of sub-prefixes)
+        // max_depth=2: include key-depth 1 (p/root.txt) and 2 (p/a/file.txt)
         let engine = make_engine_with_max_depth(
-            fetcher, "bucket", Some("p/"), None, 4, 5, false, Some(1),
+            fetcher, "bucket", Some("p/"), None, 4, 5, false, Some(2),
         );
         let entries = collect_entries(&engine, ListingMode::Objects, 1000).await.unwrap();
 
