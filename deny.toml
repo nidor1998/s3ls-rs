@@ -7,9 +7,7 @@
 [advisories]
 # All vulnerability/unsound/notice advisories are errors by default.
 # To ignore a specific advisory, add it here with a reason:
-ignore = [
-    { id = "RUSTSEC-2026-0049", reason = "only affects rustls-webpki 0.101.7 pulled transitively by AWS SDK via rustls 0.21.x; no patched 0.101.x release exists; risk is negligible as it only impacts CRL revocation checking and requires CA compromise" },
-]
+ignore = []
 
 # ---- 2. Licenses ----
 [licenses]
