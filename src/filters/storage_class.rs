@@ -65,13 +65,16 @@ mod tests {
             storage_class: class.map(|s| s.to_string()),
             checksum_algorithm: None,
             checksum_type: None,
+            owner_display_name: None,
+            owner_id: None,
+            is_restore_in_progress: None,
+            restore_expiry_date: None,
         })
     }
 
     #[test]
     fn matches_listed_class() {
-        let filter =
-            StorageClassFilter::new(vec!["STANDARD".to_string(), "GLACIER".to_string()]);
+        let filter = StorageClassFilter::new(vec!["STANDARD".to_string(), "GLACIER".to_string()]);
         assert!(filter.matches(&make_entry_with_class(Some("STANDARD"))));
         assert!(filter.matches(&make_entry_with_class(Some("GLACIER"))));
         assert!(!filter.matches(&make_entry_with_class(Some("DEEP_ARCHIVE"))));

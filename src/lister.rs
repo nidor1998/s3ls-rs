@@ -20,9 +20,7 @@ impl ObjectLister {
                 .list_object_versions(&self.sender, self.max_keys)
                 .await
         } else {
-            self.storage
-                .list_objects(&self.sender, self.max_keys)
-                .await
+            self.storage.list_objects(&self.sender, self.max_keys).await
         };
         debug!("list target objects has been completed.");
         result
@@ -46,6 +44,10 @@ mod tests {
                 storage_class: Some("STANDARD".to_string()),
                 checksum_algorithm: None,
                 checksum_type: None,
+                owner_display_name: None,
+                owner_id: None,
+                is_restore_in_progress: None,
+                restore_expiry_date: None,
             }),
             ListEntry::CommonPrefix("logs/".to_string()),
         ]

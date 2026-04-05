@@ -14,7 +14,7 @@ mod tests;
 // Default constants
 // ---------------------------------------------------------------------------
 
-const DEFAULT_MAX_PARALLEL_LISTINGS: u16 = 16;
+const DEFAULT_MAX_PARALLEL_LISTINGS: u16 = 32;
 const DEFAULT_PARALLEL_LISTING_MAX_DEPTH: u16 = 2;
 const DEFAULT_OBJECT_LISTING_QUEUE_SIZE: u32 = 200000;
 const DEFAULT_AWS_MAX_ATTEMPTS: u32 = 10;
@@ -24,7 +24,7 @@ const DEFAULT_MAX_KEYS: i32 = 1000;
 const ERROR_MESSAGE_INVALID_TARGET: &str = "target must be an S3 path (e.g. s3://bucket/prefix)";
 
 fn check_s3_target(s: &str) -> Result<String, String> {
-    if s.starts_with("s3://") && s.len() > 5 {
+    if s.is_empty() || (s.starts_with("s3://") && s.len() > 5) {
         Ok(s.to_string())
     } else {
         Err(ERROR_MESSAGE_INVALID_TARGET.to_string())
@@ -41,6 +41,8 @@ pub enum SortField {
     Key,
     Size,
     Date,
+    Bucket,
+    Region,
 }
 
 impl std::fmt::Display for SortField {
@@ -49,28 +51,31 @@ impl std::fmt::Display for SortField {
             SortField::Key => write!(f, "key"),
             SortField::Size => write!(f, "size"),
             SortField::Date => write!(f, "date"),
+            SortField::Bucket => write!(f, "bucket"),
+            SortField::Region => write!(f, "region"),
         }
     }
 }
 
-/// s3ls - Ultra-fast S3 object listing tool.
+/// s3ls - Fast S3 object listing tool.
 ///
 /// List objects in S3 buckets with filtering, sorting, and multiple output formats.
 ///
 /// Example:
 ///   s3ls s3://my-bucket/logs/
-///   s3ls s3://my-bucket/ --recursive --human --summary
+///   s3ls s3://my-bucket/ --recursive --human-readable --summarize
 ///   s3ls s3://my-bucket/data/ --sort size --reverse --json
 #[derive(Parser, Clone, Debug)]
 #[command(name = "s3ls", about, long_about = None, version)]
 pub struct CLIArgs {
-    /// S3 target path: s3://<BUCKET_NAME>[/prefix]
+    /// S3 target path: s3://<BUCKET_NAME>[/prefix] (omit to list buckets)
     #[arg(
         env,
         help = "s3://<BUCKET_NAME>[/prefix]",
         value_parser = check_s3_target,
         default_value_if("auto_complete_shell", clap::builder::ArgPredicate::IsPresent, "s3://ignored"),
         required = false,
+        default_value = "",
     )]
     pub target: String,
 
@@ -78,12 +83,44 @@ pub struct CLIArgs {
     // General options
     // -----------------------------------------------------------------------
     /// List all objects recursively (enables parallel listing)
-    #[arg(short = 'r', long, env, default_value_t = false, help_heading = "General")]
+    #[arg(
+        short = 'r',
+        long,
+        env,
+        default_value_t = false,
+        help_heading = "General"
+    )]
     pub recursive: bool,
 
     /// List all versions including delete markers
-    #[arg(long, env = "LIST_ALL_VERSIONS", default_value_t = false, help_heading = "General")]
+    #[arg(
+        long,
+        env = "LIST_ALL_VERSIONS",
+        default_value_t = false,
+        help_heading = "General"
+    )]
     pub all_versions: bool,
+
+    /// Hide delete markers from version listing (requires --all-versions)
+    #[arg(
+        long,
+        default_value_t = false,
+        requires = "all_versions",
+        help_heading = "General"
+    )]
+    pub hide_delete_marker: bool,
+
+    /// Maximum depth for recursive listing (requires --recursive)
+    #[arg(long, requires = "recursive", env = "MAX_DEPTH", value_parser = clap::value_parser!(u16).range(1..), help_heading = "General")]
+    pub max_depth: Option<u16>,
+
+    /// Filter buckets by name prefix (when listing buckets)
+    #[arg(long, help_heading = "General")]
+    pub bucket_name_prefix: Option<String>,
+
+    /// List only Express One Zone directory buckets (when listing buckets)
+    #[arg(long, default_value_t = false, help_heading = "General")]
+    pub list_express_one_zone_buckets: bool,
 
     // -----------------------------------------------------------------------
     // Filtering options
@@ -139,6 +176,7 @@ pub struct CLIArgs {
         long,
         env,
         value_delimiter = ',',
+        value_parser = value_parser::storage_class::parse_storage_class,
         help_heading = "Filtering",
         long_help = "List only objects whose storage class is in the given list.\nMultiple classes can be separated by commas.\n\nExample: --storage-class STANDARD,GLACIER,DEEP_ARCHIVE"
     )]
@@ -147,28 +185,42 @@ pub struct CLIArgs {
     // -----------------------------------------------------------------------
     // Sort options
     // -----------------------------------------------------------------------
-    /// Sort results by field: key, size, or date
-    #[arg(long, value_enum, default_value_t = SortField::Key, help_heading = "Sort")]
-    pub sort: SortField,
+    /// Sort results by field(s): key, size, date (comma-separated, max 2)
+    #[arg(
+        long,
+        default_value = "key",
+        value_delimiter = ',',
+        ignore_case = true,
+        help_heading = "Sort"
+    )]
+    pub sort: Vec<SortField>,
 
     /// Reverse the sort order
     #[arg(long, default_value_t = false, help_heading = "Sort")]
     pub reverse: bool,
 
+    /// Disable sorting and stream results directly (reduces memory usage)
+    #[arg(long, default_value_t = false, conflicts_with_all = ["sort", "reverse"], help_heading = "Sort")]
+    pub no_sort: bool,
+
     // -----------------------------------------------------------------------
     // Display options
     // -----------------------------------------------------------------------
     /// Append summary line (total count, total size)
-    #[arg(long, default_value_t = false, help_heading = "Display")]
+    #[arg(long = "summarize", default_value_t = false, help_heading = "Display")]
     pub summary: bool,
 
     /// Human-readable sizes (e.g. 1.2KiB)
-    #[arg(long, default_value_t = false, help_heading = "Display")]
+    #[arg(
+        long = "human-readable",
+        default_value_t = false,
+        help_heading = "Display"
+    )]
     pub human: bool,
 
-    /// Show full key instead of relative to prefix
+    /// Show key relative to prefix instead of full path
     #[arg(long, default_value_t = false, help_heading = "Display")]
-    pub show_fullpath: bool,
+    pub show_relative_path: bool,
 
     /// Show ETag column
     #[arg(long, default_value_t = false, help_heading = "Display")]
@@ -185,6 +237,31 @@ pub struct CLIArgs {
     /// Show checksum type column
     #[arg(long, default_value_t = false, help_heading = "Display")]
     pub show_checksum_type: bool,
+
+    /// Show is_latest column (requires --all-versions)
+    #[arg(
+        long,
+        default_value_t = false,
+        requires = "all_versions",
+        help_heading = "Display"
+    )]
+    pub show_is_latest: bool,
+
+    /// Show owner DisplayName and ID columns
+    #[arg(long, default_value_t = false, help_heading = "Display")]
+    pub show_owner: bool,
+
+    /// Show restore status column
+    #[arg(long, default_value_t = false, help_heading = "Display")]
+    pub show_restore_status: bool,
+
+    /// Show bucket ARN column (when listing buckets)
+    #[arg(long, default_value_t = false, help_heading = "Display")]
+    pub show_bucket_arn: bool,
+
+    /// Add a header row to each column
+    #[arg(long, default_value_t = false, help_heading = "Display")]
+    pub header: bool,
 
     /// Output as NDJSON (one JSON object per line)
     #[arg(long, default_value_t = false, help_heading = "Display")]
@@ -331,7 +408,25 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    CLIArgs::try_parse_from(args)
+    let cli = CLIArgs::try_parse_from(args)?;
+    if cli.sort.len() > 2 {
+        return Err(clap::Error::raw(
+            clap::error::ErrorKind::TooManyValues,
+            "at most 2 sort fields allowed\n",
+        ));
+    }
+    // Check for duplicates
+    for i in 0..cli.sort.len() {
+        for j in (i + 1)..cli.sort.len() {
+            if cli.sort[i] == cli.sort[j] {
+                return Err(clap::Error::raw(
+                    clap::error::ErrorKind::InvalidValue,
+                    format!("duplicate sort field '{}'\n", cli.sort[i]),
+                ));
+            }
+        }
+    }
+    Ok(cli)
 }
 
 /// Parse arguments and build a Config in one step.
@@ -340,20 +435,28 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    let cli_args = CLIArgs::try_parse_from(args).map_err(|e| e.to_string())?;
+    let cli_args = parse_from_args(args).map_err(|e| e.to_string())?;
     crate::config::Config::try_from(cli_args)
 }
 
 impl CLIArgs {
     fn parse_target(&self) -> Result<crate::types::S3Target, String> {
-        crate::types::S3Target::parse(&self.target).map_err(|e| e.to_string())
+        if self.target.is_empty() {
+            // No target — bucket listing mode
+            Ok(crate::types::S3Target {
+                bucket: String::new(),
+                prefix: None,
+            })
+        } else {
+            crate::types::S3Target::parse(&self.target).map_err(|e| e.to_string())
+        }
     }
 
     fn build_filter_config(&self) -> Result<crate::config::FilterConfig, String> {
         let compile_regex = |pattern: &Option<String>| -> Option<fancy_regex::Regex> {
-            pattern
-                .as_ref()
-                .map(|p| fancy_regex::Regex::new(p).expect("regex was already validated by value_parser"))
+            pattern.as_ref().map(|p| {
+                fancy_regex::Regex::new(p).expect("regex was already validated by value_parser")
+            })
         };
 
         let larger_size = self
@@ -410,15 +513,15 @@ impl CLIArgs {
             } else {
                 None
             },
-            request_checksum_calculation: aws_smithy_types::checksum_config::RequestChecksumCalculation::WhenRequired,
+            request_checksum_calculation:
+                aws_smithy_types::checksum_config::RequestChecksumCalculation::WhenRequired,
             retry_config: crate::config::RetryConfig {
                 aws_max_attempts: self.aws_max_attempts,
                 initial_backoff_milliseconds: self.initial_backoff_milliseconds,
             },
             cli_timeout_config: crate::config::CLITimeoutConfig {
                 operation_timeout_milliseconds: self.operation_timeout_milliseconds,
-                operation_attempt_timeout_milliseconds: self
-                    .operation_attempt_timeout_milliseconds,
+                operation_attempt_timeout_milliseconds: self.operation_attempt_timeout_milliseconds,
                 connect_timeout_milliseconds: self.connect_timeout_milliseconds,
                 read_timeout_milliseconds: self.read_timeout_milliseconds,
             },
@@ -448,21 +551,47 @@ impl TryFrom<CLIArgs> for crate::config::Config {
         let target_client_config = args.build_client_config();
         let tracing_config = args.build_tracing_config();
 
+        // In bucket listing mode, replace the default sort field (Key) with Bucket.
+        let mut sort = args.sort;
+        if target.bucket.is_empty() && sort == vec![crate::config::args::SortField::Key] {
+            sort = vec![crate::config::args::SortField::Bucket];
+        }
+
+        // When --all-versions is set and the user specified only one sort field,
+        // append Date as a secondary sort so versions of the same key appear in
+        // chronological order.
+        if args.all_versions
+            && sort.len() == 1
+            && !sort.contains(&crate::config::args::SortField::Date)
+        {
+            sort.push(crate::config::args::SortField::Date);
+        }
+
         Ok(crate::config::Config {
             target,
             recursive: args.recursive,
             all_versions: args.all_versions,
+            hide_delete_marker: args.hide_delete_marker,
+            max_depth: args.max_depth,
+            bucket_name_prefix: args.bucket_name_prefix,
+            list_express_one_zone_buckets: args.list_express_one_zone_buckets,
             filter_config,
-            sort: args.sort,
+            sort,
             reverse: args.reverse,
+            no_sort: args.no_sort,
             display_config: crate::config::DisplayConfig {
                 summary: args.summary,
                 human: args.human,
-                show_fullpath: args.show_fullpath,
+                show_relative_path: args.show_relative_path,
                 show_etag: args.show_etag,
                 show_storage_class: args.show_storage_class,
                 show_checksum_algorithm: args.show_checksum_algorithm,
                 show_checksum_type: args.show_checksum_type,
+                show_is_latest: args.show_is_latest,
+                show_owner: args.show_owner,
+                show_restore_status: args.show_restore_status,
+                show_bucket_arn: args.show_bucket_arn,
+                header: args.header,
                 json: args.json,
             },
             max_parallel_listings: args.max_parallel_listings,

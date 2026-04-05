@@ -1,9 +1,14 @@
+use crate::aggregate::{
+    FormatOptions, accumulate_statistics, compute_statistics, format_entry, format_entry_json,
+    format_header, format_summary, sort_entries,
+};
 use crate::config::Config;
 use crate::filters::build_filter_chain;
 use crate::lister::ObjectLister;
 use crate::storage::StorageTrait;
 use crate::types::token::PipelineCancellationToken;
 use anyhow::Result;
+use std::io::Write;
 use std::sync::Arc;
 
 pub struct ListingPipeline {
@@ -52,41 +57,153 @@ impl ListingPipeline {
 
         let storage = self.build_storage().await?;
 
-        let lister = ObjectLister {
-            storage,
-            sender: tx,
-            all_versions: self.config.all_versions,
-            max_keys: self.config.max_keys,
-        };
+        let filter_chain =
+            build_filter_chain(&self.config.filter_config).map_err(|e| anyhow::anyhow!(e))?;
 
-        let filter_chain = build_filter_chain(&self.config.filter_config)
-            .map_err(|e| anyhow::anyhow!(e))?;
-
-        let lister_handle = tokio::spawn(async move { lister.list_target().await });
-
+        // Lister task: list objects, apply filter chain inline, send filtered
+        // entries to the aggregate channel. Matches spec: "Lister → apply
+        // filter chain → if passes: send to channel → if not: discard".
         let cancellation_token = self.cancellation_token.clone();
-        while let Some(entry) = rx.recv().await {
-            if cancellation_token.is_cancelled() {
-                break;
+        let all_versions = self.config.all_versions;
+        let hide_delete_marker = self.config.hide_delete_marker;
+        let max_keys = self.config.max_keys;
+
+        let lister_handle = tokio::spawn(async move {
+            let (list_tx, mut list_rx) = tokio::sync::mpsc::channel(queue_size);
+
+            let lister = ObjectLister {
+                storage,
+                sender: list_tx,
+                all_versions,
+                max_keys,
+            };
+
+            let inner_handle = tokio::spawn(async move { lister.list_target().await });
+
+            // Filter inline and forward to aggregate channel
+            while let Some(entry) = list_rx.recv().await {
+                if cancellation_token.is_cancelled() {
+                    break;
+                }
+                if hide_delete_marker && entry.is_delete_marker() {
+                    continue;
+                }
+                if filter_chain.matches(&entry) && tx.send(entry).await.is_err() {
+                    break;
+                }
             }
-            if !filter_chain.matches(&entry) {
-                continue;
+
+            match inner_handle.await {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(e)) => {
+                    cancellation_token.cancel();
+                    Err(e)
+                }
+                Err(join_err) => {
+                    cancellation_token.cancel();
+                    Err(anyhow::anyhow!("Lister task panicked: {}", join_err))
+                }
             }
-            // Temporary: print key to stdout (replaced in Step 5)
-            println!("{}", entry.key());
+        });
+
+        // Format options and output setup
+        let opts = FormatOptions::from_display_config(
+            &self.config.display_config,
+            self.config.target.prefix.clone(),
+            self.config.all_versions,
+        );
+        let use_json = self.config.display_config.json;
+        let stdout = std::io::stdout();
+        let mut writer = std::io::BufWriter::new(stdout.lock());
+
+        if !use_json && self.config.display_config.header {
+            writeln!(writer, "{}", format_header(&opts))?;
         }
 
-        match lister_handle.await {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                cancellation_token.cancel();
-                return Err(e);
+        if self.config.no_sort {
+            // Streaming mode: write entries directly as they arrive
+            let mut stats = crate::types::ListingStatistics {
+                total_objects: 0,
+                total_size: 0,
+                total_versions: 0,
+                total_delete_markers: 0,
+            };
+            let track_summary = self.config.display_config.summary;
+
+            while let Some(entry) = rx.recv().await {
+                if track_summary {
+                    accumulate_statistics(&entry, &mut stats);
+                }
+                let line = if use_json {
+                    format_entry_json(&entry)
+                } else {
+                    format_entry(&entry, &opts)
+                };
+                writeln!(writer, "{line}")?;
             }
-            Err(join_err) => {
-                cancellation_token.cancel();
-                return Err(anyhow::anyhow!("Lister task panicked: {}", join_err));
+
+            match lister_handle.await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => return Err(e),
+                Err(join_err) => {
+                    return Err(anyhow::anyhow!("Lister+filter task panicked: {}", join_err));
+                }
+            }
+
+            if track_summary {
+                let summary = format_summary(
+                    &stats,
+                    use_json,
+                    self.config.display_config.human,
+                    self.config.all_versions,
+                );
+                if !use_json {
+                    writeln!(writer)?;
+                }
+                writeln!(writer, "{summary}")?;
+            }
+        } else {
+            // Aggregate mode: collect, sort, then output
+            let mut entries = Vec::new();
+            while let Some(entry) = rx.recv().await {
+                entries.push(entry);
+            }
+
+            match lister_handle.await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => return Err(e),
+                Err(join_err) => {
+                    return Err(anyhow::anyhow!("Lister+filter task panicked: {}", join_err));
+                }
+            }
+
+            sort_entries(&mut entries, &self.config.sort, self.config.reverse);
+
+            for entry in &entries {
+                let line = if use_json {
+                    format_entry_json(entry)
+                } else {
+                    format_entry(entry, &opts)
+                };
+                writeln!(writer, "{line}")?;
+            }
+
+            if self.config.display_config.summary {
+                let stats = compute_statistics(&entries);
+                let summary = format_summary(
+                    &stats,
+                    use_json,
+                    self.config.display_config.human,
+                    self.config.all_versions,
+                );
+                if !use_json {
+                    writeln!(writer)?;
+                }
+                writeln!(writer, "{summary}")?;
             }
         }
+
+        writer.flush()?;
 
         Ok(())
     }
@@ -116,7 +233,11 @@ impl ListingPipeline {
             client_config.request_payer.clone(),
             self.config.max_parallel_listings,
             self.config.max_parallel_listing_max_depth,
+            self.config.max_depth,
             self.config.allow_parallel_listings_in_express_one_zone,
+            self.config.display_config.show_owner
+                || self.config.display_config.show_restore_status
+                || self.config.display_config.json,
         )
         .await;
 
@@ -142,6 +263,10 @@ mod tests {
                 storage_class: Some("STANDARD".to_string()),
                 checksum_algorithm: None,
                 checksum_type: None,
+                owner_display_name: None,
+                owner_id: None,
+                is_restore_in_progress: None,
+                restore_expiry_date: None,
             }),
             ListEntry::CommonPrefix("logs/".to_string()),
         ]

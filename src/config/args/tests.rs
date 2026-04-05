@@ -44,6 +44,77 @@ fn all_versions() {
 }
 
 // ===========================================================================
+// 2b. --hide-delete-marker
+// ===========================================================================
+
+#[test]
+fn hide_delete_marker_with_all_versions() {
+    let cli = parse_from_args(args(&[
+        "s3://bucket",
+        "--all-versions",
+        "--hide-delete-marker",
+    ]))
+    .unwrap();
+    assert!(cli.hide_delete_marker);
+}
+
+#[test]
+fn hide_delete_marker_without_all_versions_rejected() {
+    let result = parse_from_args(args(&["s3://bucket", "--hide-delete-marker"]));
+    assert!(result.is_err());
+}
+
+#[test]
+fn hide_delete_marker_default_is_false() {
+    let cli = parse_from_args(args(&["s3://bucket", "--all-versions"])).unwrap();
+    assert!(!cli.hide_delete_marker);
+}
+
+// ===========================================================================
+// 2c. --bucket-name-prefix
+// ===========================================================================
+
+#[test]
+fn bucket_name_prefix_parsed() {
+    let cli = parse_from_args(args(&["--bucket-name-prefix", "data"])).unwrap();
+    assert_eq!(cli.bucket_name_prefix.as_deref(), Some("data"));
+}
+
+#[test]
+fn bucket_name_prefix_default_is_none() {
+    let cli = parse_from_args(args(&["s3://bucket"])).unwrap();
+    assert!(cli.bucket_name_prefix.is_none());
+}
+
+// ===========================================================================
+// 2d. --max-depth
+// ===========================================================================
+
+#[test]
+fn max_depth_with_recursive() {
+    let cli = parse_from_args(args(&["s3://bucket", "--recursive", "--max-depth", "3"])).unwrap();
+    assert_eq!(cli.max_depth, Some(3));
+}
+
+#[test]
+fn max_depth_without_recursive_rejected() {
+    let result = parse_from_args(args(&["s3://bucket", "--max-depth", "3"]));
+    assert!(result.is_err());
+}
+
+#[test]
+fn max_depth_default_is_none() {
+    let cli = parse_from_args(args(&["s3://bucket", "--recursive"])).unwrap();
+    assert!(cli.max_depth.is_none());
+}
+
+#[test]
+fn max_depth_rejects_zero() {
+    let result = parse_from_args(args(&["s3://bucket", "--recursive", "--max-depth", "0"]));
+    assert!(result.is_err());
+}
+
+// ===========================================================================
 // 3. Filtering
 // ===========================================================================
 
@@ -101,8 +172,12 @@ fn storage_class_single() {
 
 #[test]
 fn storage_class_multiple_comma_separated() {
-    let cli =
-        parse_from_args(args(&["s3://bucket", "--storage-class", "STANDARD,GLACIER"])).unwrap();
+    let cli = parse_from_args(args(&[
+        "s3://bucket",
+        "--storage-class",
+        "STANDARD,GLACIER",
+    ]))
+    .unwrap();
     assert_eq!(
         cli.storage_class,
         Some(vec!["STANDARD".to_string(), "GLACIER".to_string()])
@@ -146,7 +221,11 @@ fn all_filters_combined() {
 
 #[test]
 fn invalid_regex_rejected() {
-    let result = parse_from_args(args(&["s3://bucket", "--filter-include-regex", "(unclosed"]));
+    let result = parse_from_args(args(&[
+        "s3://bucket",
+        "--filter-include-regex",
+        "(unclosed",
+    ]));
     assert!(result.is_err());
 }
 
@@ -155,27 +234,57 @@ fn invalid_regex_rejected() {
 // ===========================================================================
 
 #[test]
-fn sort_key() {
+fn sort_single_key() {
     let cli = parse_from_args(args(&["s3://bucket", "--sort", "key"])).unwrap();
-    assert_eq!(cli.sort, SortField::Key);
+    assert_eq!(cli.sort, vec![SortField::Key]);
 }
 
 #[test]
-fn sort_size() {
+fn sort_single_size() {
     let cli = parse_from_args(args(&["s3://bucket", "--sort", "size"])).unwrap();
-    assert_eq!(cli.sort, SortField::Size);
+    assert_eq!(cli.sort, vec![SortField::Size]);
 }
 
 #[test]
-fn sort_date() {
+fn sort_single_date() {
     let cli = parse_from_args(args(&["s3://bucket", "--sort", "date"])).unwrap();
-    assert_eq!(cli.sort, SortField::Date);
+    assert_eq!(cli.sort, vec![SortField::Date]);
+}
+
+#[test]
+fn sort_two_fields_date_key() {
+    let cli = parse_from_args(args(&["s3://bucket", "--sort", "date,key"])).unwrap();
+    assert_eq!(cli.sort, vec![SortField::Date, SortField::Key]);
+}
+
+#[test]
+fn sort_two_fields_size_date() {
+    let cli = parse_from_args(args(&["s3://bucket", "--sort", "size,date"])).unwrap();
+    assert_eq!(cli.sort, vec![SortField::Size, SortField::Date]);
+}
+
+#[test]
+fn sort_rejects_three_fields() {
+    let result = parse_from_args(args(&["s3://bucket", "--sort", "key,size,date"]));
+    assert!(result.is_err());
+}
+
+#[test]
+fn sort_rejects_duplicate_fields() {
+    let result = parse_from_args(args(&["s3://bucket", "--sort", "date,date"]));
+    assert!(result.is_err());
 }
 
 #[test]
 fn sort_invalid_value() {
     let result = parse_from_args(args(&["s3://bucket", "--sort", "name"]));
     assert!(result.is_err());
+}
+
+#[test]
+fn sort_case_insensitive() {
+    let cli = parse_from_args(args(&["s3://bucket", "--sort", "Date,KEY"])).unwrap();
+    assert_eq!(cli.sort, vec![SortField::Date, SortField::Key]);
 }
 
 #[test]
@@ -186,9 +295,31 @@ fn reverse_flag() {
 
 #[test]
 fn sort_and_reverse_combo() {
-    let cli = parse_from_args(args(&["s3://bucket", "--sort", "size", "--reverse"])).unwrap();
-    assert_eq!(cli.sort, SortField::Size);
+    let cli = parse_from_args(args(&["s3://bucket", "--sort", "size,key", "--reverse"])).unwrap();
+    assert_eq!(cli.sort, vec![SortField::Size, SortField::Key]);
     assert!(cli.reverse);
+}
+
+// ===========================================================================
+// 4b. --no-sort
+// ===========================================================================
+
+#[test]
+fn no_sort_flag() {
+    let cli = parse_from_args(args(&["s3://bucket", "--no-sort"])).unwrap();
+    assert!(cli.no_sort);
+}
+
+#[test]
+fn no_sort_conflicts_with_sort() {
+    let result = parse_from_args(args(&["s3://bucket", "--no-sort", "--sort", "size"]));
+    assert!(result.is_err());
+}
+
+#[test]
+fn no_sort_conflicts_with_reverse() {
+    let result = parse_from_args(args(&["s3://bucket", "--no-sort", "--reverse"]));
+    assert!(result.is_err());
 }
 
 // ===========================================================================
@@ -197,20 +328,20 @@ fn sort_and_reverse_combo() {
 
 #[test]
 fn display_summary() {
-    let cli = parse_from_args(args(&["s3://bucket", "--summary"])).unwrap();
+    let cli = parse_from_args(args(&["s3://bucket", "--summarize"])).unwrap();
     assert!(cli.summary);
 }
 
 #[test]
 fn display_human() {
-    let cli = parse_from_args(args(&["s3://bucket", "--human"])).unwrap();
+    let cli = parse_from_args(args(&["s3://bucket", "--human-readable"])).unwrap();
     assert!(cli.human);
 }
 
 #[test]
-fn display_show_fullpath() {
-    let cli = parse_from_args(args(&["s3://bucket", "--show-fullpath"])).unwrap();
-    assert!(cli.show_fullpath);
+fn display_show_relative_path() {
+    let cli = parse_from_args(args(&["s3://bucket", "--show-relative-path"])).unwrap();
+    assert!(cli.show_relative_path);
 }
 
 #[test]
@@ -247,9 +378,9 @@ fn display_json() {
 fn all_display_options_combined() {
     let cli = parse_from_args(args(&[
         "s3://bucket",
-        "--summary",
-        "--human",
-        "--show-fullpath",
+        "--summarize",
+        "--human-readable",
+        "--show-relative-path",
         "--show-etag",
         "--show-storage-class",
         "--show-checksum-algorithm",
@@ -259,7 +390,7 @@ fn all_display_options_combined() {
     .unwrap();
     assert!(cli.summary);
     assert!(cli.human);
-    assert!(cli.show_fullpath);
+    assert!(cli.show_relative_path);
     assert!(cli.show_etag);
     assert!(cli.show_storage_class);
     assert!(cli.show_checksum_algorithm);
@@ -385,8 +516,11 @@ fn aws_request_payer() {
 
 #[test]
 fn aws_disable_stalled_stream_protection() {
-    let cli =
-        parse_from_args(args(&["s3://bucket", "--disable-stalled-stream-protection"])).unwrap();
+    let cli = parse_from_args(args(&[
+        "s3://bucket",
+        "--disable-stalled-stream-protection",
+    ]))
+    .unwrap();
     assert!(cli.disable_stalled_stream_protection);
 }
 
@@ -396,22 +530,29 @@ fn aws_disable_stalled_stream_protection() {
 
 #[test]
 fn perf_max_parallel_listings() {
-    let cli =
-        parse_from_args(args(&["s3://bucket", "--max-parallel-listings", "32"])).unwrap();
+    let cli = parse_from_args(args(&["s3://bucket", "--max-parallel-listings", "32"])).unwrap();
     assert_eq!(cli.max_parallel_listings, 32);
 }
 
 #[test]
 fn perf_max_parallel_listing_max_depth() {
-    let cli =
-        parse_from_args(args(&["s3://bucket", "--max-parallel-listing-max-depth", "5"])).unwrap();
+    let cli = parse_from_args(args(&[
+        "s3://bucket",
+        "--max-parallel-listing-max-depth",
+        "5",
+    ]))
+    .unwrap();
     assert_eq!(cli.max_parallel_listing_max_depth, 5);
 }
 
 #[test]
 fn perf_object_listing_queue_size() {
-    let cli =
-        parse_from_args(args(&["s3://bucket", "--object-listing-queue-size", "500000"])).unwrap();
+    let cli = parse_from_args(args(&[
+        "s3://bucket",
+        "--object-listing-queue-size",
+        "500000",
+    ]))
+    .unwrap();
     assert_eq!(cli.object_listing_queue_size, 500000);
 }
 
@@ -433,7 +574,11 @@ fn perf_reject_zero_max_parallel_listings() {
 
 #[test]
 fn perf_reject_zero_max_parallel_listing_max_depth() {
-    let result = parse_from_args(args(&["s3://bucket", "--max-parallel-listing-max-depth", "0"]));
+    let result = parse_from_args(args(&[
+        "s3://bucket",
+        "--max-parallel-listing-max-depth",
+        "0",
+    ]));
     assert!(result.is_err());
 }
 
@@ -455,8 +600,12 @@ fn retry_aws_max_attempts() {
 
 #[test]
 fn retry_initial_backoff_milliseconds() {
-    let cli =
-        parse_from_args(args(&["s3://bucket", "--initial-backoff-milliseconds", "250"])).unwrap();
+    let cli = parse_from_args(args(&[
+        "s3://bucket",
+        "--initial-backoff-milliseconds",
+        "250",
+    ]))
+    .unwrap();
     assert_eq!(cli.initial_backoff_milliseconds, 250);
 }
 
@@ -466,9 +615,12 @@ fn retry_initial_backoff_milliseconds() {
 
 #[test]
 fn timeout_operation() {
-    let cli =
-        parse_from_args(args(&["s3://bucket", "--operation-timeout-milliseconds", "30000"]))
-            .unwrap();
+    let cli = parse_from_args(args(&[
+        "s3://bucket",
+        "--operation-timeout-milliseconds",
+        "30000",
+    ]))
+    .unwrap();
     assert_eq!(cli.operation_timeout_milliseconds, Some(30000));
 }
 
@@ -485,15 +637,23 @@ fn timeout_operation_attempt() {
 
 #[test]
 fn timeout_connect() {
-    let cli =
-        parse_from_args(args(&["s3://bucket", "--connect-timeout-milliseconds", "3000"])).unwrap();
+    let cli = parse_from_args(args(&[
+        "s3://bucket",
+        "--connect-timeout-milliseconds",
+        "3000",
+    ]))
+    .unwrap();
     assert_eq!(cli.connect_timeout_milliseconds, Some(3000));
 }
 
 #[test]
 fn timeout_read() {
-    let cli =
-        parse_from_args(args(&["s3://bucket", "--read-timeout-milliseconds", "10000"])).unwrap();
+    let cli = parse_from_args(args(&[
+        "s3://bucket",
+        "--read-timeout-milliseconds",
+        "10000",
+    ]))
+    .unwrap();
     assert_eq!(cli.read_timeout_milliseconds, Some(10000));
 }
 
@@ -530,9 +690,9 @@ fn target_invalid_no_s3_prefix() {
 }
 
 #[test]
-fn target_missing() {
-    let result = parse_from_args(args(&[]));
-    assert!(result.is_err());
+fn target_missing_enters_bucket_listing_mode() {
+    let cli = parse_from_args(args(&[])).unwrap();
+    assert_eq!(cli.target, "");
 }
 
 #[test]
@@ -561,6 +721,9 @@ fn verify_all_defaults() {
     // General
     assert!(!cli.recursive);
     assert!(!cli.all_versions);
+    assert!(!cli.hide_delete_marker);
+    assert!(cli.max_depth.is_none());
+    assert!(cli.bucket_name_prefix.is_none());
 
     // Filtering
     assert!(cli.filter_include_regex.is_none());
@@ -572,17 +735,19 @@ fn verify_all_defaults() {
     assert!(cli.storage_class.is_none());
 
     // Sort
-    assert_eq!(cli.sort, SortField::Key);
+    assert_eq!(cli.sort, vec![SortField::Key]);
     assert!(!cli.reverse);
+    assert!(!cli.no_sort);
 
     // Display
     assert!(!cli.summary);
     assert!(!cli.human);
-    assert!(!cli.show_fullpath);
+    assert!(!cli.show_relative_path);
     assert!(!cli.show_etag);
     assert!(!cli.show_storage_class);
     assert!(!cli.show_checksum_algorithm);
     assert!(!cli.show_checksum_type);
+    assert!(!cli.show_bucket_arn);
     assert!(!cli.json);
 
     // Tracing
@@ -606,7 +771,7 @@ fn verify_all_defaults() {
     assert!(!cli.disable_stalled_stream_protection);
 
     // Performance
-    assert_eq!(cli.max_parallel_listings, 16);
+    assert_eq!(cli.max_parallel_listings, 32);
     assert_eq!(cli.max_parallel_listing_max_depth, 2);
     assert_eq!(cli.object_listing_queue_size, 200000);
     assert!(!cli.allow_parallel_listings_in_express_one_zone);
@@ -700,7 +865,10 @@ fn human_bytes_large_value_8eib() {
     // 8 EiB = 8 * 2^60 = 9223372036854775808 which fits in u64
     let result = parse_human_bytes("8EiB");
     assert!(result.is_ok());
-    assert_eq!(result.unwrap(), 8u64 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024);
+    assert_eq!(
+        result.unwrap(),
+        8u64 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024
+    );
 }
 
 // ===========================================================================
@@ -724,9 +892,9 @@ fn full_combination_many_flags() {
         "--sort",
         "date",
         "--reverse",
-        "--summary",
-        "--human",
-        "--show-fullpath",
+        "--summarize",
+        "--human-readable",
+        "--show-relative-path",
         "--show-etag",
         "--json",
         "--target-region",
@@ -752,11 +920,11 @@ fn full_combination_many_flags() {
         cli.storage_class,
         Some(vec!["STANDARD".to_string(), "GLACIER".to_string()])
     );
-    assert_eq!(cli.sort, SortField::Date);
+    assert_eq!(cli.sort, vec![SortField::Date]);
     assert!(cli.reverse);
     assert!(cli.summary);
     assert!(cli.human);
-    assert!(cli.show_fullpath);
+    assert!(cli.show_relative_path);
     assert!(cli.show_etag);
     assert!(cli.json);
     assert_eq!(cli.target_region.as_deref(), Some("eu-west-1"));
@@ -815,8 +983,8 @@ fn config_from_full_args() {
         "--sort",
         "date",
         "--reverse",
-        "--human",
-        "--summary",
+        "--human-readable",
+        "--summarize",
         "--json",
     ])
     .unwrap();
@@ -828,7 +996,7 @@ fn config_from_full_args() {
         config.filter_config.storage_class.unwrap(),
         vec!["STANDARD", "GLACIER"]
     );
-    assert_eq!(config.sort, SortField::Date);
+    assert_eq!(config.sort, vec![SortField::Date]);
     assert!(config.reverse);
     assert!(config.display_config.human);
     assert!(config.display_config.summary);
@@ -854,9 +1022,10 @@ fn config_filter_size_values_are_u64() {
 }
 
 #[test]
-fn build_config_from_args_error() {
-    let result = build_config_from_args(vec!["s3ls"]);
-    assert!(result.is_err());
+fn build_config_no_target_creates_empty_bucket() {
+    let config = build_config_from_args(vec!["s3ls"]).unwrap();
+    assert!(config.target.bucket.is_empty());
+    assert!(config.target.prefix.is_none());
 }
 
 #[test]
@@ -873,4 +1042,24 @@ fn config_tracing_config_info_with_verbose() {
         config.tracing_config.unwrap().tracing_level,
         clap_verbosity_flag::log::Level::Info
     );
+}
+
+#[test]
+fn config_max_depth_wired_through() {
+    let config = build_config_from_args(vec![
+        "s3ls",
+        "s3://bucket/prefix/",
+        "--recursive",
+        "--max-depth",
+        "5",
+    ])
+    .unwrap();
+    assert_eq!(config.max_depth, Some(5));
+    assert!(config.recursive);
+}
+
+#[test]
+fn config_max_depth_none_by_default() {
+    let config = build_config_from_args(vec!["s3ls", "s3://bucket/", "--recursive"]).unwrap();
+    assert!(config.max_depth.is_none());
 }

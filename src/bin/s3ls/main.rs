@@ -3,10 +3,11 @@ use clap::{CommandFactory, Parser};
 use clap_complete::generate;
 use tracing::{debug, error, trace};
 
+use s3ls_rs::bucket_lister;
 use s3ls_rs::config::Config;
 use s3ls_rs::{
-    create_pipeline_cancellation_token, exit_code_from_error, is_cancelled_error, CLIArgs,
-    ListingPipeline,
+    CLIArgs, ListingPipeline, create_pipeline_cancellation_token, exit_code_from_error,
+    is_cancelled_error,
 };
 
 mod ctrl_c_handler;
@@ -17,7 +18,7 @@ const EXIT_CODE_WARNING: i32 = 3;
 #[allow(dead_code)]
 const EXIT_CODE_ABNORMAL_TERMINATION: i32 = 101;
 
-/// s3ls - Ultra-fast S3 object listing tool.
+/// s3ls - Fast S3 object listing tool.
 ///
 /// This binary is a thin wrapper over the s3ls-rs library.
 /// All core functionality is implemented in the library crate.
@@ -62,6 +63,22 @@ fn start_tracing_if_necessary(config: &Config) -> bool {
 }
 
 async fn run(config: Config) -> Result<()> {
+    // Bucket listing mode: no target specified
+    if config.target.bucket.is_empty() {
+        return match bucket_lister::list_buckets(&config).await {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                if let Some(io_err) = e.downcast_ref::<std::io::Error>()
+                    && io_err.kind() == std::io::ErrorKind::BrokenPipe
+                {
+                    return Ok(());
+                }
+                error!("{}", e);
+                std::process::exit(1);
+            }
+        };
+    }
+
     let cancellation_token = create_pipeline_cancellation_token();
 
     ctrl_c_handler::spawn_ctrl_c_handler(cancellation_token.clone());
@@ -78,6 +95,12 @@ async fn run(config: Config) -> Result<()> {
             Ok(())
         }
         Err(e) => {
+            // Broken pipe is expected when piped to head/tail — exit silently.
+            if let Some(io_err) = e.downcast_ref::<std::io::Error>()
+                && io_err.kind() == std::io::ErrorKind::BrokenPipe
+            {
+                return Ok(());
+            }
             let duration_sec = format!("{:.3}", start_time.elapsed().as_secs_f32());
             if is_cancelled_error(&e) {
                 debug!("listing cancelled by user.");

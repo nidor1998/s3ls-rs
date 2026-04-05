@@ -59,6 +59,10 @@ mod tests {
             storage_class: None,
             checksum_algorithm: None,
             checksum_type: None,
+            owner_display_name: None,
+            owner_id: None,
+            is_restore_in_progress: None,
+            restore_expiry_date: None,
         })
     }
 

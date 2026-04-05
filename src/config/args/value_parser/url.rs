@@ -31,7 +31,10 @@ mod tests {
     fn check_scheme_rejects_ftp() {
         let result = check_scheme("ftp://files.example.com");
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "URL scheme must be https:// or http://");
+        assert_eq!(
+            result.unwrap_err(),
+            "URL scheme must be https:// or http://"
+        );
     }
 
     #[test]

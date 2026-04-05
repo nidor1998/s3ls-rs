@@ -2,7 +2,7 @@
 
 ## Overview
 
-s3ls-rs is an ultra-fast S3 object listing tool that reuses over 95% of the source code from [nidor1998/s3rm-rs](https://github.com/nidor1998/s3rm-rs). Its key feature is ultra-fast object listing (approximately 100,000 objects per second) utilizing s3rm-rs's parallel listing functionality.
+s3ls-rs is a fast S3 object listing tool that reuses over 95% of the source code from [nidor1998/s3rm-rs](https://github.com/nidor1998/s3rm-rs). Its key feature is fast object listing (approximately 100,000 objects per second) utilizing s3rm-rs's parallel listing functionality.
 
 This is a code reuse (copy-and-modify) approach, not a fork. The two codebases are independent going forward.
 
@@ -36,7 +36,7 @@ Filters are applied inline within the lister task as synchronous function calls,
    b. Create Lister stage with FilterChain (spawn async task)
    c. Create Aggregate stage (spawn async task)
    d. Wait for Aggregate to complete
-3. Return exit code (and statistics if --summary)
+3. Return exit code (and statistics if --summarize)
 ```
 
 The pipeline accepts a `PipelineCancellationToken` (a `tokio_util::sync::CancellationToken` type alias) that enables graceful shutdown. The Ctrl+C handler in the binary cancels this token to stop the pipeline.
@@ -76,6 +76,7 @@ s3ls-rs/
 │   │   ├── larger_size.rs
 │   │   └── storage_class.rs      # NEW — filter by storage class
 │   ├── aggregate.rs              # NEW — collect, sort, format, output
+│   ├── bucket_lister.rs          # NEW — list buckets (when no target specified)
 │   ├── storage/
 │   │   ├── mod.rs                # StorageTrait interface (reused)
 │   │   └── s3/
@@ -90,7 +91,7 @@ s3ls-rs/
 
 **Removed from s3rm-rs:** `deleter.rs`, `terminator.rs`, `safety/`, `lua/`, `property_tests/`, `callback/`, `stage.rs` (SPSC filter wiring)
 
-**New:** `aggregate.rs`, `filters/storage_class.rs`, `types/token.rs`, `bin/s3ls/ctrl_c_handler/mod.rs`, `bin/s3ls/tracing_init.rs`
+**New:** `aggregate.rs`, `bucket_lister.rs`, `filters/storage_class.rs`, `config/args/value_parser/storage_class.rs`, `types/token.rs`, `bin/s3ls/ctrl_c_handler/mod.rs`, `bin/s3ls/tracing_init.rs`
 
 ## CLI Arguments
 
@@ -98,7 +99,7 @@ s3ls-rs/
 Usage: s3ls [OPTIONS] [TARGET]
 
 Arguments:
-  [TARGET] s3://<BUCKET_NAME>[/prefix] [env: TARGET=]
+  [TARGET] s3://<BUCKET_NAME>[/prefix] (omit to list buckets) [env: TARGET=]
 
 Options:
   -v, --verbose...    Increase logging verbosity
@@ -107,12 +108,18 @@ Options:
   -V, --version       Print version
 ```
 
+When no `[TARGET]` is specified, s3ls enters **bucket listing mode** — lists all buckets with creation date and name.
+
 ### General
 
 | Flag | Description | Env | Default |
 |------|-------------|-----|---------|
-| `--all-versions` | All versions including delete markers | `LIST_ALL_VERSIONS` | false |
 | `--recursive` | List all objects recursively | `RECURSIVE` | false |
+| `--all-versions` | All versions including delete markers | `LIST_ALL_VERSIONS` | false |
+| `--hide-delete-marker` | Hide delete markers from version listing (requires `--all-versions`) | - | false |
+| `--max-depth <N>` | Maximum depth for recursive listing, minimum 1 (requires `--recursive`) | `MAX_DEPTH` | - |
+| `--bucket-name-prefix <PREFIX>` | Filter buckets by name prefix (bucket listing mode) | - | - |
+| `--list-express-one-zone-buckets` | List only Express One Zone directory buckets (bucket listing mode) | - | false |
 
 ### Filtering
 
@@ -124,29 +131,39 @@ Options:
 | `--filter-mtime-after <TIME>` | Objects modified at or after this time | `FILTER_MTIME_AFTER` |
 | `--filter-smaller-size <SIZE>` | Objects smaller than this size | `FILTER_SMALLER_SIZE` |
 | `--filter-larger-size <SIZE>` | Objects larger than or equal to this size | `FILTER_LARGER_SIZE` |
-| `--storage-class <LIST>` | Comma-separated storage classes to include | `STORAGE_CLASS` |
+| `--storage-class <LIST>` | Comma-separated storage classes to include (validated against AWS SDK) | `STORAGE_CLASS` |
 
 ### Sort
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--sort <FIELD>` | Sort by: `key`, `size`, or `date` | `key` |
+| `--sort <FIELD>[,<FIELD>]` | Sort by up to 2 comma-separated fields: `key`, `size`, `date`, `bucket` | `key` |
 | `--reverse` | Reverse sort order | false |
+| `--no-sort` | Disable sorting and stream results directly (reduces memory usage; conflicts with `--sort`, `--reverse`) | false |
 
-Sort is always applied (not optional) — the default is `key` (lexicographic). When `--all-versions` is enabled, a secondary sort by `last_modified` (chronological) is applied after the primary sort field to guarantee deterministic ordering across parallel executions.
+Sort accepts up to 2 comma-separated fields (e.g. `--sort date,key`). No duplicate fields allowed. The user's specification is the complete sort order — no hidden tie-breakers.
+
+When `--all-versions` is enabled and only one sort field is specified, `date` is automatically appended as a secondary sort so versions of the same key appear in chronological order. The `bucket` sort field is intended for bucket listing mode but also works in object listings (behaves same as `key`).
+
+When `--no-sort` is set, entries are streamed directly to stdout as they arrive from the lister, bypassing the collect-sort-output aggregate path. This eliminates memory buffering and is useful for large listings where order doesn't matter. Summary statistics (`--summarize`) are computed incrementally in this mode.
 
 ### Display
 
 | Flag | Description |
 |------|-------------|
-| `--summary` | Append summary line (total count, total size) |
-| `--human` | Human-readable sizes (e.g., `1.2KiB`) |
-| `--show-fullpath` | Show full key instead of relative to prefix |
+| `--summarize` | Append summary line (total count, total size) |
+| `--human-readable` | Human-readable sizes (e.g., `1.2KiB`); also affects `--summarize` |
+| `--show-relative-path` | Show key relative to prefix instead of full path (default: full path) |
 | `--show-etag` | Show ETag column |
 | `--show-storage-class` | Show storage class column |
 | `--show-checksum-algorithm` | Show checksum algorithm column |
 | `--show-checksum-type` | Show checksum type column |
-| `--json` | Output as NDJSON (one JSON object per line) |
+| `--show-is-latest` | Show LATEST/NOT_LATEST column (requires `--all-versions`) |
+| `--show-owner` | Show owner DisplayName and ID columns; enables `fetch-owner` on S3 API |
+| `--show-restore-status` | Show restore status column; enables `OptionalObjectAttributes=RestoreStatus` on S3 API |
+| `--show-bucket-arn` | Show bucket ARN column (bucket listing mode) |
+| `--header` | Add a header row with column names (text mode only) |
+| `--json` | Output as NDJSON (one JSON object per line); includes all available fields |
 
 ### Tracing/Logging
 
@@ -178,7 +195,7 @@ Sort is always applied (not optional) — the default is `key` (lexicographic). 
 
 | Flag | Description | Env | Default |
 |------|-------------|-----|---------|
-| `--max-parallel-listings <N>` | Concurrent listing operations | `MAX_PARALLEL_LISTINGS` | 16 |
+| `--max-parallel-listings <N>` | Concurrent listing operations | `MAX_PARALLEL_LISTINGS` | 32 |
 | `--max-parallel-listing-max-depth <N>` | Max depth for parallel listing | `MAX_PARALLEL_LISTING_MAX_DEPTH` | 2 |
 | `--object-listing-queue-size <N>` | Internal queue size | `OBJECT_LISTING_QUEUE_SIZE` | 200,000 |
 | `--allow-parallel-listings-in-express-one-zone` | Allow parallel in Express One Zone | `ALLOW_PARALLEL_LISTINGS_IN_EXPRESS_ONE_ZONE` | false |
@@ -235,6 +252,9 @@ pub enum S3Object {
         storage_class: Option<String>,
         checksum_algorithm: Option<String>,
         checksum_type: Option<String>,
+        owner_display_name: Option<String>,
+        owner_id: Option<String>,
+        restore_status: Option<String>,
     },
     Versioning {
         key: String,
@@ -246,6 +266,9 @@ pub enum S3Object {
         storage_class: Option<String>,
         checksum_algorithm: Option<String>,
         checksum_type: Option<String>,
+        owner_display_name: Option<String>,
+        owner_id: Option<String>,
+        restore_status: Option<String>,
     },
 }
 ```
@@ -258,10 +281,11 @@ pub enum SortField {
     Key,
     Size,
     Date,
+    Bucket,
 }
 ```
 
-### ListingStatistics (only computed when --summary)
+### ListingStatistics (only computed when --summarize)
 
 ```rust
 pub struct ListingStatistics {
@@ -324,13 +348,18 @@ pub struct Config {
     // Listing mode
     pub recursive: bool,
     pub all_versions: bool,
+    pub hide_delete_marker: bool,
+    pub max_depth: Option<u16>,
+    pub bucket_name_prefix: Option<String>,
+    pub list_express_one_zone_bucket: bool,
 
     // Filtering (nested)
     pub filter_config: FilterConfig,
 
-    // Sort — always set, defaults to Key
-    pub sort: SortField,
+    // Sort — always set, defaults to vec![Key]
+    pub sort: Vec<SortField>,
     pub reverse: bool,
+    pub no_sort: bool,
 
     // Display (nested)
     pub display_config: DisplayConfig,
@@ -365,11 +394,16 @@ pub struct FilterConfig {
 pub struct DisplayConfig {
     pub summary: bool,
     pub human: bool,
-    pub show_fullpath: bool,
+    pub show_relative_path: bool,
     pub show_etag: bool,
     pub show_storage_class: bool,
     pub show_checksum_algorithm: bool,
     pub show_checksum_type: bool,
+    pub show_is_latest: bool,
+    pub show_owner: bool,         // enables fetch-owner on ListObjectsV2; also works in bucket listing
+    pub show_restore_status: bool, // enables OptionalObjectAttributes=RestoreStatus on ListObjectsV2
+    pub show_bucket_arn: bool,    // bucket ARN column in bucket listing mode
+    pub header: bool,
     pub json: bool,
 }
 
@@ -449,13 +483,18 @@ main():
 
 ```
 run(config):
-  1. Create cancellation token
-  2. Spawn Ctrl+C handler with token clone
-  3. Record start time
-  4. Create ListingPipeline::new(config, cancellation_token)
-  5. pipeline.run().await
-  6. On Ok: log completion with duration
-  7. On Err:
+  1. If target is empty (bucket listing mode):
+     — Call bucket_lister::list_buckets(&config)
+     — Handle BrokenPipe silently, exit on other errors
+     — Return
+  2. Create cancellation token
+  3. Spawn Ctrl+C handler with token clone
+  4. Record start time
+  5. Create ListingPipeline::new(config, cancellation_token)
+  6. pipeline.run().await
+  7. On Ok: log completion with duration
+  8. On Err:
+     — If BrokenPipe (e.g. piped to head/tail): return Ok silently
      — If is_cancelled_error: log "cancelled by user", return Ok
      — Otherwise: exit_code_from_error, log error, std::process::exit(code)
 ```
@@ -463,12 +502,12 @@ run(config):
 ### Tracing Initialization
 
 The tracing subscriber is configured with:
-- **Format:** compact, stdout writer
+- **Format:** compact, stderr writer (via `PipeSafeWriter` that silently ignores BrokenPipe errors)
 - **Crate-specific filters:** `s3ls_rs={level},s3ls={level}`
 - **AWS SDK tracing:** additionally includes `aws_smithy_runtime`, `aws_config`, `aws_sigv4` filters
 - **RUST_LOG support:** falls back to `RUST_LOG` env var when aws_sdk_tracing is not enabled
 - **Span events:** NEW + CLOSE when `--span-events-tracing` is set
-- **Terminal detection:** ANSI colors enabled only when stdout is a terminal (and `--disable-color-tracing` is not set)
+- **Terminal detection:** ANSI colors enabled only when stderr is a terminal (and `--disable-color-tracing` is not set)
 - **JSON mode:** uses `.json()` format when `--json-tracing` is set
 
 ## Filter System
@@ -519,62 +558,109 @@ Filters are applied inline within the lister. CommonPrefix entries bypass all fi
 | Recursive (`--recursive`) | None | Yes | `Object` only |
 | Recursive + `--all-versions` | None | Yes (via `list_object_versions`) | `Object` + `DeleteMarker` |
 | Non-recursive + `--all-versions` | `/` | No | `Object` + `DeleteMarker` + `CommonPrefix` |
+| Recursive + `--max-depth N` | None/`/` | Yes | `Object` + `CommonPrefix` at boundary |
 
 Non-recursive mode uses the S3 API's delimiter feature directly. Parallel listing only applies to recursive mode.
+
+When `--max-depth N` is set with `--recursive`, the listing engine limits recursion depth. At the boundary depth, sub-prefixes are emitted as `CommonPrefix` ("PRE") entries instead of being recursed into, mimicking non-recursive listing at that level. In sequential fallback mode, objects beyond the depth limit are replaced with synthetic deduplicated `CommonPrefix` entries.
 
 ## Aggregate Stage
 
 ### Flow
 
 1. Drain channel into `Vec<ListEntry>`
-2. Sort by the `--sort` field (default: `key`):
-   - Key: lexicographic
+2. Sort by `--sort` fields (default: `[key]`), chaining comparisons with `.then_with()`:
+   - Key/Bucket: lexicographic
    - Size: numeric (CommonPrefix sorts as size 0)
    - Date: chronological (CommonPrefix sorts last)
-   - When `--all-versions`: secondary sort by `last_modified` (chronological) to ensure deterministic output across parallel executions
-3. If `--reverse`: reverse the Vec
-4. Format and write each entry to `BufWriter<Stdout>`
-5. If `--summary`: append summary line
+   - When `--all-versions` with single sort field: `date` auto-appended as secondary
+3. If `--reverse`: reverse the combined comparison
+4. If `--header` and not `--json`: write header row
+5. Format and write each entry to `BufWriter<Stdout>` (tab-delimited)
+6. If `--summarize`: write blank line then summary line
 
 ### Output Formats
 
+All text output is **tab-delimited** for consistent parsing with `awk -F'\t'`, `cut`, etc.
+
 **Default (text):**
 ```
-                           PRE logs/
-2024-01-15T10:30:00Z       1234 readme.txt
-2024-01-15T11:00:00Z    5678901 data.csv
+	PRE	logs/
+2024-01-15T10:30:00Z	1234	readme.txt
+2024-01-15T11:00:00Z	5678901	data.csv
 ```
 
-**With `--human`:**
+**With `--header`:**
 ```
-2024-01-15T10:30:00Z    1.2KiB readme.txt
-2024-01-15T11:00:00Z    5.4MiB data.csv
+DATE	SIZE	KEY
+2024-01-15T10:30:00Z	1234	readme.txt
 ```
 
 **With `--show-etag --show-storage-class`:**
 ```
-2024-01-15T10:30:00Z       1234 STANDARD "abc123" readme.txt
+2024-01-15T10:30:00Z	1234	STANDARD	abc123	readme.txt
 ```
+PRE rows show empty strings for optional columns.
 
 **With `--all-versions` (versioned objects and delete markers):**
 ```
-2024-01-15T10:30:00Z       1234 abc123-version-id readme.txt
-2024-01-16T09:00:00Z          0 def456-version-id (delete marker) readme.txt
+2024-01-15T10:30:00Z	1234	abc123-version-id	readme.txt
+2024-01-16T09:00:00Z	DELETE	def456-version-id	readme.txt
 ```
+Delete markers show `DELETE` in the size column instead of `0`.
+
+**With `--show-is-latest --all-versions`:**
+```
+2024-01-15T10:30:00Z	1234	abc123-version-id	LATEST	readme.txt
+2024-01-15T09:00:00Z	1000	def456-version-id	NOT_LATEST	readme.txt
+```
+Column values are padded to equal width (10 chars).
 
 **With `--json` (NDJSON):**
 ```json
-{"key":"readme.txt","size":1234,"last_modified":"2024-01-15T10:30:00Z"}
-{"key":"data.csv","size":5678901,"last_modified":"2024-01-15T11:00:00Z"}
+{"Key":"readme.txt","LastModified":"2024-01-15T10:30:00+00:00","ETag":"\"abc123\"","Size":1234,"StorageClass":"STANDARD"}
+{"Key":"data.csv","LastModified":"2024-01-15T11:00:00+00:00","ETag":"\"def456\"","Size":5678901,"StorageClass":"STANDARD"}
 ```
-- JSON includes all available fields regardless of display flags
-- `--summary` appends: `{"summary":{"total_objects":2,"total_size":5680135}}`
+- JSON uses PascalCase keys matching the S3 API (Key, Size, LastModified, ETag, StorageClass, etc.)
+- JSON always includes all available fields regardless of `--show-*` flags
+- ETag includes double quotes as returned by the S3 API
+- `ChecksumAlgorithm` is an array (e.g., `["CRC64NVME"]`)
+- `Owner` is a nested object: `{"DisplayName":"...","ID":"..."}`
+- `RestoreStatus` is a nested object: `{"IsRestoreInProgress":true,"RestoreExpiryDate":"..."}`
+- `--summarize` appends: `{"summary":{"total_objects":2,"total_size":5680135}}`
+- CommonPrefix entries: `{"Prefix":"logs/"}`
+- Delete markers: `{"Key":"...","VersionId":"...","IsLatest":true,"LastModified":"..."}`
+
+**With `--show-owner`:**
+```
+2024-01-15T10:30:00Z	1234	John	abc123def456	readme.txt
+```
+Enables `fetch_owner(true)` on `ListObjectsV2`. `ListObjectVersions` returns owner by default.
+
+**With `--show-restore-status`:**
+```
+2024-01-15T10:30:00Z	1234	in_progress=true,expiry=2026-04-10T00:00:00Z	readme.txt
+```
+Enables `OptionalObjectAttributes=RestoreStatus` on `ListObjectsV2`.
 
 **Summary line (text):**
 ```
+
 Total: 2 objects, 5.4MiB
 ```
-Summary always uses human-readable sizes.
+A blank line separates data from summary. With `--human-readable`, sizes are human-readable; without, raw bytes: `Total: 2 objects, 5680135 bytes`.
+
+**Bucket listing mode (no target):**
+```
+DATE	REGION	BUCKET
+2026-01-15T10:30:00Z	us-east-1	my-bucket
+2026-03-28T11:55:00Z	ap-northeast-1	data.cpp17.org
+```
+Columns: DATE, REGION, BUCKET. Region is returned by S3 when using paginated `ListBuckets` (`max-buckets`). Supports `--header`, `--json`, `--sort`, `--reverse`, `--show-owner`, `--show-bucket-arn`, `--bucket-name-prefix`.
+
+With `--show-owner`, adds OWNER_DISPLAY_NAME and OWNER_ID columns. With `--show-bucket-arn`, adds BUCKET_ARN column. With `--bucket-name-prefix`, filters buckets by name prefix (server-side for general buckets via S3 API, client-side for directory buckets).
+
+**Bucket JSON output** uses S3 API field names: `Name`, `CreationDate`, `BucketRegion`, `BucketArn`, `Owner: {DisplayName, ID}`.
 
 ## Testing Strategy
 
@@ -651,7 +737,7 @@ impl StorageTrait for MockStorage {
 ### Step 5: Aggregate Stage
 - Implement collect, sort, format, output
 - All display options: text, human, NDJSON, extra columns
-- Summary line (when `--summary`)
+- Summary line (when `--summarize`)
 - Non-recursive `PRE` formatting
 - Unit tests: sort by key/size/date, reverse, all formatting combinations (text, human, NDJSON, extra columns), summary output, PRE formatting
 - Deliverable: complete s3ls tool, all tests pass

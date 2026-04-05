@@ -14,13 +14,18 @@ pub struct Config {
     // Listing mode
     pub recursive: bool,
     pub all_versions: bool,
+    pub hide_delete_marker: bool,
+    pub max_depth: Option<u16>,
+    pub bucket_name_prefix: Option<String>,
+    pub list_express_one_zone_buckets: bool,
 
     // Filtering
     pub filter_config: FilterConfig,
 
     // Sort
-    pub sort: SortField,
+    pub sort: Vec<SortField>,
     pub reverse: bool,
+    pub no_sort: bool,
 
     // Display
     pub display_config: DisplayConfig,
@@ -68,11 +73,16 @@ impl Default for Config {
             },
             recursive: false,
             all_versions: false,
+            hide_delete_marker: false,
+            max_depth: None,
+            bucket_name_prefix: None,
+            list_express_one_zone_buckets: false,
             filter_config: FilterConfig::default(),
-            sort: SortField::Key,
+            sort: vec![SortField::Key],
             reverse: false,
+            no_sort: false,
             display_config: DisplayConfig::default(),
-            max_parallel_listings: 16,
+            max_parallel_listings: 32,
             max_parallel_listing_max_depth: 2,
             object_listing_queue_size: 200_000,
             allow_parallel_listings_in_express_one_zone: false,
@@ -101,11 +111,16 @@ pub struct FilterConfig {
 pub struct DisplayConfig {
     pub summary: bool,
     pub human: bool,
-    pub show_fullpath: bool,
+    pub show_relative_path: bool,
     pub show_etag: bool,
     pub show_storage_class: bool,
     pub show_checksum_algorithm: bool,
     pub show_checksum_type: bool,
+    pub show_is_latest: bool,
+    pub show_owner: bool,
+    pub show_restore_status: bool,
+    pub show_bucket_arn: bool,
+    pub header: bool,
     pub json: bool,
 }
 
