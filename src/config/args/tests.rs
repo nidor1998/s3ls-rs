@@ -49,7 +49,12 @@ fn all_versions() {
 
 #[test]
 fn hide_delete_marker_with_all_versions() {
-    let cli = parse_from_args(args(&["s3://bucket", "--all-versions", "--hide-delete-marker"])).unwrap();
+    let cli = parse_from_args(args(&[
+        "s3://bucket",
+        "--all-versions",
+        "--hide-delete-marker",
+    ]))
+    .unwrap();
     assert!(cli.hide_delete_marker);
 }
 
@@ -167,8 +172,12 @@ fn storage_class_single() {
 
 #[test]
 fn storage_class_multiple_comma_separated() {
-    let cli =
-        parse_from_args(args(&["s3://bucket", "--storage-class", "STANDARD,GLACIER"])).unwrap();
+    let cli = parse_from_args(args(&[
+        "s3://bucket",
+        "--storage-class",
+        "STANDARD,GLACIER",
+    ]))
+    .unwrap();
     assert_eq!(
         cli.storage_class,
         Some(vec!["STANDARD".to_string(), "GLACIER".to_string()])
@@ -212,7 +221,11 @@ fn all_filters_combined() {
 
 #[test]
 fn invalid_regex_rejected() {
-    let result = parse_from_args(args(&["s3://bucket", "--filter-include-regex", "(unclosed"]));
+    let result = parse_from_args(args(&[
+        "s3://bucket",
+        "--filter-include-regex",
+        "(unclosed",
+    ]));
     assert!(result.is_err());
 }
 
@@ -503,8 +516,11 @@ fn aws_request_payer() {
 
 #[test]
 fn aws_disable_stalled_stream_protection() {
-    let cli =
-        parse_from_args(args(&["s3://bucket", "--disable-stalled-stream-protection"])).unwrap();
+    let cli = parse_from_args(args(&[
+        "s3://bucket",
+        "--disable-stalled-stream-protection",
+    ]))
+    .unwrap();
     assert!(cli.disable_stalled_stream_protection);
 }
 
@@ -514,22 +530,29 @@ fn aws_disable_stalled_stream_protection() {
 
 #[test]
 fn perf_max_parallel_listings() {
-    let cli =
-        parse_from_args(args(&["s3://bucket", "--max-parallel-listings", "32"])).unwrap();
+    let cli = parse_from_args(args(&["s3://bucket", "--max-parallel-listings", "32"])).unwrap();
     assert_eq!(cli.max_parallel_listings, 32);
 }
 
 #[test]
 fn perf_max_parallel_listing_max_depth() {
-    let cli =
-        parse_from_args(args(&["s3://bucket", "--max-parallel-listing-max-depth", "5"])).unwrap();
+    let cli = parse_from_args(args(&[
+        "s3://bucket",
+        "--max-parallel-listing-max-depth",
+        "5",
+    ]))
+    .unwrap();
     assert_eq!(cli.max_parallel_listing_max_depth, 5);
 }
 
 #[test]
 fn perf_object_listing_queue_size() {
-    let cli =
-        parse_from_args(args(&["s3://bucket", "--object-listing-queue-size", "500000"])).unwrap();
+    let cli = parse_from_args(args(&[
+        "s3://bucket",
+        "--object-listing-queue-size",
+        "500000",
+    ]))
+    .unwrap();
     assert_eq!(cli.object_listing_queue_size, 500000);
 }
 
@@ -551,7 +574,11 @@ fn perf_reject_zero_max_parallel_listings() {
 
 #[test]
 fn perf_reject_zero_max_parallel_listing_max_depth() {
-    let result = parse_from_args(args(&["s3://bucket", "--max-parallel-listing-max-depth", "0"]));
+    let result = parse_from_args(args(&[
+        "s3://bucket",
+        "--max-parallel-listing-max-depth",
+        "0",
+    ]));
     assert!(result.is_err());
 }
 
@@ -573,8 +600,12 @@ fn retry_aws_max_attempts() {
 
 #[test]
 fn retry_initial_backoff_milliseconds() {
-    let cli =
-        parse_from_args(args(&["s3://bucket", "--initial-backoff-milliseconds", "250"])).unwrap();
+    let cli = parse_from_args(args(&[
+        "s3://bucket",
+        "--initial-backoff-milliseconds",
+        "250",
+    ]))
+    .unwrap();
     assert_eq!(cli.initial_backoff_milliseconds, 250);
 }
 
@@ -584,9 +615,12 @@ fn retry_initial_backoff_milliseconds() {
 
 #[test]
 fn timeout_operation() {
-    let cli =
-        parse_from_args(args(&["s3://bucket", "--operation-timeout-milliseconds", "30000"]))
-            .unwrap();
+    let cli = parse_from_args(args(&[
+        "s3://bucket",
+        "--operation-timeout-milliseconds",
+        "30000",
+    ]))
+    .unwrap();
     assert_eq!(cli.operation_timeout_milliseconds, Some(30000));
 }
 
@@ -603,15 +637,23 @@ fn timeout_operation_attempt() {
 
 #[test]
 fn timeout_connect() {
-    let cli =
-        parse_from_args(args(&["s3://bucket", "--connect-timeout-milliseconds", "3000"])).unwrap();
+    let cli = parse_from_args(args(&[
+        "s3://bucket",
+        "--connect-timeout-milliseconds",
+        "3000",
+    ]))
+    .unwrap();
     assert_eq!(cli.connect_timeout_milliseconds, Some(3000));
 }
 
 #[test]
 fn timeout_read() {
-    let cli =
-        parse_from_args(args(&["s3://bucket", "--read-timeout-milliseconds", "10000"])).unwrap();
+    let cli = parse_from_args(args(&[
+        "s3://bucket",
+        "--read-timeout-milliseconds",
+        "10000",
+    ]))
+    .unwrap();
     assert_eq!(cli.read_timeout_milliseconds, Some(10000));
 }
 
@@ -823,7 +865,10 @@ fn human_bytes_large_value_8eib() {
     // 8 EiB = 8 * 2^60 = 9223372036854775808 which fits in u64
     let result = parse_human_bytes("8EiB");
     assert!(result.is_ok());
-    assert_eq!(result.unwrap(), 8u64 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024);
+    assert_eq!(
+        result.unwrap(),
+        8u64 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024
+    );
 }
 
 // ===========================================================================

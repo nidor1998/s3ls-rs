@@ -1,8 +1,8 @@
 pub mod s3;
 
-use async_trait::async_trait;
 use crate::types::ListEntry;
 use anyhow::Result;
+use async_trait::async_trait;
 use tokio::sync::mpsc::Sender;
 
 #[async_trait]
@@ -57,10 +57,10 @@ mod tests {
                 storage_class: Some("STANDARD".to_string()),
                 checksum_algorithm: None,
                 checksum_type: None,
-            owner_display_name: None,
-            owner_id: None,
-            is_restore_in_progress: None,
-            restore_expiry_date: None,
+                owner_display_name: None,
+                owner_id: None,
+                is_restore_in_progress: None,
+                restore_expiry_date: None,
             }),
             ListEntry::CommonPrefix("logs/".to_string()),
             ListEntry::DeleteMarker {

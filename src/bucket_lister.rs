@@ -1,5 +1,5 @@
-use crate::config::args::SortField;
 use crate::config::Config;
+use crate::config::args::SortField;
 use anyhow::Result;
 use aws_sdk_s3::Client;
 use chrono::{DateTime, Utc};
@@ -73,17 +73,27 @@ pub async fn list_buckets(config: &Config) -> Result<()> {
         let region = entry.region.as_deref().unwrap_or("");
         if config.display_config.json {
             let mut map = serde_json::Map::new();
-            map.insert("Name".to_string(), serde_json::Value::String(entry.name.clone()));
+            map.insert(
+                "Name".to_string(),
+                serde_json::Value::String(entry.name.clone()),
+            );
             if let Some(d) = entry.creation_date {
-                map.insert("CreationDate".to_string(), serde_json::Value::String(d.to_rfc3339()));
+                map.insert(
+                    "CreationDate".to_string(),
+                    serde_json::Value::String(d.to_rfc3339()),
+                );
             }
             if let Some(ref r) = entry.region {
-                map.insert("BucketRegion".to_string(), serde_json::Value::String(r.clone()));
+                map.insert(
+                    "BucketRegion".to_string(),
+                    serde_json::Value::String(r.clone()),
+                );
             }
-            if show_bucket_arn
-                && let Some(ref arn) = entry.bucket_arn
-            {
-                map.insert("BucketArn".to_string(), serde_json::Value::String(arn.clone()));
+            if show_bucket_arn && let Some(ref arn) = entry.bucket_arn {
+                map.insert(
+                    "BucketArn".to_string(),
+                    serde_json::Value::String(arn.clone()),
+                );
             }
             if show_owner {
                 let owner_id = entry.owner_id.as_ref();
@@ -91,7 +101,10 @@ pub async fn list_buckets(config: &Config) -> Result<()> {
                 if owner_id.is_some() || owner_name.is_some() {
                     let mut owner = serde_json::Map::new();
                     if let Some(name) = owner_name {
-                        owner.insert("DisplayName".to_string(), serde_json::Value::String(name.clone()));
+                        owner.insert(
+                            "DisplayName".to_string(),
+                            serde_json::Value::String(name.clone()),
+                        );
                     }
                     if let Some(id) = owner_id {
                         owner.insert("ID".to_string(), serde_json::Value::String(id.clone()));
@@ -138,7 +151,10 @@ async fn list_general_buckets(client: &Client, prefix: Option<&str>) -> Result<V
             .await
             .map_err(|e| anyhow::anyhow!("Failed to list buckets: {e}"))?;
 
-        let owner_display_name = resp.owner().and_then(|o| o.display_name()).map(|s| s.to_string());
+        let owner_display_name = resp
+            .owner()
+            .and_then(|o| o.display_name())
+            .map(|s| s.to_string());
         let owner_id = resp.owner().and_then(|o| o.id()).map(|s| s.to_string());
 
         for b in resp.buckets() {

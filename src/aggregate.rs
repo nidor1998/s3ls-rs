@@ -138,14 +138,22 @@ pub fn format_entry(entry: &ListEntry, opts: &FormatOptions) -> String {
                 cols.push(vid.to_string());
             }
             if opts.show_is_latest && obj.version_id().is_some() {
-                cols.push(if obj.is_latest() { "LATEST".to_string() } else { "NOT_LATEST".to_string() });
+                cols.push(if obj.is_latest() {
+                    "LATEST".to_string()
+                } else {
+                    "NOT_LATEST".to_string()
+                });
             }
             if opts.show_owner {
                 cols.push(obj.owner_display_name().unwrap_or("").to_string());
                 cols.push(obj.owner_id().unwrap_or("").to_string());
             }
             if opts.show_restore_status {
-                cols.push(obj.is_restore_in_progress().map(|b| b.to_string()).unwrap_or_default());
+                cols.push(
+                    obj.is_restore_in_progress()
+                        .map(|b| b.to_string())
+                        .unwrap_or_default(),
+                );
                 cols.push(obj.restore_expiry_date().unwrap_or("").to_string());
             }
             cols.push(format_key_display(entry.key(), opts));
@@ -172,7 +180,11 @@ pub fn format_entry(entry: &ListEntry, opts: &FormatOptions) -> String {
             }
             cols.push(version_id.clone());
             if opts.show_is_latest {
-                cols.push(if *is_latest { "LATEST".to_string() } else { "NOT_LATEST".to_string() });
+                cols.push(if *is_latest {
+                    "LATEST".to_string()
+                } else {
+                    "NOT_LATEST".to_string()
+                });
             }
             if opts.show_owner {
                 cols.push(String::new());
@@ -232,11 +244,7 @@ fn cmp_mtime(a: &ListEntry, b: &ListEntry) -> std::cmp::Ordering {
     }
 }
 
-pub fn sort_entries(
-    entries: &mut [ListEntry],
-    fields: &[SortField],
-    reverse: bool,
-) {
+pub fn sort_entries(entries: &mut [ListEntry], fields: &[SortField], reverse: bool) {
     entries.sort_by(|a, b| {
         let mut cmp = std::cmp::Ordering::Equal;
         for field in fields {
@@ -255,17 +263,26 @@ pub fn format_entry_json(entry: &ListEntry) -> String {
     match entry {
         ListEntry::CommonPrefix(prefix) => {
             let mut map = serde_json::Map::new();
-            map.insert("Prefix".to_string(), serde_json::Value::String(prefix.clone()));
+            map.insert(
+                "Prefix".to_string(),
+                serde_json::Value::String(prefix.clone()),
+            );
             serde_json::to_string(&map).unwrap()
         }
         ListEntry::Object(obj) => {
             let mut map = serde_json::Map::new();
-            map.insert("Key".to_string(), serde_json::Value::String(obj.key().to_string()));
+            map.insert(
+                "Key".to_string(),
+                serde_json::Value::String(obj.key().to_string()),
+            );
             map.insert(
                 "LastModified".to_string(),
                 serde_json::Value::String(obj.last_modified().to_rfc3339()),
             );
-            map.insert("ETag".to_string(), serde_json::Value::String(obj.e_tag().to_string()));
+            map.insert(
+                "ETag".to_string(),
+                serde_json::Value::String(obj.e_tag().to_string()),
+            );
             if let Some(algo) = obj.checksum_algorithm() {
                 map.insert(
                     "ChecksumAlgorithm".to_string(),
@@ -280,10 +297,16 @@ pub fn format_entry_json(entry: &ListEntry) -> String {
             }
             map.insert("Size".to_string(), serde_json::json!(obj.size()));
             if let Some(sc) = obj.storage_class() {
-                map.insert("StorageClass".to_string(), serde_json::Value::String(sc.to_string()));
+                map.insert(
+                    "StorageClass".to_string(),
+                    serde_json::Value::String(sc.to_string()),
+                );
             }
             if let Some(vid) = obj.version_id() {
-                map.insert("VersionId".to_string(), serde_json::Value::String(vid.to_string()));
+                map.insert(
+                    "VersionId".to_string(),
+                    serde_json::Value::String(vid.to_string()),
+                );
                 map.insert("IsLatest".to_string(), serde_json::json!(obj.is_latest()));
             }
             let owner_id = obj.owner_id();
@@ -291,7 +314,10 @@ pub fn format_entry_json(entry: &ListEntry) -> String {
             if owner_id.is_some() || owner_name.is_some() {
                 let mut owner = serde_json::Map::new();
                 if let Some(name) = owner_name {
-                    owner.insert("DisplayName".to_string(), serde_json::Value::String(name.to_string()));
+                    owner.insert(
+                        "DisplayName".to_string(),
+                        serde_json::Value::String(name.to_string()),
+                    );
                 }
                 if let Some(id) = owner_id {
                     owner.insert("ID".to_string(), serde_json::Value::String(id.to_string()));
@@ -300,11 +326,20 @@ pub fn format_entry_json(entry: &ListEntry) -> String {
             }
             if let Some(in_progress) = obj.is_restore_in_progress() {
                 let mut restore = serde_json::Map::new();
-                restore.insert("IsRestoreInProgress".to_string(), serde_json::json!(in_progress));
+                restore.insert(
+                    "IsRestoreInProgress".to_string(),
+                    serde_json::json!(in_progress),
+                );
                 if let Some(expiry) = obj.restore_expiry_date() {
-                    restore.insert("RestoreExpiryDate".to_string(), serde_json::Value::String(expiry.to_string()));
+                    restore.insert(
+                        "RestoreExpiryDate".to_string(),
+                        serde_json::Value::String(expiry.to_string()),
+                    );
                 }
-                map.insert("RestoreStatus".to_string(), serde_json::Value::Object(restore));
+                map.insert(
+                    "RestoreStatus".to_string(),
+                    serde_json::Value::Object(restore),
+                );
             }
             serde_json::to_string(&map).unwrap()
         }
@@ -316,7 +351,10 @@ pub fn format_entry_json(entry: &ListEntry) -> String {
         } => {
             let mut map = serde_json::Map::new();
             map.insert("Key".to_string(), serde_json::Value::String(key.clone()));
-            map.insert("VersionId".to_string(), serde_json::Value::String(version_id.clone()));
+            map.insert(
+                "VersionId".to_string(),
+                serde_json::Value::String(version_id.clone()),
+            );
             map.insert("IsLatest".to_string(), serde_json::json!(*is_latest));
             map.insert(
                 "LastModified".to_string(),
@@ -383,10 +421,19 @@ pub fn format_summary(
     if json {
         let mut map = serde_json::Map::new();
         let mut summary = serde_json::Map::new();
-        summary.insert("total_objects".to_string(), serde_json::json!(stats.total_objects));
-        summary.insert("total_size".to_string(), serde_json::json!(stats.total_size));
+        summary.insert(
+            "total_objects".to_string(),
+            serde_json::json!(stats.total_objects),
+        );
+        summary.insert(
+            "total_size".to_string(),
+            serde_json::json!(stats.total_size),
+        );
         if all_versions {
-            summary.insert("total_versions".to_string(), serde_json::json!(stats.total_versions));
+            summary.insert(
+                "total_versions".to_string(),
+                serde_json::json!(stats.total_versions),
+            );
             summary.insert(
                 "total_delete_markers".to_string(),
                 serde_json::json!(stats.total_delete_markers),
@@ -422,7 +469,9 @@ mod tests {
         ListEntry::Object(S3Object::NotVersioning {
             key: key.to_string(),
             size,
-            last_modified: chrono::Utc.with_ymd_and_hms(year, month, 1, 0, 0, 0).unwrap(),
+            last_modified: chrono::Utc
+                .with_ymd_and_hms(year, month, 1, 0, 0, 0)
+                .unwrap(),
             e_tag: "\"e\"".to_string(),
             storage_class: Some("STANDARD".to_string()),
             checksum_algorithm: None,
@@ -550,7 +599,10 @@ mod tests {
     #[test]
     fn format_text_human_size() {
         let entry = make_entry("data.csv", 5678901, 2024, 1);
-        let opts = FormatOptions { human: true, ..Default::default() };
+        let opts = FormatOptions {
+            human: true,
+            ..Default::default()
+        };
         let line = format_entry(&entry, &opts);
         // Spec: 2024-01-01T00:00:00Z    5.4MiB data.csv
         assert!(line.contains("5.4MiB"));
@@ -583,7 +635,9 @@ mod tests {
             key: "readme.txt".to_string(),
             version_id: "abc123-version-id".to_string(),
             size: 1234,
-            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 15, 10, 30, 0).unwrap(),
+            last_modified: chrono::Utc
+                .with_ymd_and_hms(2024, 1, 15, 10, 30, 0)
+                .unwrap(),
             e_tag: "\"e\"".to_string(),
             is_latest: true,
             storage_class: Some("STANDARD".to_string()),

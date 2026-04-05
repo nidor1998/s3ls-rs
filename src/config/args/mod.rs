@@ -83,15 +83,31 @@ pub struct CLIArgs {
     // General options
     // -----------------------------------------------------------------------
     /// List all objects recursively (enables parallel listing)
-    #[arg(short = 'r', long, env, default_value_t = false, help_heading = "General")]
+    #[arg(
+        short = 'r',
+        long,
+        env,
+        default_value_t = false,
+        help_heading = "General"
+    )]
     pub recursive: bool,
 
     /// List all versions including delete markers
-    #[arg(long, env = "LIST_ALL_VERSIONS", default_value_t = false, help_heading = "General")]
+    #[arg(
+        long,
+        env = "LIST_ALL_VERSIONS",
+        default_value_t = false,
+        help_heading = "General"
+    )]
     pub all_versions: bool,
 
     /// Hide delete markers from version listing (requires --all-versions)
-    #[arg(long, default_value_t = false, requires = "all_versions", help_heading = "General")]
+    #[arg(
+        long,
+        default_value_t = false,
+        requires = "all_versions",
+        help_heading = "General"
+    )]
     pub hide_delete_marker: bool,
 
     /// Maximum depth for recursive listing (requires --recursive)
@@ -170,7 +186,13 @@ pub struct CLIArgs {
     // Sort options
     // -----------------------------------------------------------------------
     /// Sort results by field(s): key, size, date (comma-separated, max 2)
-    #[arg(long, default_value = "key", value_delimiter = ',', ignore_case = true, help_heading = "Sort")]
+    #[arg(
+        long,
+        default_value = "key",
+        value_delimiter = ',',
+        ignore_case = true,
+        help_heading = "Sort"
+    )]
     pub sort: Vec<SortField>,
 
     /// Reverse the sort order
@@ -189,7 +211,11 @@ pub struct CLIArgs {
     pub summary: bool,
 
     /// Human-readable sizes (e.g. 1.2KiB)
-    #[arg(long = "human-readable", default_value_t = false, help_heading = "Display")]
+    #[arg(
+        long = "human-readable",
+        default_value_t = false,
+        help_heading = "Display"
+    )]
     pub human: bool,
 
     /// Show key relative to prefix instead of full path
@@ -213,7 +239,12 @@ pub struct CLIArgs {
     pub show_checksum_type: bool,
 
     /// Show is_latest column (requires --all-versions)
-    #[arg(long, default_value_t = false, requires = "all_versions", help_heading = "Display")]
+    #[arg(
+        long,
+        default_value_t = false,
+        requires = "all_versions",
+        help_heading = "Display"
+    )]
     pub show_is_latest: bool,
 
     /// Show owner DisplayName and ID columns
@@ -423,9 +454,9 @@ impl CLIArgs {
 
     fn build_filter_config(&self) -> Result<crate::config::FilterConfig, String> {
         let compile_regex = |pattern: &Option<String>| -> Option<fancy_regex::Regex> {
-            pattern
-                .as_ref()
-                .map(|p| fancy_regex::Regex::new(p).expect("regex was already validated by value_parser"))
+            pattern.as_ref().map(|p| {
+                fancy_regex::Regex::new(p).expect("regex was already validated by value_parser")
+            })
         };
 
         let larger_size = self
@@ -482,15 +513,15 @@ impl CLIArgs {
             } else {
                 None
             },
-            request_checksum_calculation: aws_smithy_types::checksum_config::RequestChecksumCalculation::WhenRequired,
+            request_checksum_calculation:
+                aws_smithy_types::checksum_config::RequestChecksumCalculation::WhenRequired,
             retry_config: crate::config::RetryConfig {
                 aws_max_attempts: self.aws_max_attempts,
                 initial_backoff_milliseconds: self.initial_backoff_milliseconds,
             },
             cli_timeout_config: crate::config::CLITimeoutConfig {
                 operation_timeout_milliseconds: self.operation_timeout_milliseconds,
-                operation_attempt_timeout_milliseconds: self
-                    .operation_attempt_timeout_milliseconds,
+                operation_attempt_timeout_milliseconds: self.operation_attempt_timeout_milliseconds,
                 connect_timeout_milliseconds: self.connect_timeout_milliseconds,
                 read_timeout_milliseconds: self.read_timeout_milliseconds,
             },
@@ -529,7 +560,10 @@ impl TryFrom<CLIArgs> for crate::config::Config {
         // When --all-versions is set and the user specified only one sort field,
         // append Date as a secondary sort so versions of the same key appear in
         // chronological order.
-        if args.all_versions && sort.len() == 1 && !sort.contains(&crate::config::args::SortField::Date) {
+        if args.all_versions
+            && sort.len() == 1
+            && !sort.contains(&crate::config::args::SortField::Date)
+        {
             sort.push(crate::config::args::SortField::Date);
         }
 

@@ -1,6 +1,6 @@
 use crate::aggregate::{
-    accumulate_statistics, compute_statistics, format_entry, format_entry_json, format_header,
-    format_summary, sort_entries, FormatOptions,
+    FormatOptions, accumulate_statistics, compute_statistics, format_entry, format_entry_json,
+    format_header, format_summary, sort_entries,
 };
 use crate::config::Config;
 use crate::filters::build_filter_chain;
@@ -57,8 +57,8 @@ impl ListingPipeline {
 
         let storage = self.build_storage().await?;
 
-        let filter_chain = build_filter_chain(&self.config.filter_config)
-            .map_err(|e| anyhow::anyhow!(e))?;
+        let filter_chain =
+            build_filter_chain(&self.config.filter_config).map_err(|e| anyhow::anyhow!(e))?;
 
         // Lister task: list objects, apply filter chain inline, send filtered
         // entries to the aggregate channel. Matches spec: "Lister → apply
@@ -88,9 +88,7 @@ impl ListingPipeline {
                 if hide_delete_marker && entry.is_delete_marker() {
                     continue;
                 }
-                if filter_chain.matches(&entry)
-                    && tx.send(entry).await.is_err()
-                {
+                if filter_chain.matches(&entry) && tx.send(entry).await.is_err() {
                     break;
                 }
             }
@@ -153,7 +151,12 @@ impl ListingPipeline {
             }
 
             if track_summary {
-                let summary = format_summary(&stats, use_json, self.config.display_config.human, self.config.all_versions);
+                let summary = format_summary(
+                    &stats,
+                    use_json,
+                    self.config.display_config.human,
+                    self.config.all_versions,
+                );
                 if !use_json {
                     writeln!(writer)?;
                 }
@@ -174,11 +177,7 @@ impl ListingPipeline {
                 }
             }
 
-            sort_entries(
-                &mut entries,
-                &self.config.sort,
-                self.config.reverse,
-            );
+            sort_entries(&mut entries, &self.config.sort, self.config.reverse);
 
             for entry in &entries {
                 let line = if use_json {
@@ -191,7 +190,12 @@ impl ListingPipeline {
 
             if self.config.display_config.summary {
                 let stats = compute_statistics(&entries);
-                let summary = format_summary(&stats, use_json, self.config.display_config.human, self.config.all_versions);
+                let summary = format_summary(
+                    &stats,
+                    use_json,
+                    self.config.display_config.human,
+                    self.config.all_versions,
+                );
                 if !use_json {
                     writeln!(writer)?;
                 }
@@ -231,7 +235,9 @@ impl ListingPipeline {
             self.config.max_parallel_listing_max_depth,
             self.config.max_depth,
             self.config.allow_parallel_listings_in_express_one_zone,
-            self.config.display_config.show_owner || self.config.display_config.show_restore_status || self.config.display_config.json,
+            self.config.display_config.show_owner
+                || self.config.display_config.show_restore_status
+                || self.config.display_config.json,
         )
         .await;
 
@@ -257,10 +263,10 @@ mod tests {
                 storage_class: Some("STANDARD".to_string()),
                 checksum_algorithm: None,
                 checksum_type: None,
-            owner_display_name: None,
-            owner_id: None,
-            is_restore_in_progress: None,
-            restore_expiry_date: None,
+                owner_display_name: None,
+                owner_id: None,
+                is_restore_in_progress: None,
+                restore_expiry_date: None,
             }),
             ListEntry::CommonPrefix("logs/".to_string()),
         ]

@@ -10,7 +10,10 @@ pub fn check_human_bytes(value: &str) -> Result<String, String> {
 pub fn parse_human_bytes(value: &str) -> Result<u64, String> {
     check_human_bytes(value)?;
     let result = Byte::from_str(value).map_err(|e| e.to_string())?;
-    Ok(result.as_u128().try_into().expect("check_human_bytes already validated u64 range"))
+    Ok(result
+        .as_u128()
+        .try_into()
+        .expect("check_human_bytes already validated u64 range"))
 }
 
 #[cfg(test)]

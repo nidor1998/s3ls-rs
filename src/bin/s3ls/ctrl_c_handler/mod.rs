@@ -81,8 +81,7 @@ mod tests {
 
     #[cfg(target_family = "unix")]
     fn kill_sigint_to_self() {
-        nix::sys::signal::kill(nix::unistd::Pid::this(), nix::sys::signal::Signal::SIGINT)
-            .unwrap();
+        nix::sys::signal::kill(nix::unistd::Pid::this(), nix::sys::signal::Signal::SIGINT).unwrap();
     }
 
     fn init_dummy_tracing_subscriber() {

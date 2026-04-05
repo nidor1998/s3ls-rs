@@ -218,8 +218,12 @@ impl S3Object {
 
     pub fn checksum_algorithm(&self) -> Option<&str> {
         match self {
-            Self::NotVersioning { checksum_algorithm, .. } => checksum_algorithm.as_deref(),
-            Self::Versioning { checksum_algorithm, .. } => checksum_algorithm.as_deref(),
+            Self::NotVersioning {
+                checksum_algorithm, ..
+            } => checksum_algorithm.as_deref(),
+            Self::Versioning {
+                checksum_algorithm, ..
+            } => checksum_algorithm.as_deref(),
         }
     }
 
@@ -246,8 +250,12 @@ impl S3Object {
 
     pub fn owner_display_name(&self) -> Option<&str> {
         match self {
-            Self::NotVersioning { owner_display_name, .. } => owner_display_name.as_deref(),
-            Self::Versioning { owner_display_name, .. } => owner_display_name.as_deref(),
+            Self::NotVersioning {
+                owner_display_name, ..
+            } => owner_display_name.as_deref(),
+            Self::Versioning {
+                owner_display_name, ..
+            } => owner_display_name.as_deref(),
         }
     }
 
@@ -260,15 +268,27 @@ impl S3Object {
 
     pub fn is_restore_in_progress(&self) -> Option<bool> {
         match self {
-            Self::NotVersioning { is_restore_in_progress, .. } => *is_restore_in_progress,
-            Self::Versioning { is_restore_in_progress, .. } => *is_restore_in_progress,
+            Self::NotVersioning {
+                is_restore_in_progress,
+                ..
+            } => *is_restore_in_progress,
+            Self::Versioning {
+                is_restore_in_progress,
+                ..
+            } => *is_restore_in_progress,
         }
     }
 
     pub fn restore_expiry_date(&self) -> Option<&str> {
         match self {
-            Self::NotVersioning { restore_expiry_date, .. } => restore_expiry_date.as_deref(),
-            Self::Versioning { restore_expiry_date, .. } => restore_expiry_date.as_deref(),
+            Self::NotVersioning {
+                restore_expiry_date,
+                ..
+            } => restore_expiry_date.as_deref(),
+            Self::Versioning {
+                restore_expiry_date,
+                ..
+            } => restore_expiry_date.as_deref(),
         }
     }
 }

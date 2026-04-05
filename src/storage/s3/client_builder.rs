@@ -1,12 +1,12 @@
 use crate::config::ClientConfig;
 use crate::types::S3Credentials;
-use aws_config::meta::region::RegionProviderChain;
 use aws_config::ConfigLoader;
-use aws_types::SdkConfig;
-use aws_types::region::Region;
+use aws_config::meta::region::RegionProviderChain;
 use aws_sdk_s3::Client;
 use aws_smithy_types::retry::RetryConfig;
 use aws_smithy_types::timeout::TimeoutConfig;
+use aws_types::SdkConfig;
+use aws_types::region::Region;
 use std::time::Duration;
 use tracing::debug;
 
@@ -66,16 +66,19 @@ impl ClientConfig {
                 debug!(%profile_name, "using profile credentials");
                 let mut builder = aws_config::profile::ProfileFileCredentialsProvider::builder();
 
-                if let Some(ref creds_file) = self.client_config_location.aws_shared_credentials_file {
+                if let Some(ref creds_file) =
+                    self.client_config_location.aws_shared_credentials_file
+                {
                     let profile_files = aws_runtime::env_config::file::EnvConfigFiles::builder()
-                        .with_file(aws_runtime::env_config::file::EnvConfigFileKind::Credentials, creds_file)
+                        .with_file(
+                            aws_runtime::env_config::file::EnvConfigFileKind::Credentials,
+                            creds_file,
+                        )
                         .build();
                     builder = builder.profile_files(profile_files);
                 }
 
-                config_loader.credentials_provider(
-                    builder.profile_name(profile_name).build(),
-                )
+                config_loader.credentials_provider(builder.profile_name(profile_name).build())
             }
             S3Credentials::Credentials { access_keys } => {
                 debug!(access_key = %access_keys.access_key, "using explicit credentials");
@@ -102,14 +105,20 @@ impl ClientConfig {
         if let crate::types::S3Credentials::Profile(ref profile_name) = self.credential {
             if let Some(ref aws_config_file) = self.client_config_location.aws_config_file {
                 let profile_files = aws_runtime::env_config::file::EnvConfigFiles::builder()
-                    .with_file(aws_runtime::env_config::file::EnvConfigFileKind::Config, aws_config_file)
+                    .with_file(
+                        aws_runtime::env_config::file::EnvConfigFileKind::Config,
+                        aws_config_file,
+                    )
                     .build();
                 builder = builder.profile_files(profile_files);
             }
             builder = builder.profile_name(profile_name);
         }
 
-        let provider_region = if matches!(&self.credential, crate::types::S3Credentials::FromEnvironment) {
+        let provider_region = if matches!(
+            &self.credential,
+            crate::types::S3Credentials::FromEnvironment
+        ) {
             RegionProviderChain::first_try(self.region.clone().map(Region::new))
                 .or_default_provider()
         } else {

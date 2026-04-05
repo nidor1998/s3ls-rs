@@ -3,12 +3,12 @@ use clap::{CommandFactory, Parser};
 use clap_complete::generate;
 use tracing::{debug, error, trace};
 
+use s3ls_rs::bucket_lister;
 use s3ls_rs::config::Config;
 use s3ls_rs::{
-    create_pipeline_cancellation_token, exit_code_from_error, is_cancelled_error, CLIArgs,
-    ListingPipeline,
+    CLIArgs, ListingPipeline, create_pipeline_cancellation_token, exit_code_from_error,
+    is_cancelled_error,
 };
-use s3ls_rs::bucket_lister;
 
 mod ctrl_c_handler;
 mod tracing_init;

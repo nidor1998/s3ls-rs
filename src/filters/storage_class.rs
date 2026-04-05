@@ -74,8 +74,7 @@ mod tests {
 
     #[test]
     fn matches_listed_class() {
-        let filter =
-            StorageClassFilter::new(vec!["STANDARD".to_string(), "GLACIER".to_string()]);
+        let filter = StorageClassFilter::new(vec!["STANDARD".to_string(), "GLACIER".to_string()]);
         assert!(filter.matches(&make_entry_with_class(Some("STANDARD"))));
         assert!(filter.matches(&make_entry_with_class(Some("GLACIER"))));
         assert!(!filter.matches(&make_entry_with_class(Some("DEEP_ARCHIVE"))));
