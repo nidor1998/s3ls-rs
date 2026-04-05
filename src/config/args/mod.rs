@@ -147,9 +147,9 @@ pub struct CLIArgs {
     // -----------------------------------------------------------------------
     // Sort options
     // -----------------------------------------------------------------------
-    /// Sort results by field: key, size, or date
-    #[arg(long, value_enum, default_value_t = SortField::Key, help_heading = "Sort")]
-    pub sort: SortField,
+    /// Sort results by field(s): key, size, date (comma-separated, max 2)
+    #[arg(long, default_value = "key", value_delimiter = ',', ignore_case = true, help_heading = "Sort")]
+    pub sort: Vec<SortField>,
 
     /// Reverse the sort order
     #[arg(long, default_value_t = false, help_heading = "Sort")]
@@ -331,7 +331,25 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    CLIArgs::try_parse_from(args)
+    let cli = CLIArgs::try_parse_from(args)?;
+    if cli.sort.len() > 2 {
+        return Err(clap::Error::raw(
+            clap::error::ErrorKind::TooManyValues,
+            "at most 2 sort fields allowed\n",
+        ));
+    }
+    // Check for duplicates
+    for i in 0..cli.sort.len() {
+        for j in (i + 1)..cli.sort.len() {
+            if cli.sort[i] == cli.sort[j] {
+                return Err(clap::Error::raw(
+                    clap::error::ErrorKind::InvalidValue,
+                    format!("duplicate sort field '{}'\n", cli.sort[i]),
+                ));
+            }
+        }
+    }
+    Ok(cli)
 }
 
 /// Parse arguments and build a Config in one step.
@@ -340,7 +358,7 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    let cli_args = CLIArgs::try_parse_from(args).map_err(|e| e.to_string())?;
+    let cli_args = parse_from_args(args).map_err(|e| e.to_string())?;
     crate::config::Config::try_from(cli_args)
 }
 

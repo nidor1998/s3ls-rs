@@ -19,7 +19,7 @@ pub struct Config {
     pub filter_config: FilterConfig,
 
     // Sort
-    pub sort: SortField,
+    pub sort: Vec<SortField>,
     pub reverse: bool,
 
     // Display
@@ -69,7 +69,7 @@ impl Default for Config {
             recursive: false,
             all_versions: false,
             filter_config: FilterConfig::default(),
-            sort: SortField::Key,
+            sort: vec![SortField::Key],
             reverse: false,
             display_config: DisplayConfig::default(),
             max_parallel_listings: 16,

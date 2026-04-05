@@ -125,42 +125,18 @@ fn cmp_mtime(a: &ListEntry, b: &ListEntry) -> std::cmp::Ordering {
 
 pub fn sort_entries(
     entries: &mut [ListEntry],
-    field: &SortField,
+    fields: &[SortField],
     reverse: bool,
-    all_versions: bool,
 ) {
     entries.sort_by(|a, b| {
-        // When all_versions is enabled, apply secondary tie-breakers for
-        // deterministic output across parallel executions:
-        //   Key  → key, mtime
-        //   Size → size, key, mtime
-        //   Date → mtime, key
-        let cmp = match field {
-            SortField::Key => {
-                let primary = a.key().cmp(b.key());
-                if all_versions && primary == std::cmp::Ordering::Equal {
-                    cmp_mtime(a, b)
-                } else {
-                    primary
-                }
-            }
-            SortField::Size => {
-                let primary = a.size().cmp(&b.size());
-                if all_versions && primary == std::cmp::Ordering::Equal {
-                    a.key().cmp(b.key()).then_with(|| cmp_mtime(a, b))
-                } else {
-                    primary
-                }
-            }
-            SortField::Date => {
-                let primary = cmp_mtime(a, b);
-                if all_versions && primary == std::cmp::Ordering::Equal {
-                    a.key().cmp(b.key())
-                } else {
-                    primary
-                }
-            }
-        };
+        let mut cmp = std::cmp::Ordering::Equal;
+        for field in fields {
+            cmp = cmp.then_with(|| match field {
+                SortField::Key => a.key().cmp(b.key()),
+                SortField::Size => a.size().cmp(&b.size()),
+                SortField::Date => cmp_mtime(a, b),
+            });
+        }
         if reverse { cmp.reverse() } else { cmp }
     });
 }
@@ -310,25 +286,10 @@ mod tests {
             make_entry("a.txt", 200, 2024, 2),
             make_entry("b.txt", 300, 2024, 3),
         ];
-        sort_entries(&mut entries, &SortField::Key, false, false);
+        sort_entries(&mut entries, &[SortField::Key], false);
         assert_eq!(entries[0].key(), "a.txt");
         assert_eq!(entries[1].key(), "b.txt");
         assert_eq!(entries[2].key(), "c.txt");
-    }
-
-    #[test]
-    fn sort_by_key_with_all_versions_secondary_mtime() {
-        let mut entries = vec![
-            make_entry("a.txt", 100, 2024, 3),
-            make_entry("a.txt", 200, 2024, 1),
-            make_entry("b.txt", 300, 2024, 2),
-        ];
-        sort_entries(&mut entries, &SortField::Key, false, true);
-        assert_eq!(entries[0].key(), "a.txt");
-        assert_eq!(entries[0].size(), 200); // Jan entry first
-        assert_eq!(entries[1].key(), "a.txt");
-        assert_eq!(entries[1].size(), 100); // Mar entry second
-        assert_eq!(entries[2].key(), "b.txt");
     }
 
     #[test]
@@ -338,7 +299,7 @@ mod tests {
             make_entry("b.txt", 100, 2024, 2),
             make_entry("c.txt", 200, 2024, 3),
         ];
-        sort_entries(&mut entries, &SortField::Size, false, false);
+        sort_entries(&mut entries, &[SortField::Size], false);
         assert_eq!(entries[0].size(), 100);
         assert_eq!(entries[1].size(), 200);
         assert_eq!(entries[2].size(), 300);
@@ -351,7 +312,7 @@ mod tests {
             make_entry("b.txt", 100, 2024, 1),
             make_entry("c.txt", 100, 2024, 2),
         ];
-        sort_entries(&mut entries, &SortField::Date, false, false);
+        sort_entries(&mut entries, &[SortField::Date], false);
         assert_eq!(entries[0].key(), "b.txt");
         assert_eq!(entries[1].key(), "c.txt");
         assert_eq!(entries[2].key(), "a.txt");
@@ -363,41 +324,52 @@ mod tests {
             make_entry("a.txt", 100, 2024, 1),
             make_entry("b.txt", 200, 2024, 2),
         ];
-        sort_entries(&mut entries, &SortField::Key, true, false);
+        sort_entries(&mut entries, &[SortField::Key], true);
         assert_eq!(entries[0].key(), "b.txt");
         assert_eq!(entries[1].key(), "a.txt");
     }
 
     #[test]
-    fn sort_by_size_with_all_versions_secondary_key_then_mtime() {
-        // Same size → secondary sort by key, then by mtime for determinism
-        let mut entries = vec![
-            make_entry("b.txt", 100, 2024, 1),
-            make_entry("a.txt", 100, 2024, 3),  // same key+size, later mtime
-            make_entry("a.txt", 100, 2024, 1),  // same key+size, earlier mtime
-        ];
-        sort_entries(&mut entries, &SortField::Size, false, true);
-        // Equal sizes: tiebreak by key (a < b), then mtime (Jan < Mar)
-        assert_eq!(entries[0].key(), "a.txt");
-        assert_eq!(entries[2].key(), "b.txt");
-        // The two a.txt entries are ordered by mtime: Jan before Mar
-        // Verify by checking the second a.txt has the later date
-        assert!(entries[0].last_modified().unwrap() < entries[1].last_modified().unwrap());
-    }
-
-    #[test]
-    fn sort_by_date_with_all_versions_secondary_key() {
-        // Same mtime → secondary sort by key
+    fn sort_two_fields_date_then_key() {
         let mut entries = vec![
             make_entry("c.txt", 300, 2024, 1),
             make_entry("a.txt", 100, 2024, 1),
-            make_entry("b.txt", 200, 2024, 1),
+            make_entry("b.txt", 200, 2024, 2),
         ];
-        sort_entries(&mut entries, &SortField::Date, false, true);
-        // Same date: sorted by key
+        sort_entries(&mut entries, &[SortField::Date, SortField::Key], false);
+        // Same date (Jan): tiebreak by key -> a < c
         assert_eq!(entries[0].key(), "a.txt");
-        assert_eq!(entries[1].key(), "b.txt");
+        assert_eq!(entries[1].key(), "c.txt");
+        // Feb entry last
+        assert_eq!(entries[2].key(), "b.txt");
+    }
+
+    #[test]
+    fn sort_two_fields_size_then_date() {
+        let mut entries = vec![
+            make_entry("a.txt", 100, 2024, 3),
+            make_entry("b.txt", 100, 2024, 1),
+            make_entry("c.txt", 200, 2024, 2),
+        ];
+        sort_entries(&mut entries, &[SortField::Size, SortField::Date], false);
+        // Same size (100): tiebreak by date -> Jan < Mar
+        assert_eq!(entries[0].key(), "b.txt");
+        assert_eq!(entries[1].key(), "a.txt");
+        // Larger size last
         assert_eq!(entries[2].key(), "c.txt");
+    }
+
+    #[test]
+    fn sort_single_field_no_tiebreaker() {
+        // Two entries with same key -- order is stable but no secondary sort
+        let mut entries = vec![
+            make_entry("a.txt", 100, 2024, 3),
+            make_entry("a.txt", 200, 2024, 1),
+        ];
+        sort_entries(&mut entries, &[SortField::Key], false);
+        // Both have same key, no tiebreaker -- stable sort preserves input order
+        assert_eq!(entries[0].size(), 100);
+        assert_eq!(entries[1].size(), 200);
     }
 
     #[test]
@@ -501,7 +473,7 @@ mod tests {
             make_entry("a.txt", 100, 2024, 1),
             ListEntry::CommonPrefix("logs/".to_string()),
         ];
-        sort_entries(&mut entries, &SortField::Size, false, false);
+        sort_entries(&mut entries, &[SortField::Size], false);
         assert_eq!(entries[0].key(), "logs/");
         assert_eq!(entries[1].key(), "a.txt");
     }

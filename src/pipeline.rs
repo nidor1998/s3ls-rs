@@ -123,7 +123,6 @@ impl ListingPipeline {
             &mut entries,
             &self.config.sort,
             self.config.reverse,
-            self.config.all_versions,
         );
 
         // Format and write output

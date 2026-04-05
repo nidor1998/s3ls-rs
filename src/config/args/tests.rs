@@ -155,27 +155,57 @@ fn invalid_regex_rejected() {
 // ===========================================================================
 
 #[test]
-fn sort_key() {
+fn sort_single_key() {
     let cli = parse_from_args(args(&["s3://bucket", "--sort", "key"])).unwrap();
-    assert_eq!(cli.sort, SortField::Key);
+    assert_eq!(cli.sort, vec![SortField::Key]);
 }
 
 #[test]
-fn sort_size() {
+fn sort_single_size() {
     let cli = parse_from_args(args(&["s3://bucket", "--sort", "size"])).unwrap();
-    assert_eq!(cli.sort, SortField::Size);
+    assert_eq!(cli.sort, vec![SortField::Size]);
 }
 
 #[test]
-fn sort_date() {
+fn sort_single_date() {
     let cli = parse_from_args(args(&["s3://bucket", "--sort", "date"])).unwrap();
-    assert_eq!(cli.sort, SortField::Date);
+    assert_eq!(cli.sort, vec![SortField::Date]);
+}
+
+#[test]
+fn sort_two_fields_date_key() {
+    let cli = parse_from_args(args(&["s3://bucket", "--sort", "date,key"])).unwrap();
+    assert_eq!(cli.sort, vec![SortField::Date, SortField::Key]);
+}
+
+#[test]
+fn sort_two_fields_size_date() {
+    let cli = parse_from_args(args(&["s3://bucket", "--sort", "size,date"])).unwrap();
+    assert_eq!(cli.sort, vec![SortField::Size, SortField::Date]);
+}
+
+#[test]
+fn sort_rejects_three_fields() {
+    let result = parse_from_args(args(&["s3://bucket", "--sort", "key,size,date"]));
+    assert!(result.is_err());
+}
+
+#[test]
+fn sort_rejects_duplicate_fields() {
+    let result = parse_from_args(args(&["s3://bucket", "--sort", "date,date"]));
+    assert!(result.is_err());
 }
 
 #[test]
 fn sort_invalid_value() {
     let result = parse_from_args(args(&["s3://bucket", "--sort", "name"]));
     assert!(result.is_err());
+}
+
+#[test]
+fn sort_case_insensitive() {
+    let cli = parse_from_args(args(&["s3://bucket", "--sort", "Date,KEY"])).unwrap();
+    assert_eq!(cli.sort, vec![SortField::Date, SortField::Key]);
 }
 
 #[test]
@@ -186,8 +216,8 @@ fn reverse_flag() {
 
 #[test]
 fn sort_and_reverse_combo() {
-    let cli = parse_from_args(args(&["s3://bucket", "--sort", "size", "--reverse"])).unwrap();
-    assert_eq!(cli.sort, SortField::Size);
+    let cli = parse_from_args(args(&["s3://bucket", "--sort", "size,key", "--reverse"])).unwrap();
+    assert_eq!(cli.sort, vec![SortField::Size, SortField::Key]);
     assert!(cli.reverse);
 }
 
@@ -572,7 +602,7 @@ fn verify_all_defaults() {
     assert!(cli.storage_class.is_none());
 
     // Sort
-    assert_eq!(cli.sort, SortField::Key);
+    assert_eq!(cli.sort, vec![SortField::Key]);
     assert!(!cli.reverse);
 
     // Display
@@ -752,7 +782,7 @@ fn full_combination_many_flags() {
         cli.storage_class,
         Some(vec!["STANDARD".to_string(), "GLACIER".to_string()])
     );
-    assert_eq!(cli.sort, SortField::Date);
+    assert_eq!(cli.sort, vec![SortField::Date]);
     assert!(cli.reverse);
     assert!(cli.summary);
     assert!(cli.human);
@@ -828,7 +858,7 @@ fn config_from_full_args() {
         config.filter_config.storage_class.unwrap(),
         vec!["STANDARD", "GLACIER"]
     );
-    assert_eq!(config.sort, SortField::Date);
+    assert_eq!(config.sort, vec![SortField::Date]);
     assert!(config.reverse);
     assert!(config.display_config.human);
     assert!(config.display_config.summary);
