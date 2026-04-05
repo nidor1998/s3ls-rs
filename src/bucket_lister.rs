@@ -23,7 +23,13 @@ pub async fn list_buckets(config: &Config) -> Result<()> {
     let client = client_config.create_client().await;
 
     let mut entries = if config.list_express_one_zone_buckets {
-        list_directory_buckets(&client).await?
+        let mut buckets = list_directory_buckets(&client).await?;
+        // ListDirectoryBuckets API does not support prefix filtering,
+        // so filter client-side.
+        if let Some(ref prefix) = config.bucket_name_prefix {
+            buckets.retain(|e| e.name.starts_with(prefix.as_str()));
+        }
+        buckets
     } else {
         list_general_buckets(&client, config.bucket_name_prefix.as_deref()).await?
     };
