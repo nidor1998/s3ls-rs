@@ -11,6 +11,7 @@ pub struct FormatOptions {
     pub show_checksum_algorithm: bool,
     pub show_checksum_type: bool,
     pub show_is_latest: bool,
+    pub all_versions: bool,
     pub prefix: Option<String>,
 }
 
@@ -18,6 +19,7 @@ impl FormatOptions {
     pub fn from_display_config(
         display_config: &crate::config::DisplayConfig,
         prefix: Option<String>,
+        all_versions: bool,
     ) -> Self {
         FormatOptions {
             human: display_config.human,
@@ -27,6 +29,7 @@ impl FormatOptions {
             show_checksum_algorithm: display_config.show_checksum_algorithm,
             show_checksum_type: display_config.show_checksum_type,
             show_is_latest: display_config.show_is_latest,
+            all_versions,
             prefix,
         }
     }
@@ -154,6 +157,32 @@ pub fn format_entry(entry: &ListEntry, opts: &FormatOptions) -> String {
         }
     }
 
+    cols.join("\t")
+}
+
+pub fn format_header(opts: &FormatOptions) -> String {
+    let mut cols: Vec<&str> = Vec::new();
+    cols.push("DATE");
+    cols.push("SIZE");
+    if opts.show_storage_class {
+        cols.push("STORAGE_CLASS");
+    }
+    if opts.show_etag {
+        cols.push("ETAG");
+    }
+    if opts.show_checksum_algorithm {
+        cols.push("CHECKSUM_ALGORITHM");
+    }
+    if opts.show_checksum_type {
+        cols.push("CHECKSUM_TYPE");
+    }
+    if opts.all_versions {
+        cols.push("VERSION_ID");
+    }
+    if opts.show_is_latest {
+        cols.push("IS_LATEST");
+    }
+    cols.push("KEY");
     cols.join("\t")
 }
 

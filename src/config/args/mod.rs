@@ -191,6 +191,10 @@ pub struct CLIArgs {
     #[arg(long, default_value_t = false, requires = "all_versions", help_heading = "Display")]
     pub show_is_latest: bool,
 
+    /// Add a header row to each column
+    #[arg(long, default_value_t = false, help_heading = "Display")]
+    pub header: bool,
+
     /// Output as NDJSON (one JSON object per line)
     #[arg(long, default_value_t = false, help_heading = "Display")]
     pub json: bool,
@@ -495,6 +499,7 @@ impl TryFrom<CLIArgs> for crate::config::Config {
                 show_checksum_algorithm: args.show_checksum_algorithm,
                 show_checksum_type: args.show_checksum_type,
                 show_is_latest: args.show_is_latest,
+                header: args.header,
                 json: args.json,
             },
             max_parallel_listings: args.max_parallel_listings,

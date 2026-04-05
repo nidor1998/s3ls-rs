@@ -107,6 +107,7 @@ pub struct DisplayConfig {
     pub show_checksum_algorithm: bool,
     pub show_checksum_type: bool,
     pub show_is_latest: bool,
+    pub header: bool,
     pub json: bool,
 }
 

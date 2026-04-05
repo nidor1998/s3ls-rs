@@ -1,6 +1,6 @@
 use crate::aggregate::{
-    compute_statistics, format_entry, format_entry_json, format_summary, sort_entries,
-    FormatOptions,
+    compute_statistics, format_entry, format_entry_json, format_header, format_summary,
+    sort_entries, FormatOptions,
 };
 use crate::config::Config;
 use crate::filters::build_filter_chain;
@@ -132,8 +132,13 @@ impl ListingPipeline {
         let opts = FormatOptions::from_display_config(
             &self.config.display_config,
             self.config.target.prefix.clone(),
+            self.config.all_versions,
         );
         let use_json = self.config.display_config.json;
+
+        if !use_json && self.config.display_config.header {
+            writeln!(writer, "{}", format_header(&opts))?;
+        }
 
         for entry in &entries {
             let line = if use_json {
@@ -148,6 +153,9 @@ impl ListingPipeline {
         if self.config.display_config.summary {
             let stats = compute_statistics(&entries);
             let summary = format_summary(&stats, use_json, self.config.display_config.human, self.config.all_versions);
+            if !use_json {
+                writeln!(writer)?;
+            }
             writeln!(writer, "{summary}")?;
         }
 
