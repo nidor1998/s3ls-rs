@@ -420,7 +420,14 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
                 return Ok(());
             }
 
-            // Beyond max depth: switch to sequential with no delimiter
+            // Content depth limit reached: don't fetch anything beyond max_depth
+            if let Some(max_depth) = self.max_depth {
+                if depth > max_depth {
+                    return Ok(());
+                }
+            }
+
+            // Beyond max parallel depth: switch to sequential with no delimiter
             if depth > self.max_parallel_listing_max_depth {
                 drop(permit);
                 return self
@@ -493,6 +500,13 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
 
             // Release permit before spawning sub-tasks
             drop(current_permit.take());
+
+            // At max_depth: don't recurse into sub-prefixes
+            if let Some(max_depth) = self.max_depth {
+                if depth >= max_depth {
+                    return Ok(());
+                }
+            }
 
             // Spawn sub-tasks for each sub-prefix
             if !all_sub_prefixes.is_empty() {
