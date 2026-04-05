@@ -16,6 +16,7 @@ pub struct Config {
     pub all_versions: bool,
     pub hide_delete_marker: bool,
     pub max_depth: Option<u16>,
+    pub bucket_name_prefix: Option<String>,
     pub list_express_one_zone_buckets: bool,
 
     // Filtering
@@ -73,6 +74,7 @@ impl Default for Config {
             all_versions: false,
             hide_delete_marker: false,
             max_depth: None,
+            bucket_name_prefix: None,
             list_express_one_zone_buckets: false,
             filter_config: FilterConfig::default(),
             sort: vec![SortField::Key],

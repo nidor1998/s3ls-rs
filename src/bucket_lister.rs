@@ -24,7 +24,7 @@ pub async fn list_buckets(config: &Config) -> Result<()> {
     let mut entries = if config.list_express_one_zone_buckets {
         list_directory_buckets(&client).await?
     } else {
-        list_general_buckets(&client).await?
+        list_general_buckets(&client, config.bucket_name_prefix.as_deref()).await?
     };
 
     // Sort
@@ -101,12 +101,15 @@ pub async fn list_buckets(config: &Config) -> Result<()> {
     Ok(())
 }
 
-async fn list_general_buckets(client: &Client) -> Result<Vec<BucketEntry>> {
+async fn list_general_buckets(client: &Client, prefix: Option<&str>) -> Result<Vec<BucketEntry>> {
     let mut entries = Vec::new();
     let mut continuation_token: Option<String> = None;
 
     loop {
         let mut req = client.list_buckets().max_buckets(1000);
+        if let Some(prefix) = prefix {
+            req = req.prefix(prefix);
+        }
         if let Some(ref token) = continuation_token {
             req = req.continuation_token(token);
         }

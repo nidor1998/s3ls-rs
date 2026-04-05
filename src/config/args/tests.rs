@@ -66,7 +66,23 @@ fn hide_delete_marker_default_is_false() {
 }
 
 // ===========================================================================
-// 2c. --max-depth
+// 2c. --bucket-name-prefix
+// ===========================================================================
+
+#[test]
+fn bucket_name_prefix_parsed() {
+    let cli = parse_from_args(args(&["--bucket-name-prefix", "data"])).unwrap();
+    assert_eq!(cli.bucket_name_prefix.as_deref(), Some("data"));
+}
+
+#[test]
+fn bucket_name_prefix_default_is_none() {
+    let cli = parse_from_args(args(&["s3://bucket"])).unwrap();
+    assert!(cli.bucket_name_prefix.is_none());
+}
+
+// ===========================================================================
+// 2d. --max-depth
 // ===========================================================================
 
 #[test]
@@ -643,6 +659,7 @@ fn verify_all_defaults() {
     assert!(!cli.all_versions);
     assert!(!cli.hide_delete_marker);
     assert!(cli.max_depth.is_none());
+    assert!(cli.bucket_name_prefix.is_none());
 
     // Filtering
     assert!(cli.filter_include_regex.is_none());
