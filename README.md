@@ -285,7 +285,7 @@ There are several tools that can list S3 objects, but none of them expose the fu
 | Column headers | `--header` | - | - | - |
 | Human-readable sizes | `--human-readable` | `--human-readable` | `--humanize` | rclone ls |
 | Summary statistics | `--summarize` | `--summarize` | - | - |
-| Full path / relative path | Default full | Relative | `--show-fullpath` | Relative |
+| Full path / relative path | Default full | Full (recursive) / Relative (non-recursive) | `--show-fullpath` | Relative |
 | **Listing Control** | | | | |
 | Depth-limited recursion | `--max-depth` | - | - | `--max-depth` |
 | PRE at depth boundary | Yes | - | - | - |
