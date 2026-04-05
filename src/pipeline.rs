@@ -65,6 +65,7 @@ impl ListingPipeline {
         // filter chain → if passes: send to channel → if not: discard".
         let cancellation_token = self.cancellation_token.clone();
         let all_versions = self.config.all_versions;
+        let hide_delete_marker = self.config.hide_delete_marker;
         let max_keys = self.config.max_keys;
 
         let lister_handle = tokio::spawn(async move {
@@ -83,6 +84,9 @@ impl ListingPipeline {
             while let Some(entry) = list_rx.recv().await {
                 if cancellation_token.is_cancelled() {
                     break;
+                }
+                if hide_delete_marker && entry.is_delete_marker() {
+                    continue;
                 }
                 if filter_chain.matches(&entry)
                     && tx.send(entry).await.is_err()

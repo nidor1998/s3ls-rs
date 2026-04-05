@@ -14,6 +14,7 @@ pub struct Config {
     // Listing mode
     pub recursive: bool,
     pub all_versions: bool,
+    pub hide_delete_marker: bool,
     pub max_depth: Option<u16>,
     pub list_express_one_zone_buckets: bool,
 
@@ -70,6 +71,7 @@ impl Default for Config {
             },
             recursive: false,
             all_versions: false,
+            hide_delete_marker: false,
             max_depth: None,
             list_express_one_zone_buckets: false,
             filter_config: FilterConfig::default(),

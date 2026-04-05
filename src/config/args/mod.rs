@@ -90,6 +90,10 @@ pub struct CLIArgs {
     #[arg(long, env = "LIST_ALL_VERSIONS", default_value_t = false, help_heading = "General")]
     pub all_versions: bool,
 
+    /// Hide delete markers from version listing (requires --all-versions)
+    #[arg(long, default_value_t = false, requires = "all_versions", help_heading = "General")]
+    pub hide_delete_marker: bool,
+
     /// Maximum depth for recursive listing (requires --recursive)
     #[arg(long, requires = "recursive", env = "MAX_DEPTH", value_parser = clap::value_parser!(u16).range(1..), help_heading = "General")]
     pub max_depth: Option<u16>,
@@ -521,6 +525,7 @@ impl TryFrom<CLIArgs> for crate::config::Config {
             target,
             recursive: args.recursive,
             all_versions: args.all_versions,
+            hide_delete_marker: args.hide_delete_marker,
             max_depth: args.max_depth,
             list_express_one_zone_buckets: args.list_express_one_zone_buckets,
             filter_config,
