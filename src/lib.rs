@@ -1,4 +1,5 @@
 pub mod aggregate;
+pub mod bucket_lister;
 pub mod config;
 pub mod filters;
 pub mod lister;

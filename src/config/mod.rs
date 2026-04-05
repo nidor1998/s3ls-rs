@@ -14,6 +14,7 @@ pub struct Config {
     // Listing mode
     pub recursive: bool,
     pub all_versions: bool,
+    pub list_express_one_zone_bucket: bool,
 
     // Filtering
     pub filter_config: FilterConfig,
@@ -68,6 +69,7 @@ impl Default for Config {
             },
             recursive: false,
             all_versions: false,
+            list_express_one_zone_bucket: false,
             filter_config: FilterConfig::default(),
             sort: vec![SortField::Key],
             reverse: false,

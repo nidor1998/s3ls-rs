@@ -204,7 +204,7 @@ pub fn sort_entries(
         let mut cmp = std::cmp::Ordering::Equal;
         for field in fields {
             cmp = cmp.then_with(|| match field {
-                SortField::Key => a.key().cmp(b.key()),
+                SortField::Key | SortField::Bucket => a.key().cmp(b.key()),
                 SortField::Size => a.size().cmp(&b.size()),
                 SortField::Date => cmp_mtime(a, b),
             });

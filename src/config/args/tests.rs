@@ -560,9 +560,9 @@ fn target_invalid_no_s3_prefix() {
 }
 
 #[test]
-fn target_missing() {
-    let result = parse_from_args(args(&[]));
-    assert!(result.is_err());
+fn target_missing_enters_bucket_listing_mode() {
+    let cli = parse_from_args(args(&[])).unwrap();
+    assert_eq!(cli.target, "");
 }
 
 #[test]
@@ -884,9 +884,10 @@ fn config_filter_size_values_are_u64() {
 }
 
 #[test]
-fn build_config_from_args_error() {
-    let result = build_config_from_args(vec!["s3ls"]);
-    assert!(result.is_err());
+fn build_config_no_target_creates_empty_bucket() {
+    let config = build_config_from_args(vec!["s3ls"]).unwrap();
+    assert!(config.target.bucket.is_empty());
+    assert!(config.target.prefix.is_none());
 }
 
 #[test]

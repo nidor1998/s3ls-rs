@@ -8,6 +8,7 @@ use s3ls_rs::{
     create_pipeline_cancellation_token, exit_code_from_error, is_cancelled_error, CLIArgs,
     ListingPipeline,
 };
+use s3ls_rs::bucket_lister;
 
 mod ctrl_c_handler;
 mod tracing_init;
@@ -62,6 +63,22 @@ fn start_tracing_if_necessary(config: &Config) -> bool {
 }
 
 async fn run(config: Config) -> Result<()> {
+    // Bucket listing mode: no target specified
+    if config.target.bucket.is_empty() {
+        return match bucket_lister::list_buckets(&config).await {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
+                    if io_err.kind() == std::io::ErrorKind::BrokenPipe {
+                        return Ok(());
+                    }
+                }
+                error!("{}", e);
+                std::process::exit(1);
+            }
+        };
+    }
+
     let cancellation_token = create_pipeline_cancellation_token();
 
     ctrl_c_handler::spawn_ctrl_c_handler(cancellation_token.clone());

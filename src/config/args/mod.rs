@@ -24,7 +24,9 @@ const DEFAULT_MAX_KEYS: i32 = 1000;
 const ERROR_MESSAGE_INVALID_TARGET: &str = "target must be an S3 path (e.g. s3://bucket/prefix)";
 
 fn check_s3_target(s: &str) -> Result<String, String> {
-    if s.starts_with("s3://") && s.len() > 5 {
+    if s.is_empty() {
+        Ok(s.to_string())
+    } else if s.starts_with("s3://") && s.len() > 5 {
         Ok(s.to_string())
     } else {
         Err(ERROR_MESSAGE_INVALID_TARGET.to_string())
@@ -41,6 +43,7 @@ pub enum SortField {
     Key,
     Size,
     Date,
+    Bucket,
 }
 
 impl std::fmt::Display for SortField {
@@ -49,6 +52,7 @@ impl std::fmt::Display for SortField {
             SortField::Key => write!(f, "key"),
             SortField::Size => write!(f, "size"),
             SortField::Date => write!(f, "date"),
+            SortField::Bucket => write!(f, "bucket"),
         }
     }
 }
@@ -64,13 +68,14 @@ impl std::fmt::Display for SortField {
 #[derive(Parser, Clone, Debug)]
 #[command(name = "s3ls", about, long_about = None, version)]
 pub struct CLIArgs {
-    /// S3 target path: s3://<BUCKET_NAME>[/prefix]
+    /// S3 target path: s3://<BUCKET_NAME>[/prefix] (omit to list buckets)
     #[arg(
         env,
         help = "s3://<BUCKET_NAME>[/prefix]",
         value_parser = check_s3_target,
         default_value_if("auto_complete_shell", clap::builder::ArgPredicate::IsPresent, "s3://ignored"),
         required = false,
+        default_value = "",
     )]
     pub target: String,
 
@@ -84,6 +89,10 @@ pub struct CLIArgs {
     /// List all versions including delete markers
     #[arg(long, env = "LIST_ALL_VERSIONS", default_value_t = false, help_heading = "General")]
     pub all_versions: bool,
+
+    /// List only Express One Zone directory buckets (when listing buckets)
+    #[arg(long, default_value_t = false, help_heading = "General")]
+    pub list_express_one_zone_bucket: bool,
 
     // -----------------------------------------------------------------------
     // Filtering options
@@ -373,7 +382,15 @@ where
 
 impl CLIArgs {
     fn parse_target(&self) -> Result<crate::types::S3Target, String> {
-        crate::types::S3Target::parse(&self.target).map_err(|e| e.to_string())
+        if self.target.is_empty() {
+            // No target — bucket listing mode
+            Ok(crate::types::S3Target {
+                bucket: String::new(),
+                prefix: None,
+            })
+        } else {
+            crate::types::S3Target::parse(&self.target).map_err(|e| e.to_string())
+        }
     }
 
     fn build_filter_config(&self) -> Result<crate::config::FilterConfig, String> {
@@ -487,6 +504,7 @@ impl TryFrom<CLIArgs> for crate::config::Config {
             target,
             recursive: args.recursive,
             all_versions: args.all_versions,
+            list_express_one_zone_bucket: args.list_express_one_zone_bucket,
             filter_config,
             sort,
             reverse: args.reverse,
