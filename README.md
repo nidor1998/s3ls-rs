@@ -13,6 +13,8 @@ real    1.38s
 
 For comparison, `aws s3 ls --recursive` typically processes around 5,000-8,000 objects/sec on the same bucket. s3ls is **~20x faster**.
 
+> *Performance measured on the developer's local machine (ap-northeast-1 region). Results may vary depending on network conditions, bucket prefix distribution, and S3 endpoint proximity.*
+
 ## Why s3ls?
 
 The standard `aws s3 ls` command makes sequential `ListObjectsV2` API calls — one page at a time. When you have hundreds of thousands or millions of objects, this becomes painfully slow.
