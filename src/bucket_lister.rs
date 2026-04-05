@@ -62,19 +62,25 @@ pub async fn list_buckets(config: &Config) -> Result<()> {
         let region = entry.region.as_deref().unwrap_or("");
         if config.display_config.json {
             let mut map = serde_json::Map::new();
-            map.insert("bucket".to_string(), serde_json::Value::String(entry.name.clone()));
+            map.insert("Name".to_string(), serde_json::Value::String(entry.name.clone()));
             if let Some(d) = entry.creation_date {
-                map.insert("creation_date".to_string(), serde_json::Value::String(d.to_rfc3339()));
+                map.insert("CreationDate".to_string(), serde_json::Value::String(d.to_rfc3339()));
             }
             if let Some(ref r) = entry.region {
-                map.insert("region".to_string(), serde_json::Value::String(r.clone()));
+                map.insert("BucketRegion".to_string(), serde_json::Value::String(r.clone()));
             }
             if show_owner {
-                if let Some(ref name) = entry.owner_display_name {
-                    map.insert("owner_display_name".to_string(), serde_json::Value::String(name.clone()));
-                }
-                if let Some(ref id) = entry.owner_id {
-                    map.insert("owner_id".to_string(), serde_json::Value::String(id.clone()));
+                let owner_id = entry.owner_id.as_ref();
+                let owner_name = entry.owner_display_name.as_ref();
+                if owner_id.is_some() || owner_name.is_some() {
+                    let mut owner = serde_json::Map::new();
+                    if let Some(name) = owner_name {
+                        owner.insert("DisplayName".to_string(), serde_json::Value::String(name.clone()));
+                    }
+                    if let Some(id) = owner_id {
+                        owner.insert("ID".to_string(), serde_json::Value::String(id.clone()));
+                    }
+                    map.insert("Owner".to_string(), serde_json::Value::Object(owner));
                 }
             }
             writeln!(writer, "{}", serde_json::to_string(&map).unwrap())?;

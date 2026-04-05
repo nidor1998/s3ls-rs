@@ -255,48 +255,57 @@ pub fn format_entry_json(entry: &ListEntry) -> String {
     match entry {
         ListEntry::CommonPrefix(prefix) => {
             let mut map = serde_json::Map::new();
-            map.insert("common_prefix".to_string(), serde_json::Value::String(prefix.clone()));
+            map.insert("Prefix".to_string(), serde_json::Value::String(prefix.clone()));
             serde_json::to_string(&map).unwrap()
         }
         ListEntry::Object(obj) => {
             let mut map = serde_json::Map::new();
-            map.insert("key".to_string(), serde_json::Value::String(obj.key().to_string()));
-            map.insert("size".to_string(), serde_json::json!(obj.size()));
+            map.insert("Key".to_string(), serde_json::Value::String(obj.key().to_string()));
             map.insert(
-                "last_modified".to_string(),
+                "LastModified".to_string(),
                 serde_json::Value::String(obj.last_modified().to_rfc3339()),
             );
-            map.insert("e_tag".to_string(), serde_json::Value::String(obj.e_tag().trim_matches('"').to_string()));
-            if let Some(sc) = obj.storage_class() {
-                map.insert("storage_class".to_string(), serde_json::Value::String(sc.to_string()));
-            }
+            map.insert("ETag".to_string(), serde_json::Value::String(obj.e_tag().to_string()));
             if let Some(algo) = obj.checksum_algorithm() {
                 map.insert(
-                    "checksum_algorithm".to_string(),
-                    serde_json::Value::String(algo.to_string()),
+                    "ChecksumAlgorithm".to_string(),
+                    serde_json::Value::Array(vec![serde_json::Value::String(algo.to_string())]),
                 );
             }
             if let Some(ctype) = obj.checksum_type() {
                 map.insert(
-                    "checksum_type".to_string(),
+                    "ChecksumType".to_string(),
                     serde_json::Value::String(ctype.to_string()),
                 );
             }
+            map.insert("Size".to_string(), serde_json::json!(obj.size()));
+            if let Some(sc) = obj.storage_class() {
+                map.insert("StorageClass".to_string(), serde_json::Value::String(sc.to_string()));
+            }
             if let Some(vid) = obj.version_id() {
-                map.insert("version_id".to_string(), serde_json::Value::String(vid.to_string()));
-                map.insert("is_latest".to_string(), serde_json::json!(obj.is_latest()));
+                map.insert("VersionId".to_string(), serde_json::Value::String(vid.to_string()));
+                map.insert("IsLatest".to_string(), serde_json::json!(obj.is_latest()));
             }
-            if let Some(name) = obj.owner_display_name() {
-                map.insert("owner_display_name".to_string(), serde_json::Value::String(name.to_string()));
-            }
-            if let Some(id) = obj.owner_id() {
-                map.insert("owner_id".to_string(), serde_json::Value::String(id.to_string()));
+            // Owner as nested object matching S3 API structure
+            let owner_id = obj.owner_id();
+            let owner_name = obj.owner_display_name();
+            if owner_id.is_some() || owner_name.is_some() {
+                let mut owner = serde_json::Map::new();
+                if let Some(name) = owner_name {
+                    owner.insert("DisplayName".to_string(), serde_json::Value::String(name.to_string()));
+                }
+                if let Some(id) = owner_id {
+                    owner.insert("ID".to_string(), serde_json::Value::String(id.to_string()));
+                }
+                map.insert("Owner".to_string(), serde_json::Value::Object(owner));
             }
             if let Some(in_progress) = obj.is_restore_in_progress() {
-                map.insert("is_restore_in_progress".to_string(), serde_json::json!(in_progress));
-            }
-            if let Some(expiry) = obj.restore_expiry_date() {
-                map.insert("restore_expiry_date".to_string(), serde_json::Value::String(expiry.to_string()));
+                let mut restore = serde_json::Map::new();
+                restore.insert("IsRestoreInProgress".to_string(), serde_json::json!(in_progress));
+                if let Some(expiry) = obj.restore_expiry_date() {
+                    restore.insert("RestoreExpiryDate".to_string(), serde_json::Value::String(expiry.to_string()));
+                }
+                map.insert("RestoreStatus".to_string(), serde_json::Value::Object(restore));
             }
             serde_json::to_string(&map).unwrap()
         }
@@ -307,14 +316,13 @@ pub fn format_entry_json(entry: &ListEntry) -> String {
             is_latest,
         } => {
             let mut map = serde_json::Map::new();
-            map.insert("key".to_string(), serde_json::Value::String(key.clone()));
-            map.insert("delete_marker".to_string(), serde_json::json!(true));
-            map.insert("version_id".to_string(), serde_json::Value::String(version_id.clone()));
+            map.insert("Key".to_string(), serde_json::Value::String(key.clone()));
+            map.insert("VersionId".to_string(), serde_json::Value::String(version_id.clone()));
+            map.insert("IsLatest".to_string(), serde_json::json!(*is_latest));
             map.insert(
-                "last_modified".to_string(),
+                "LastModified".to_string(),
                 serde_json::Value::String(last_modified.to_rfc3339()),
             );
-            map.insert("is_latest".to_string(), serde_json::json!(*is_latest));
             serde_json::to_string(&map).unwrap()
         }
     }
@@ -617,8 +625,10 @@ mod tests {
         let entry = make_entry("readme.txt", 1234, 2024, 1);
         let json = format_entry_json(&entry);
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed["key"], "readme.txt");
-        assert_eq!(parsed["size"], 1234);
+        assert_eq!(parsed["Key"], "readme.txt");
+        assert_eq!(parsed["Size"], 1234);
+        assert!(parsed["ETag"].is_string());
+        assert!(parsed["LastModified"].is_string());
     }
 
     #[test]
@@ -626,7 +636,7 @@ mod tests {
         let entry = ListEntry::CommonPrefix("logs/".to_string());
         let json = format_entry_json(&entry);
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed["common_prefix"], "logs/");
+        assert_eq!(parsed["Prefix"], "logs/");
     }
 
     #[test]
@@ -639,8 +649,9 @@ mod tests {
         };
         let json = format_entry_json(&entry);
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed["key"], "deleted.txt");
-        assert_eq!(parsed["delete_marker"], true);
+        assert_eq!(parsed["Key"], "deleted.txt");
+        assert_eq!(parsed["VersionId"], "v1");
+        assert_eq!(parsed["IsLatest"], true);
     }
 
     #[test]
