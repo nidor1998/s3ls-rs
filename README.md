@@ -36,6 +36,74 @@ s3ls takes a fundamentally different approach:
 
 This architecture means s3ls gets faster on buckets with well-distributed prefix hierarchies — exactly the kind of buckets that are slowest with sequential tools.
 
+## Options
+
+```
+$ s3ls -h
+Fast S3 object listing tool
+
+Usage: s3ls [OPTIONS] [TARGET]
+
+Arguments:
+  [TARGET]  s3://<BUCKET_NAME>[/prefix] [env: TARGET=] [default: ""]
+
+Options:
+  -v, --verbose...  Increase logging verbosity
+  -q, --quiet...    Decrease logging verbosity
+  -h, --help        Print help (see more with '--help')
+  -V, --version     Print version
+
+General:
+  -r, --recursive                         List all objects recursively (enables parallel listing)
+      --all-versions                      List all versions including delete markers
+      --hide-delete-marker                Hide delete markers from version listing (requires --all-versions)
+      --max-depth <MAX_DEPTH>             Maximum depth for recursive listing (requires --recursive)
+      --bucket-name-prefix <PREFIX>       Filter buckets by name prefix (when listing buckets)
+      --list-express-one-zone-buckets     List only Express One Zone directory buckets (when listing buckets)
+
+Filtering:
+      --filter-include-regex <REGEX>      List only objects whose key matches this regex
+      --filter-exclude-regex <REGEX>      Skip objects whose key matches this regex
+      --filter-mtime-before <TIME>        List only objects modified before this time
+      --filter-mtime-after <TIME>         List only objects modified at or after this time
+      --filter-smaller-size <SIZE>        List only objects smaller than this size
+      --filter-larger-size <SIZE>         List only objects larger than or equal to this size
+      --storage-class <LIST>              Comma-separated list of storage classes to include
+
+Sort:
+      --sort <SORT>                       Sort by field(s): key, size, date (comma-separated, max 2) [default: key]
+      --reverse                           Reverse the sort order
+      --no-sort                           Disable sorting and stream results directly (reduces memory usage)
+
+Display:
+      --summarize                         Append summary line (total count, total size)
+      --human-readable                    Human-readable sizes (e.g. 1.2KiB)
+      --show-relative-path                Show key relative to prefix instead of full path
+      --show-etag                         Show ETag column
+      --show-storage-class                Show storage class column
+      --show-checksum-algorithm           Show checksum algorithm column
+      --show-checksum-type                Show checksum type column
+      --show-is-latest                    Show is_latest column (requires --all-versions)
+      --show-owner                        Show owner DisplayName and ID columns
+      --show-restore-status               Show restore status column
+      --show-bucket-arn                   Show bucket ARN column (when listing buckets)
+      --header                            Add a header row to each column
+      --json                              Output as NDJSON (one JSON object per line)
+
+AWS Configuration:
+      --target-profile <PROFILE>          Target AWS CLI profile
+      --target-region <REGION>            AWS region for the target
+      --target-endpoint-url <URL>         Custom S3-compatible endpoint URL (e.g. MinIO, Wasabi)
+      --target-force-path-style           Use path-style access (required by some S3-compatible services)
+      --target-accelerate                 Enable S3 Transfer Acceleration
+      --target-request-payer              Enable requester-pays for the target bucket
+
+Performance:
+      --max-parallel-listings <N>         Number of concurrent listing operations (1-65535) [default: 32]
+      --max-parallel-listing-max-depth <N> Maximum depth for parallel listing operations [default: 2]
+      --no-sort                           Disable sorting and stream results directly (reduces memory usage)
+```
+
 ## Installation
 
 Download a pre-built binary from [GitHub Releases](https://github.com/nidor1998/s3ls-rs/releases) for your platform:
