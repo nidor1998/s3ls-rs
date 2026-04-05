@@ -166,7 +166,7 @@ JSON output is **S3 API-compliant** — field names, types, and structure match 
 }
 ```
 
-This means you can process s3ls JSON output with the same tools and scripts that parse `aws s3api` responses — no field name translation required. All available fields are always included regardless of `--show-*` flags.
+This means you can process s3ls JSON output with the same tools and scripts that parse S3 API responses — no field name translation required. All available fields are always included regardless of `--show-*` flags.
 
 ### Version Listing
 
@@ -247,68 +247,68 @@ There are several tools that can list S3 objects, but none of them expose the fu
 
 ### Feature Comparison
 
-| Feature | s3ls | aws s3 ls | aws s3api | s5cmd ls | rclone lsl | s3cmd ls |
-|---------|:----:|:---------:|:---------:|:--------:|:----------:|:--------:|
-| **Speed** | | | | | | |
-| Parallel listing | 32 concurrent | Sequential | Sequential | Parallel | Parallel | Sequential |
-| Throughput (200K objects) | ~1.4s | ~30s | ~25s | ~3-5s | ~10s | ~40s+ |
-| Streaming mode (no buffering) | `--no-sort` | - | - | - | - | - |
-| **Object Metadata** | | | | | | |
-| Key, Size, LastModified | Yes | Yes | Yes | Yes | Yes | Yes |
-| ETag | `--show-etag` | - | Yes | - | - | Yes |
-| StorageClass | `--show-storage-class` | - | Yes | Yes | - | Yes |
-| ChecksumAlgorithm | `--show-checksum-algorithm` | - | Yes | - | - | - |
-| ChecksumType | `--show-checksum-type` | - | Yes | - | - | - |
-| Owner (DisplayName + ID) | `--show-owner` | - | Yes | - | - | - |
-| RestoreStatus | `--show-restore-status` | - | - | - | - | - |
-| **Versioning** | | | | | | |
-| List all versions | `--all-versions` | - | Yes | - | - | - |
-| Show IsLatest | `--show-is-latest` | - | Yes | - | - | - |
-| Hide delete markers | `--hide-delete-marker` | - | - | - | - | - |
-| **Filtering** | | | | | | |
-| Regex include/exclude | Yes | - | - | Glob only | Filter | Glob only |
-| Modified time range | Yes | - | - | Before/After | Time range | After only |
-| Size range | Yes | - | - | Size filter | Size filter | - |
-| Storage class filter | Yes | - | - | - | - | - |
-| **Output** | | | | | | |
-| Tab-delimited text | Yes | Space-padded | - | Space-padded | Space-padded | Space-padded |
-| NDJSON (S3 API-aligned) | `--json` | - | JSON | `--json` | `--json` | - |
-| Column headers | `--header` | - | - | - | - | - |
-| Human-readable sizes | `--human-readable` | Yes | - | Yes | - | Yes |
-| Summary statistics | `--summarize` | Yes | - | - | - | - |
-| Full path / relative path | Default full | Relative | Full | Full | Relative | Relative |
-| **Listing Control** | | | | | | |
-| Depth-limited recursion | `--max-depth` | - | - | - | `--max-depth` | - |
-| PRE at depth boundary | Yes | - | - | - | - | - |
-| Non-recursive (PRE display) | Yes | Yes | Delimiter | Yes | - | Yes |
-| **Bucket Listing** | | | | | | |
-| List buckets | Yes | Yes | Yes | Yes | Yes | Yes |
-| Filter by name prefix | `--bucket-name-prefix` | - | `--prefix` | - | - | - |
-| Show bucket ARN | `--show-bucket-arn` | - | Yes | - | - | - |
-| Express One Zone buckets | Yes | - | Yes | - | - | - |
-| **Sorting** | | | | | | |
-| Multi-column sort | Up to 2 fields | - | - | - | - | - |
-| Sort by key/size/date | Yes | Key only | - | - | - | - |
-| Reverse sort | Yes | - | - | - | - | - |
-| **Infrastructure** | | | | | | |
-| Custom endpoint (MinIO, etc.) | Yes | Yes | Yes | Yes | Yes | Yes |
-| AWS profile support | Yes | Yes | Yes | Yes | Yes | Yes |
-| S3 Transfer Acceleration | Yes | Yes | Yes | - | - | - |
-| Requester-pays | Yes | Yes | Yes | - | - | - |
-| Shell completions | bash/zsh/fish/pwsh | - | bash/zsh | - | bash | - |
-| Single static binary | Yes | No (Python) | No (Python) | Yes | Yes | No (Python) |
+| Feature | s3ls | aws s3 ls | s5cmd ls | rclone lsl |
+|---------|:----:|:---------:|:--------:|:----------:|
+| **Speed** | | | | |
+| Parallel listing | 32 concurrent | Sequential | Parallel | Parallel |
+| Throughput (200K objects) | ~1.4s | ~30s | ~3-5s | ~10s |
+| Streaming mode (no buffering) | `--no-sort` | - | - | - |
+| **Object Metadata** | | | | |
+| Key, Size, LastModified | Yes | Yes | Yes | Yes |
+| ETag | `--show-etag` | - | - | - |
+| StorageClass | `--show-storage-class` | - | Yes | - |
+| ChecksumAlgorithm | `--show-checksum-algorithm` | - | - | - |
+| ChecksumType | `--show-checksum-type` | - | - | - |
+| Owner (DisplayName + ID) | `--show-owner` | - | - | - |
+| RestoreStatus | `--show-restore-status` | - | - | - |
+| **Versioning** | | | | |
+| List all versions | `--all-versions` | - | - | - |
+| Show IsLatest | `--show-is-latest` | - | - | - |
+| Hide delete markers | `--hide-delete-marker` | - | - | - |
+| **Filtering** | | | | |
+| Regex include/exclude | Yes | - | Glob only | Filter |
+| Modified time range | Yes | - | Before/After | Time range |
+| Size range | Yes | - | Size filter | Size filter |
+| Storage class filter | Yes | - | - | - |
+| **Output** | | | | |
+| Tab-delimited text | Yes | Space-padded | Space-padded | Space-padded |
+| NDJSON (S3 API-aligned) | `--json` | - | `--json` | `--json` |
+| Column headers | `--header` | - | - | - |
+| Human-readable sizes | `--human-readable` | Yes | Yes | - |
+| Summary statistics | `--summarize` | Yes | - | - |
+| Full path / relative path | Default full | Relative | Full | Relative |
+| **Listing Control** | | | | |
+| Depth-limited recursion | `--max-depth` | - | - | `--max-depth` |
+| PRE at depth boundary | Yes | - | - | - |
+| Non-recursive (PRE display) | Yes | Yes | Yes | - |
+| **Bucket Listing** | | | | |
+| List buckets | Yes | Yes | Yes | Yes |
+| Filter by name prefix | `--bucket-name-prefix` | - | - | - |
+| Show bucket ARN | `--show-bucket-arn` | - | - | - |
+| Express One Zone buckets | Yes | - | - | - |
+| **Sorting** | | | | |
+| Multi-column sort | Up to 2 fields | - | - | - |
+| Sort by key/size/date | Yes | Key only | - | - |
+| Reverse sort | Yes | - | - | - |
+| **Infrastructure** | | | | |
+| Custom endpoint (MinIO, etc.) | Yes | Yes | Yes | Yes |
+| AWS profile support | Yes | Yes | Yes | Yes |
+| S3 Transfer Acceleration | Yes | Yes | - | - |
+| Requester-pays | Yes | Yes | - | - |
+| Shell completions | bash/zsh/fish/pwsh | - | - | bash |
+| Single static binary | Yes | No (Python) | Yes | Yes |
 
 ### Key Differentiators
 
 **No other tool exposes all of this from a single command:**
 
-- **ChecksumAlgorithm and ChecksumType** — S3 added these fields for data integrity verification (CRC32, CRC32C, SHA1, SHA256, CRC64NVME). `aws s3api` returns them in JSON, but no CLI listing tool surfaces them in a usable way. s3ls does.
+- **ChecksumAlgorithm and ChecksumType** — S3 added these fields for data integrity verification (CRC32, CRC32C, SHA1, SHA256, CRC64NVME). No other CLI listing tool surfaces them. s3ls does.
 
 - **RestoreStatus** — When you restore objects from Glacier/Deep Archive, S3 tracks whether the restore is in progress and when it expires. This requires the `OptionalObjectAttributes=RestoreStatus` request parameter. s3ls is the only listing tool that supports this.
 
 - **Owner information** — S3 can return the object owner's DisplayName and ID, but it requires `fetch-owner=true` on the API call (which costs slightly more). Most tools skip this entirely. s3ls exposes it with `--show-owner` and renders it as a nested `Owner` object in JSON, matching the S3 API structure.
 
-- **Hide delete markers** — When listing versions, delete markers clutter the output. `aws s3api` returns them but offers no way to filter them out. s3ls provides `--hide-delete-marker`.
+- **Hide delete markers** — When listing versions, delete markers clutter the output. No other listing tool offers a way to filter them out. s3ls provides `--hide-delete-marker`.
 
 - **Depth-limited recursion with PRE** — `--max-depth` with `--recursive` lets you explore a bucket hierarchy level by level, showing "PRE" entries at the boundary just like non-recursive mode. This is invaluable for understanding the structure of unfamiliar buckets without listing millions of objects.
 
