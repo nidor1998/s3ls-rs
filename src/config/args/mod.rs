@@ -220,6 +220,10 @@ pub struct CLIArgs {
     #[arg(long, default_value_t = false, help_heading = "Display")]
     pub show_restore_status: bool,
 
+    /// Show bucket ARN column (when listing buckets)
+    #[arg(long, default_value_t = false, help_heading = "Display")]
+    pub show_bucket_arn: bool,
+
     /// Add a header row to each column
     #[arg(long, default_value_t = false, help_heading = "Display")]
     pub header: bool,
@@ -547,6 +551,7 @@ impl TryFrom<CLIArgs> for crate::config::Config {
                 show_is_latest: args.show_is_latest,
                 show_owner: args.show_owner,
                 show_restore_status: args.show_restore_status,
+                show_bucket_arn: args.show_bucket_arn,
                 header: args.header,
                 json: args.json,
             },

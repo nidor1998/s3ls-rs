@@ -117,6 +117,7 @@ pub struct DisplayConfig {
     pub show_is_latest: bool,
     pub show_owner: bool,
     pub show_restore_status: bool,
+    pub show_bucket_arn: bool,
     pub header: bool,
     pub json: bool,
 }

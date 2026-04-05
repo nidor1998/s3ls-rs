@@ -682,6 +682,7 @@ fn verify_all_defaults() {
     assert!(!cli.show_storage_class);
     assert!(!cli.show_checksum_algorithm);
     assert!(!cli.show_checksum_type);
+    assert!(!cli.show_bucket_arn);
     assert!(!cli.json);
 
     // Tracing

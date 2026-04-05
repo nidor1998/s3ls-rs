@@ -9,6 +9,7 @@ struct BucketEntry {
     name: String,
     creation_date: Option<DateTime<Utc>>,
     region: Option<String>,
+    bucket_arn: Option<String>,
     owner_display_name: Option<String>,
     owner_id: Option<String>,
 }
@@ -45,9 +46,13 @@ pub async fn list_buckets(config: &Config) -> Result<()> {
     let mut writer = std::io::BufWriter::new(stdout.lock());
 
     let show_owner = config.display_config.show_owner;
+    let show_bucket_arn = config.display_config.show_bucket_arn;
 
     if config.display_config.header && !config.display_config.json {
         let mut header = "DATE\tREGION\tBUCKET".to_string();
+        if show_bucket_arn {
+            header.push_str("\tBUCKET_ARN");
+        }
         if show_owner {
             header.push_str("\tOWNER_DISPLAY_NAME\tOWNER_ID");
         }
@@ -69,6 +74,11 @@ pub async fn list_buckets(config: &Config) -> Result<()> {
             if let Some(ref r) = entry.region {
                 map.insert("BucketRegion".to_string(), serde_json::Value::String(r.clone()));
             }
+            if show_bucket_arn
+                && let Some(ref arn) = entry.bucket_arn
+            {
+                map.insert("BucketArn".to_string(), serde_json::Value::String(arn.clone()));
+            }
             if show_owner {
                 let owner_id = entry.owner_id.as_ref();
                 let owner_name = entry.owner_display_name.as_ref();
@@ -86,6 +96,9 @@ pub async fn list_buckets(config: &Config) -> Result<()> {
             writeln!(writer, "{}", serde_json::to_string(&map).unwrap())?;
         } else {
             let mut line = format!("{date}\t{region}\t{}", entry.name);
+            if show_bucket_arn {
+                line.push_str(&format!("\t{}", entry.bucket_arn.as_deref().unwrap_or("")));
+            }
             if show_owner {
                 line.push_str(&format!(
                     "\t{}\t{}",
@@ -127,6 +140,7 @@ async fn list_general_buckets(client: &Client, prefix: Option<&str>) -> Result<V
                 name: b.name().unwrap_or_default().to_string(),
                 creation_date: b.creation_date().and_then(aws_datetime_to_chrono),
                 region: b.bucket_region().map(|r| r.to_string()),
+                bucket_arn: b.bucket_arn().map(|s| s.to_string()),
                 owner_display_name: owner_display_name.clone(),
                 owner_id: owner_id.clone(),
             });
@@ -163,6 +177,7 @@ async fn list_directory_buckets(client: &Client) -> Result<Vec<BucketEntry>> {
                 name: b.name().unwrap_or_default().to_string(),
                 creation_date: b.creation_date().and_then(aws_datetime_to_chrono),
                 region: b.bucket_region().map(|r| r.to_string()),
+                bucket_arn: None,
                 owner_display_name: None,
                 owner_id: None,
             });
