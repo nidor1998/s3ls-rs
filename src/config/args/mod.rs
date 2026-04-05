@@ -185,11 +185,11 @@ pub struct CLIArgs {
     // Display options
     // -----------------------------------------------------------------------
     /// Append summary line (total count, total size)
-    #[arg(long, default_value_t = false, help_heading = "Display")]
+    #[arg(long = "summarize", default_value_t = false, help_heading = "Display")]
     pub summary: bool,
 
     /// Human-readable sizes (e.g. 1.2KiB)
-    #[arg(long, default_value_t = false, help_heading = "Display")]
+    #[arg(long = "human-readable", default_value_t = false, help_heading = "Display")]
     pub human: bool,
 
     /// Show key relative to prefix instead of full path

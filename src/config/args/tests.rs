@@ -315,13 +315,13 @@ fn no_sort_conflicts_with_reverse() {
 
 #[test]
 fn display_summary() {
-    let cli = parse_from_args(args(&["s3://bucket", "--summary"])).unwrap();
+    let cli = parse_from_args(args(&["s3://bucket", "--summarize"])).unwrap();
     assert!(cli.summary);
 }
 
 #[test]
 fn display_human() {
-    let cli = parse_from_args(args(&["s3://bucket", "--human"])).unwrap();
+    let cli = parse_from_args(args(&["s3://bucket", "--human-readable"])).unwrap();
     assert!(cli.human);
 }
 
@@ -365,8 +365,8 @@ fn display_json() {
 fn all_display_options_combined() {
     let cli = parse_from_args(args(&[
         "s3://bucket",
-        "--summary",
-        "--human",
+        "--summarize",
+        "--human-readable",
         "--show-relative-path",
         "--show-etag",
         "--show-storage-class",
@@ -847,8 +847,8 @@ fn full_combination_many_flags() {
         "--sort",
         "date",
         "--reverse",
-        "--summary",
-        "--human",
+        "--summarize",
+        "--human-readable",
         "--show-relative-path",
         "--show-etag",
         "--json",
@@ -938,8 +938,8 @@ fn config_from_full_args() {
         "--sort",
         "date",
         "--reverse",
-        "--human",
-        "--summary",
+        "--human-readable",
+        "--summarize",
         "--json",
     ])
     .unwrap();
