@@ -265,13 +265,13 @@ fn sort_two_fields_size_date() {
 
 #[test]
 fn sort_rejects_three_fields() {
-    let result = parse_from_args(args(&["s3://bucket", "--sort", "key,size,date"]));
+    let result = build_config_from_args(args(&["s3://bucket", "--sort", "key,size,date"]));
     assert!(result.is_err());
 }
 
 #[test]
 fn sort_rejects_duplicate_fields() {
-    let result = parse_from_args(args(&["s3://bucket", "--sort", "date,date"]));
+    let result = build_config_from_args(args(&["s3://bucket", "--sort", "date,date"]));
     assert!(result.is_err());
 }
 

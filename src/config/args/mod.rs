@@ -408,25 +408,7 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    let cli = CLIArgs::try_parse_from(args)?;
-    if cli.sort.len() > 2 {
-        return Err(clap::Error::raw(
-            clap::error::ErrorKind::TooManyValues,
-            "at most 2 sort fields allowed\n",
-        ));
-    }
-    // Check for duplicates
-    for i in 0..cli.sort.len() {
-        for j in (i + 1)..cli.sort.len() {
-            if cli.sort[i] == cli.sort[j] {
-                return Err(clap::Error::raw(
-                    clap::error::ErrorKind::InvalidValue,
-                    format!("duplicate sort field '{}'\n", cli.sort[i]),
-                ));
-            }
-        }
-    }
-    Ok(cli)
+    CLIArgs::try_parse_from(args)
 }
 
 /// Parse arguments and build a Config in one step.
@@ -546,6 +528,17 @@ impl TryFrom<CLIArgs> for crate::config::Config {
     type Error = String;
 
     fn try_from(args: CLIArgs) -> Result<Self, Self::Error> {
+        if args.sort.len() > 2 {
+            return Err("at most 2 sort fields allowed".to_string());
+        }
+        for i in 0..args.sort.len() {
+            for j in (i + 1)..args.sort.len() {
+                if args.sort[i] == args.sort[j] {
+                    return Err(format!("duplicate sort field '{}'", args.sort[i]));
+                }
+            }
+        }
+
         let target = args.parse_target()?;
         let filter_config = args.build_filter_config()?;
         let target_client_config = args.build_client_config();
