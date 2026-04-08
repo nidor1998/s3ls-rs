@@ -21,7 +21,7 @@ const DEFAULT_AWS_MAX_ATTEMPTS: u32 = 10;
 const DEFAULT_INITIAL_BACKOFF_MILLISECONDS: u64 = 100;
 const DEFAULT_MAX_KEYS: i32 = 1000;
 
-const ERROR_MESSAGE_INVALID_TARGET: &str = "target must be an S3 path (e.g. s3://bucket/prefix)";
+const ERROR_MESSAGE_INVALID_TARGET: &str = "target must be an S3 path (e.g. s3://bucket or s3://bucket/prefix)";
 
 fn check_s3_target(s: &str) -> Result<String, String> {
     if s.is_empty() || (s.starts_with("s3://") && s.len() > 5) {
