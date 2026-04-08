@@ -199,7 +199,7 @@ pub struct CLIArgs {
     #[arg(long, default_value_t = false, help_heading = "Sort")]
     pub reverse: bool,
 
-    /// Disable sorting and stream results directly (reduces memory usage)
+    /// Disable sorting and stream results directly in arbitrary order (reduces memory usage)
     #[arg(long, default_value_t = false, conflicts_with_all = ["sort", "reverse"], help_heading = "Sort")]
     pub no_sort: bool,
 
