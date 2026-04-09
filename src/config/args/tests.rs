@@ -301,7 +301,89 @@ fn sort_and_reverse_combo() {
 }
 
 // ===========================================================================
-// 4b. --no-sort
+// 4b. Sort field validation by listing mode
+// ===========================================================================
+
+#[test]
+fn sort_object_listing_default_is_key() {
+    let config = build_config_from_args(args(&["s3://bucket"])).unwrap();
+    assert_eq!(config.sort, vec![SortField::Key]);
+}
+
+#[test]
+fn sort_bucket_listing_default_is_bucket() {
+    let config = build_config_from_args(args(&[])).unwrap();
+    assert_eq!(config.sort, vec![SortField::Bucket]);
+}
+
+#[test]
+fn sort_bucket_listing_accepts_bucket() {
+    let config = build_config_from_args(args(&["--sort", "bucket"])).unwrap();
+    assert_eq!(config.sort, vec![SortField::Bucket]);
+}
+
+#[test]
+fn sort_bucket_listing_accepts_region() {
+    let config = build_config_from_args(args(&["--sort", "region"])).unwrap();
+    assert_eq!(config.sort, vec![SortField::Region]);
+}
+
+#[test]
+fn sort_bucket_listing_accepts_date() {
+    let config = build_config_from_args(args(&["--sort", "date"])).unwrap();
+    assert_eq!(config.sort, vec![SortField::Date]);
+}
+
+#[test]
+fn sort_bucket_listing_accepts_two_fields() {
+    let config = build_config_from_args(args(&["--sort", "date,bucket"])).unwrap();
+    assert_eq!(config.sort, vec![SortField::Date, SortField::Bucket]);
+}
+
+#[test]
+fn sort_bucket_listing_rejects_key() {
+    let result = build_config_from_args(args(&["--sort", "key"]));
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("not valid for bucket listing"));
+}
+
+#[test]
+fn sort_bucket_listing_rejects_size() {
+    let result = build_config_from_args(args(&["--sort", "size"]));
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("not valid for bucket listing"));
+}
+
+#[test]
+fn sort_bucket_listing_rejects_three_fields() {
+    let result = build_config_from_args(args(&["--sort", "bucket,region,date"]));
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("at most 2 sort fields"));
+}
+
+#[test]
+fn sort_object_listing_rejects_bucket() {
+    let result = build_config_from_args(args(&["s3://bucket", "--sort", "bucket"]));
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("not valid for object listing"));
+}
+
+#[test]
+fn sort_object_listing_rejects_region() {
+    let result = build_config_from_args(args(&["s3://bucket", "--sort", "region"]));
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("not valid for object listing"));
+}
+
+#[test]
+fn sort_bucket_listing_rejects_duplicate() {
+    let result = build_config_from_args(args(&["--sort", "bucket,bucket"]));
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("duplicate sort field"));
+}
+
+// ===========================================================================
+// 4c. --no-sort
 // ===========================================================================
 
 #[test]
