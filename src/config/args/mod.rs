@@ -72,7 +72,7 @@ pub struct CLIArgs {
     /// S3 target path: s3://<BUCKET_NAME>[/prefix] (omit to list buckets)
     #[arg(
         env,
-        help = "s3://<BUCKET_NAME>[/prefix]",
+        help = "S3 target path: s3://<BUCKET_NAME>[/prefix] (omit to list buckets)",
         value_parser = check_s3_target,
         default_value_if("auto_complete_shell", clap::builder::ArgPredicate::IsPresent, "s3://ignored"),
         required = false,
@@ -105,6 +105,7 @@ pub struct CLIArgs {
     /// Hide delete markers from version listing (requires --all-versions)
     #[arg(
         long,
+        env,
         default_value_t = false,
         requires = "all_versions",
         help_heading = "General"
@@ -116,11 +117,11 @@ pub struct CLIArgs {
     pub max_depth: Option<u16>,
 
     /// Filter buckets by name prefix (when listing buckets)
-    #[arg(long, help_heading = "General")]
+    #[arg(long, env, help_heading = "General")]
     pub bucket_name_prefix: Option<String>,
 
     /// List only Express One Zone directory buckets (when listing buckets)
-    #[arg(long, default_value_t = false, help_heading = "General")]
+    #[arg(long, env, default_value_t = false, help_heading = "General")]
     pub list_express_one_zone_buckets: bool,
 
     // -----------------------------------------------------------------------
@@ -187,55 +188,68 @@ pub struct CLIArgs {
     // Sort options
     // -----------------------------------------------------------------------
     /// Sort results by field(s): key/size/date for objects, bucket/region/date for bucket listing (comma-separated)
-    #[arg(long, value_delimiter = ',', ignore_case = true, help_heading = "Sort")]
+    #[arg(
+        long,
+        env,
+        value_delimiter = ',',
+        ignore_case = true,
+        help_heading = "Sort"
+    )]
     pub sort: Vec<SortField>,
 
     /// Reverse the sort order
-    #[arg(long, default_value_t = false, help_heading = "Sort")]
+    #[arg(long, env, default_value_t = false, help_heading = "Sort")]
     pub reverse: bool,
 
     /// Disable sorting and stream results directly in arbitrary order (reduces memory usage)
-    #[arg(long, default_value_t = false, conflicts_with_all = ["sort", "reverse"], help_heading = "Sort")]
+    #[arg(long, env, default_value_t = false, conflicts_with_all = ["sort", "reverse"], help_heading = "Sort")]
     pub no_sort: bool,
 
     // -----------------------------------------------------------------------
     // Display options
     // -----------------------------------------------------------------------
     /// Append summary line (total count, total size)
-    #[arg(long = "summarize", default_value_t = false, help_heading = "Display")]
+    #[arg(
+        long = "summarize",
+        env = "SUMMARIZE",
+        default_value_t = false,
+        help_heading = "Display"
+    )]
     pub summary: bool,
 
     /// Human-readable sizes (e.g. 1.2KiB)
     #[arg(
         long = "human-readable",
+        env = "HUMAN_READABLE",
         default_value_t = false,
         help_heading = "Display"
     )]
     pub human: bool,
 
     /// Show key relative to prefix instead of full path
-    #[arg(long, default_value_t = false, help_heading = "Display")]
+    #[arg(long, env, default_value_t = false, help_heading = "Display")]
     pub show_relative_path: bool,
 
     /// Show ETag column
-    #[arg(long, default_value_t = false, help_heading = "Display")]
+    #[arg(long, env, default_value_t = false, help_heading = "Display")]
     pub show_etag: bool,
 
     /// Show storage class column
-    #[arg(long, default_value_t = false, help_heading = "Display")]
+    #[arg(long, env, default_value_t = false, help_heading = "Display")]
     pub show_storage_class: bool,
 
     /// Show checksum algorithm column
-    #[arg(long, default_value_t = false, help_heading = "Display")]
+    #[arg(long, env, default_value_t = false, help_heading = "Display")]
     pub show_checksum_algorithm: bool,
 
     /// Show checksum type column
-    #[arg(long, default_value_t = false, help_heading = "Display")]
+    #[arg(long, env, default_value_t = false, help_heading = "Display")]
     pub show_checksum_type: bool,
 
     /// Show is_latest column (requires --all-versions)
     #[arg(
         long,
+        env,
         default_value_t = false,
         requires = "all_versions",
         help_heading = "Display"
@@ -243,23 +257,23 @@ pub struct CLIArgs {
     pub show_is_latest: bool,
 
     /// Show owner DisplayName and ID columns
-    #[arg(long, default_value_t = false, help_heading = "Display")]
+    #[arg(long, env, default_value_t = false, help_heading = "Display")]
     pub show_owner: bool,
 
     /// Show restore status column
-    #[arg(long, default_value_t = false, help_heading = "Display")]
+    #[arg(long, env, default_value_t = false, help_heading = "Display")]
     pub show_restore_status: bool,
 
     /// Show bucket ARN column (when listing buckets)
-    #[arg(long, default_value_t = false, help_heading = "Display")]
+    #[arg(long, env, default_value_t = false, help_heading = "Display")]
     pub show_bucket_arn: bool,
 
     /// Add a header row to each column
-    #[arg(long, default_value_t = false, help_heading = "Display")]
+    #[arg(long, env, default_value_t = false, help_heading = "Display")]
     pub header: bool,
 
     /// Output as NDJSON (one JSON object per line)
-    #[arg(long, default_value_t = false, help_heading = "Display")]
+    #[arg(long, env, default_value_t = false, help_heading = "Display")]
     pub json: bool,
 
     // -----------------------------------------------------------------------
