@@ -538,6 +538,40 @@ impl TryFrom<CLIArgs> for crate::config::Config {
 
         let is_bucket_listing = target.bucket.is_empty();
 
+        // Reject object-only options in bucket listing mode.
+        if is_bucket_listing {
+            if args.recursive {
+                return Err("--recursive is not valid for bucket listing".to_string());
+            }
+            if args.all_versions {
+                return Err("--all-versions is not valid for bucket listing".to_string());
+            }
+            if args.max_depth.is_some() {
+                return Err("--max-depth is not valid for bucket listing".to_string());
+            }
+            if args.filter_include_regex.is_some() {
+                return Err("--filter-include-regex is not valid for bucket listing".to_string());
+            }
+            if args.filter_exclude_regex.is_some() {
+                return Err("--filter-exclude-regex is not valid for bucket listing".to_string());
+            }
+            if args.filter_mtime_before.is_some() {
+                return Err("--filter-mtime-before is not valid for bucket listing".to_string());
+            }
+            if args.filter_mtime_after.is_some() {
+                return Err("--filter-mtime-after is not valid for bucket listing".to_string());
+            }
+            if args.filter_smaller_size.is_some() {
+                return Err("--filter-smaller-size is not valid for bucket listing".to_string());
+            }
+            if args.filter_larger_size.is_some() {
+                return Err("--filter-larger-size is not valid for bucket listing".to_string());
+            }
+            if args.storage_class.is_some() {
+                return Err("--storage-class is not valid for bucket listing".to_string());
+            }
+        }
+
         // Apply default sort when --sort is not specified.
         let sort = if args.sort.is_empty() {
             if is_bucket_listing {

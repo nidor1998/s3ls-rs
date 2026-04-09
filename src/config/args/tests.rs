@@ -383,6 +383,127 @@ fn sort_bucket_listing_rejects_duplicate() {
 }
 
 // ===========================================================================
+// 4b-2. Object-only options rejected in bucket listing mode
+// ===========================================================================
+
+#[test]
+fn bucket_listing_rejects_recursive() {
+    let result = build_config_from_args(args(&["--recursive"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--recursive is not valid for bucket listing")
+    );
+}
+
+#[test]
+fn bucket_listing_rejects_all_versions() {
+    let result = build_config_from_args(args(&["--all-versions"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--all-versions is not valid for bucket listing")
+    );
+}
+
+#[test]
+fn bucket_listing_rejects_max_depth() {
+    let result = build_config_from_args(args(&["--recursive", "--max-depth", "3"]));
+    assert!(result.is_err());
+}
+
+#[test]
+fn bucket_listing_rejects_filter_include_regex() {
+    let result = build_config_from_args(args(&["--filter-include-regex", r"\.csv$"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--filter-include-regex is not valid for bucket listing")
+    );
+}
+
+#[test]
+fn bucket_listing_rejects_filter_exclude_regex() {
+    let result = build_config_from_args(args(&["--filter-exclude-regex", r"^temp/"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--filter-exclude-regex is not valid for bucket listing")
+    );
+}
+
+#[test]
+fn bucket_listing_rejects_filter_mtime_before() {
+    let result = build_config_from_args(args(&["--filter-mtime-before", "2025-01-01T00:00:00Z"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--filter-mtime-before is not valid for bucket listing")
+    );
+}
+
+#[test]
+fn bucket_listing_rejects_filter_mtime_after() {
+    let result = build_config_from_args(args(&["--filter-mtime-after", "2025-01-01T00:00:00Z"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--filter-mtime-after is not valid for bucket listing")
+    );
+}
+
+#[test]
+fn bucket_listing_rejects_filter_smaller_size() {
+    let result = build_config_from_args(args(&["--filter-smaller-size", "10MiB"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--filter-smaller-size is not valid for bucket listing")
+    );
+}
+
+#[test]
+fn bucket_listing_rejects_filter_larger_size() {
+    let result = build_config_from_args(args(&["--filter-larger-size", "1GiB"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--filter-larger-size is not valid for bucket listing")
+    );
+}
+
+#[test]
+fn bucket_listing_rejects_storage_class() {
+    let result = build_config_from_args(args(&["--storage-class", "STANDARD"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--storage-class is not valid for bucket listing")
+    );
+}
+
+#[test]
+fn bucket_listing_allows_reverse() {
+    let config = build_config_from_args(args(&["--reverse"])).unwrap();
+    assert!(config.reverse);
+}
+
+#[test]
+fn bucket_listing_allows_no_sort() {
+    let config = build_config_from_args(args(&["--no-sort"])).unwrap();
+    assert!(config.no_sort);
+}
+
+// ===========================================================================
 // 4c. --no-sort
 // ===========================================================================
 
