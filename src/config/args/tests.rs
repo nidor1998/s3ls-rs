@@ -734,8 +734,8 @@ fn verify_all_defaults() {
     assert!(cli.filter_larger_size.is_none());
     assert!(cli.storage_class.is_none());
 
-    // Sort
-    assert_eq!(cli.sort, vec![SortField::Key]);
+    // Sort (no default — Config::try_from applies mode-specific default)
+    assert!(cli.sort.is_empty());
     assert!(!cli.reverse);
     assert!(!cli.no_sort);
 

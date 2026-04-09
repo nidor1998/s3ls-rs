@@ -186,14 +186,8 @@ pub struct CLIArgs {
     // -----------------------------------------------------------------------
     // Sort options
     // -----------------------------------------------------------------------
-    /// Sort results by field(s): key, size, date (comma-separated, max 2)
-    #[arg(
-        long,
-        default_value = "key",
-        value_delimiter = ',',
-        ignore_case = true,
-        help_heading = "Sort"
-    )]
+    /// Sort results by field(s): key/size/date for objects, bucket/region/date for bucket listing (comma-separated)
+    #[arg(long, value_delimiter = ',', ignore_case = true, help_heading = "Sort")]
     pub sort: Vec<SortField>,
 
     /// Reverse the sort order
@@ -529,9 +523,6 @@ impl TryFrom<CLIArgs> for crate::config::Config {
     type Error = String;
 
     fn try_from(args: CLIArgs) -> Result<Self, Self::Error> {
-        if args.sort.len() > 2 {
-            return Err("at most 2 sort fields allowed".to_string());
-        }
         for i in 0..args.sort.len() {
             for j in (i + 1)..args.sort.len() {
                 if args.sort[i] == args.sort[j] {
@@ -545,20 +536,55 @@ impl TryFrom<CLIArgs> for crate::config::Config {
         let target_client_config = args.build_client_config();
         let tracing_config = args.build_tracing_config();
 
-        // In bucket listing mode, replace the default sort field (Key) with Bucket.
-        let mut sort = args.sort;
-        if target.bucket.is_empty() && sort == vec![crate::config::args::SortField::Key] {
-            sort = vec![crate::config::args::SortField::Bucket];
+        let is_bucket_listing = target.bucket.is_empty();
+
+        // Apply default sort when --sort is not specified.
+        let sort = if args.sort.is_empty() {
+            if is_bucket_listing {
+                vec![SortField::Bucket]
+            } else {
+                vec![SortField::Key]
+            }
+        } else {
+            args.sort
+        };
+
+        // Validate sort fields for the listing mode.
+        if is_bucket_listing {
+            for field in &sort {
+                match field {
+                    SortField::Key | SortField::Size => {
+                        return Err(format!(
+                            "sort field '{}' is not valid for bucket listing (use bucket, region, or date)",
+                            field
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+        } else {
+            for field in &sort {
+                match field {
+                    SortField::Bucket | SortField::Region => {
+                        return Err(format!(
+                            "sort field '{}' is not valid for object listing (use key, size, or date)",
+                            field
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if sort.len() > 2 {
+            return Err("at most 2 sort fields allowed".to_string());
         }
 
         // When --all-versions is set and the user specified only one sort field,
         // append Date as a secondary sort so versions of the same key appear in
         // chronological order.
-        if args.all_versions
-            && sort.len() == 1
-            && !sort.contains(&crate::config::args::SortField::Date)
-        {
-            sort.push(crate::config::args::SortField::Date);
+        let mut sort = sort;
+        if args.all_versions && sort.len() == 1 && !sort.contains(&SortField::Date) {
+            sort.push(SortField::Date);
         }
 
         Ok(crate::config::Config {
