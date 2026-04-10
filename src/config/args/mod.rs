@@ -242,7 +242,7 @@ pub struct CLIArgs {
     #[arg(long, env, default_value_t = false, help_heading = "Display")]
     pub show_relative_path: bool,
 
-    /// Show ETag column
+    /// Show ETAG column
     #[arg(
         long,
         env,
@@ -252,7 +252,7 @@ pub struct CLIArgs {
     )]
     pub show_etag: bool,
 
-    /// Show storage class column
+    /// Show STORAGE_CLASS column
     #[arg(
         long,
         env,
@@ -262,7 +262,7 @@ pub struct CLIArgs {
     )]
     pub show_storage_class: bool,
 
-    /// Show checksum algorithm column
+    /// Show CHECKSUM_ALGORITHM column
     #[arg(
         long,
         env,
@@ -272,7 +272,7 @@ pub struct CLIArgs {
     )]
     pub show_checksum_algorithm: bool,
 
-    /// Show checksum type column
+    /// Show CHECKSUM_TYPE column
     #[arg(
         long,
         env,
@@ -282,7 +282,7 @@ pub struct CLIArgs {
     )]
     pub show_checksum_type: bool,
 
-    /// Show IsLatest column (requires --all-versions)
+    /// Show IS_LATEST column (requires --all-versions)
     #[arg(
         long,
         env,
@@ -293,7 +293,7 @@ pub struct CLIArgs {
     )]
     pub show_is_latest: bool,
 
-    /// Show owner DisplayName and ID columns
+    /// Show OWNER_DISPLAY_NAME and OWNER_ID columns
     #[arg(
         long,
         env,
@@ -303,7 +303,7 @@ pub struct CLIArgs {
     )]
     pub show_owner: bool,
 
-    /// Show restore status column
+    /// Show IS_RESTORE_IN_PROGRESS and RESTORE_EXPIRY_DATE columns
     #[arg(
         long,
         env,
