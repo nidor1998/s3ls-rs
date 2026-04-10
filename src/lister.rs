@@ -1,5 +1,7 @@
+use crate::filters::FilterChain;
 use crate::storage::StorageTrait;
 use crate::types::ListEntry;
+use crate::types::token::PipelineCancellationToken;
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -10,20 +12,57 @@ pub struct ObjectLister {
     pub sender: mpsc::Sender<ListEntry>,
     pub all_versions: bool,
     pub max_keys: i32,
+    pub queue_size: usize,
+    pub cancellation_token: PipelineCancellationToken,
+    pub hide_delete_markers: bool,
+    pub filter_chain: FilterChain,
 }
 
 impl ObjectLister {
     pub async fn list_target(self) -> Result<()> {
         debug!("list target objects has started.");
-        let result = if self.all_versions {
-            self.storage
-                .list_object_versions(&self.sender, self.max_keys)
-                .await
-        } else {
-            self.storage.list_objects(&self.sender, self.max_keys).await
-        };
+
+        let (list_tx, mut list_rx) = mpsc::channel(self.queue_size);
+
+        let storage = self.storage.clone();
+        let all_versions = self.all_versions;
+        let max_keys = self.max_keys;
+
+        let inner_handle = tokio::spawn(async move {
+            if all_versions {
+                storage.list_object_versions(&list_tx, max_keys).await
+            } else {
+                storage.list_objects(&list_tx, max_keys).await
+            }
+        });
+
+        // Filter inline and forward to aggregate channel
+        while let Some(entry) = list_rx.recv().await {
+            if self.cancellation_token.is_cancelled() {
+                break;
+            }
+            if self.hide_delete_markers && entry.is_delete_marker() {
+                continue;
+            }
+            if self.filter_chain.matches(&entry) && self.sender.send(entry).await.is_err() {
+                break;
+            }
+        }
+
+        match inner_handle.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                self.cancellation_token.cancel();
+                return Err(e);
+            }
+            Err(join_err) => {
+                self.cancellation_token.cancel();
+                return Err(anyhow::anyhow!("Lister task panicked: {}", join_err));
+            }
+        }
+
         debug!("list target objects has been completed.");
-        result
+        Ok(())
     }
 }
 
@@ -33,6 +72,9 @@ mod tests {
     use crate::storage::MockStorage;
     use crate::types::{ListEntry, S3Object};
     use chrono::Utc;
+
+    use crate::filters::FilterChain;
+    use crate::types::token::create_pipeline_cancellation_token;
 
     fn sample_entries() -> Vec<ListEntry> {
         vec![
@@ -64,6 +106,10 @@ mod tests {
             sender: tx,
             all_versions: false,
             max_keys: 1000,
+            queue_size: 10,
+            cancellation_token: create_pipeline_cancellation_token(),
+            hide_delete_markers: false,
+            filter_chain: FilterChain::new(vec![]),
         };
 
         lister.list_target().await.unwrap();
@@ -89,6 +135,10 @@ mod tests {
             sender: tx,
             all_versions: true,
             max_keys: 1000,
+            queue_size: 10,
+            cancellation_token: create_pipeline_cancellation_token(),
+            hide_delete_markers: false,
+            filter_chain: FilterChain::new(vec![]),
         };
 
         lister.list_target().await.unwrap();

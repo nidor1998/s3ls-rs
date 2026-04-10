@@ -85,50 +85,19 @@ impl ListingPipeline {
     ) -> Result<tokio::task::JoinHandle<Result<()>>> {
         let filter_chain =
             build_filter_chain(&self.config.filter_config).map_err(|e| anyhow::anyhow!(e))?;
-        let cancellation_token = self.cancellation_token.clone();
-        let all_versions = self.config.all_versions;
-        let hide_delete_markers = self.config.hide_delete_markers;
-        let max_keys = self.config.max_keys;
 
-        let handle = tokio::spawn(async move {
-            let (list_tx, mut list_rx) = tokio::sync::mpsc::channel(queue_size);
+        let lister = ObjectLister {
+            storage,
+            sender: tx,
+            all_versions: self.config.all_versions,
+            max_keys: self.config.max_keys,
+            queue_size,
+            cancellation_token: self.cancellation_token.clone(),
+            hide_delete_markers: self.config.hide_delete_markers,
+            filter_chain,
+        };
 
-            let lister = ObjectLister {
-                storage,
-                sender: list_tx,
-                all_versions,
-                max_keys,
-            };
-
-            let inner_handle = tokio::spawn(async move { lister.list_target().await });
-
-            // Filter inline and forward to aggregate channel
-            while let Some(entry) = list_rx.recv().await {
-                if cancellation_token.is_cancelled() {
-                    break;
-                }
-                if hide_delete_markers && entry.is_delete_marker() {
-                    continue;
-                }
-                if filter_chain.matches(&entry) && tx.send(entry).await.is_err() {
-                    break;
-                }
-            }
-
-            match inner_handle.await {
-                Ok(Ok(())) => Ok(()),
-                Ok(Err(e)) => {
-                    cancellation_token.cancel();
-                    Err(e)
-                }
-                Err(join_err) => {
-                    cancellation_token.cancel();
-                    Err(anyhow::anyhow!("Lister task panicked: {}", join_err))
-                }
-            }
-        });
-
-        Ok(handle)
+        Ok(tokio::spawn(async move { lister.list_target().await }))
     }
 
     fn spawn_aggregator(
