@@ -823,12 +823,19 @@ fn convert_delete_marker(marker: &aws_sdk_s3::types::DeleteMarkerEntry) -> Optio
     let version_id = marker.version_id().unwrap_or("null").to_string();
     let last_modified = aws_datetime_to_chrono(marker.last_modified())?;
     let is_latest = marker.is_latest().unwrap_or(false);
+    let owner_display_name = marker
+        .owner()
+        .and_then(|o| o.display_name())
+        .map(str::to_string);
+    let owner_id = marker.owner().and_then(|o| o.id()).map(str::to_string);
 
     Some(ListEntry::DeleteMarker {
         key,
         version_id,
         last_modified,
         is_latest,
+        owner_display_name,
+        owner_id,
     })
 }
 

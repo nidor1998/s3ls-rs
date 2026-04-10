@@ -141,6 +141,8 @@ pub enum ListEntry {
         version_id: String,
         last_modified: DateTime<Utc>,
         is_latest: bool,
+        owner_display_name: Option<String>,
+        owner_id: Option<String>,
     },
 }
 
@@ -498,6 +500,8 @@ mod tests {
             version_id: "dm-v1".to_string(),
             last_modified: Utc::now(),
             is_latest: true,
+            owner_display_name: None,
+            owner_id: None,
         };
         assert_eq!(entry.key(), "deleted.txt");
         assert_eq!(entry.size(), 0);

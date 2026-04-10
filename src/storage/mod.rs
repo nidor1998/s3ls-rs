@@ -68,6 +68,8 @@ mod tests {
                 version_id: "v1".to_string(),
                 last_modified: Utc::now(),
                 is_latest: true,
+                owner_display_name: None,
+                owner_id: None,
             },
         ]
     }

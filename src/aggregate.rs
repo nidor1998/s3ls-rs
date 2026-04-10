@@ -163,6 +163,7 @@ pub fn format_entry(entry: &ListEntry, opts: &FormatOptions) -> String {
             version_id,
             last_modified,
             is_latest,
+            ..
         } => {
             cols.push(format_rfc3339(last_modified));
             cols.push("DELETE".to_string());
@@ -348,6 +349,8 @@ pub fn format_entry_json(entry: &ListEntry) -> String {
             version_id,
             last_modified,
             is_latest,
+            owner_display_name,
+            owner_id,
         } => {
             let mut map = serde_json::Map::new();
             map.insert("Key".to_string(), serde_json::Value::String(key.clone()));
@@ -360,6 +363,20 @@ pub fn format_entry_json(entry: &ListEntry) -> String {
                 "LastModified".to_string(),
                 serde_json::Value::String(last_modified.to_rfc3339()),
             );
+            map.insert("DeleteMarker".to_string(), serde_json::json!(true));
+            if owner_id.is_some() || owner_display_name.is_some() {
+                let mut owner = serde_json::Map::new();
+                if let Some(name) = owner_display_name {
+                    owner.insert(
+                        "DisplayName".to_string(),
+                        serde_json::Value::String(name.clone()),
+                    );
+                }
+                if let Some(id) = owner_id {
+                    owner.insert("ID".to_string(), serde_json::Value::String(id.clone()));
+                }
+                map.insert("Owner".to_string(), serde_json::Value::Object(owner));
+            }
             serde_json::to_string(&map).unwrap()
         }
     }
@@ -666,6 +683,8 @@ mod tests {
             version_id: "def456-version-id".to_string(),
             last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 16, 9, 0, 0).unwrap(),
             is_latest: false,
+            owner_display_name: None,
+            owner_id: None,
         };
         let opts = FormatOptions::default();
         let line = format_entry(&entry, &opts);
@@ -716,12 +735,15 @@ mod tests {
             version_id: "v1".to_string(),
             last_modified: chrono::Utc::now(),
             is_latest: true,
+            owner_display_name: None,
+            owner_id: None,
         };
         let json = format_entry_json(&entry);
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["Key"], "deleted.txt");
         assert_eq!(parsed["VersionId"], "v1");
         assert_eq!(parsed["IsLatest"], true);
+        assert_eq!(parsed["DeleteMarker"], true);
     }
 
     #[test]
@@ -814,6 +836,8 @@ mod tests {
                 version_id: "v1".to_string(),
                 last_modified: chrono::Utc::now(),
                 is_latest: true,
+                owner_display_name: None,
+                owner_id: None,
             },
         ];
         let stats = compute_statistics(&entries);
