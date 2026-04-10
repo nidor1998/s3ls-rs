@@ -38,7 +38,7 @@ impl ListingPipeline {
     }
 
     pub async fn run(self) -> Result<()> {
-        tracing::info!(
+        tracing::debug!(
             target = %self.config.target,
             recursive = self.config.recursive,
             "Starting listing pipeline"
@@ -74,7 +74,7 @@ impl ListingPipeline {
             }
         }
 
-        tracing::info!("Listing pipeline completed");
+        tracing::debug!("Listing pipeline completed");
         Ok(())
     }
 
