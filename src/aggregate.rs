@@ -260,13 +260,13 @@ pub fn sort_entries(entries: &mut [ListEntry], fields: &[SortField], reverse: bo
     });
 }
 
-pub fn format_entry_json(entry: &ListEntry) -> String {
+pub fn format_entry_json(entry: &ListEntry, opts: &FormatOptions) -> String {
     match entry {
         ListEntry::CommonPrefix(prefix) => {
             let mut map = serde_json::Map::new();
             map.insert(
                 "Prefix".to_string(),
-                serde_json::Value::String(prefix.clone()),
+                serde_json::Value::String(format_key_display(prefix, opts)),
             );
             serde_json::to_string(&map).unwrap()
         }
@@ -274,7 +274,7 @@ pub fn format_entry_json(entry: &ListEntry) -> String {
             let mut map = serde_json::Map::new();
             map.insert(
                 "Key".to_string(),
-                serde_json::Value::String(obj.key().to_string()),
+                serde_json::Value::String(format_key_display(obj.key(), opts)),
             );
             map.insert(
                 "LastModified".to_string(),
@@ -353,7 +353,10 @@ pub fn format_entry_json(entry: &ListEntry) -> String {
             owner_id,
         } => {
             let mut map = serde_json::Map::new();
-            map.insert("Key".to_string(), serde_json::Value::String(key.clone()));
+            map.insert(
+                "Key".to_string(),
+                serde_json::Value::String(format_key_display(key, opts)),
+            );
             map.insert(
                 "VersionId".to_string(),
                 serde_json::Value::String(version_id.clone()),
@@ -712,7 +715,8 @@ mod tests {
     #[test]
     fn format_ndjson_object() {
         let entry = make_entry("readme.txt", 1234, 2024, 1);
-        let json = format_entry_json(&entry);
+        let opts = FormatOptions::default();
+        let json = format_entry_json(&entry, &opts);
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["Key"], "readme.txt");
         assert_eq!(parsed["Size"], 1234);
@@ -723,7 +727,8 @@ mod tests {
     #[test]
     fn format_ndjson_common_prefix() {
         let entry = ListEntry::CommonPrefix("logs/".to_string());
-        let json = format_entry_json(&entry);
+        let opts = FormatOptions::default();
+        let json = format_entry_json(&entry, &opts);
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["Prefix"], "logs/");
     }
@@ -738,11 +743,76 @@ mod tests {
             owner_display_name: None,
             owner_id: None,
         };
-        let json = format_entry_json(&entry);
+        let opts = FormatOptions::default();
+        let json = format_entry_json(&entry, &opts);
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["Key"], "deleted.txt");
         assert_eq!(parsed["VersionId"], "v1");
         assert_eq!(parsed["IsLatest"], true);
+        assert_eq!(parsed["DeleteMarker"], true);
+    }
+
+    #[test]
+    fn format_ndjson_object_relative_path() {
+        let entry = make_entry("logs/2024/readme.txt", 1234, 2024, 1);
+        let opts = FormatOptions {
+            show_relative_path: true,
+            prefix: Some("logs/2024/".to_string()),
+            ..FormatOptions::default()
+        };
+        let json = format_entry_json(&entry, &opts);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["Key"], "readme.txt");
+    }
+
+    #[test]
+    fn format_ndjson_common_prefix_relative_path() {
+        let entry = ListEntry::CommonPrefix("logs/2024/subdir/".to_string());
+        let opts = FormatOptions {
+            show_relative_path: true,
+            prefix: Some("logs/2024/".to_string()),
+            ..FormatOptions::default()
+        };
+        let json = format_entry_json(&entry, &opts);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["Prefix"], "subdir/");
+    }
+
+    #[test]
+    fn format_ndjson_delete_marker_relative_path() {
+        let entry = ListEntry::DeleteMarker {
+            key: "logs/2024/deleted.txt".to_string(),
+            version_id: "v1".to_string(),
+            last_modified: chrono::Utc::now(),
+            is_latest: true,
+            owner_display_name: None,
+            owner_id: None,
+        };
+        let opts = FormatOptions {
+            show_relative_path: true,
+            prefix: Some("logs/2024/".to_string()),
+            ..FormatOptions::default()
+        };
+        let json = format_entry_json(&entry, &opts);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["Key"], "deleted.txt");
+    }
+
+    #[test]
+    fn format_ndjson_delete_marker_with_owner() {
+        let entry = ListEntry::DeleteMarker {
+            key: "deleted.txt".to_string(),
+            version_id: "v1".to_string(),
+            last_modified: chrono::Utc::now(),
+            is_latest: true,
+            owner_display_name: Some("alice".to_string()),
+            owner_id: Some("id123".to_string()),
+        };
+        let opts = FormatOptions::default();
+        let json = format_entry_json(&entry, &opts);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["Owner"]["DisplayName"], "alice");
+        assert_eq!(parsed["Owner"]["ID"], "id123");
         assert_eq!(parsed["DeleteMarker"], true);
     }
 

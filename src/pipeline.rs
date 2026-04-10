@@ -135,7 +135,7 @@ impl ListingPipeline {
                     accumulate_statistics(&entry, &mut stats);
                 }
                 let line = if use_json {
-                    format_entry_json(&entry)
+                    format_entry_json(&entry, &opts)
                 } else {
                     format_entry(&entry, &opts)
                 };
@@ -181,7 +181,7 @@ impl ListingPipeline {
 
             for entry in &entries {
                 let line = if use_json {
-                    format_entry_json(entry)
+                    format_entry_json(entry, &opts)
                 } else {
                     format_entry(entry, &opts)
                 };
