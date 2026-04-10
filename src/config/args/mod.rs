@@ -329,7 +329,7 @@ pub struct CLIArgs {
     // -----------------------------------------------------------------------
     // Tracing/Logging options (reused from s3rm-rs)
     // -----------------------------------------------------------------------
-    /// Verbosity level (-q quiet, default normal, -v, -vv, -vvv)
+    /// Verbosity level (-qq silent, -q quiet, default normal, -v, -vv, -vvv)
     #[command(flatten)]
     pub verbosity: Verbosity<WarnLevel>,
 
