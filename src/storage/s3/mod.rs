@@ -66,6 +66,7 @@ struct S3PageFetcher {
     bucket: String,
     request_payer: Option<RequestPayer>,
     fetch_owner: bool,
+    fetch_restore_status: bool,
 }
 
 impl S3PageFetcher {
@@ -95,10 +96,12 @@ impl S3PageFetcher {
             req = req.request_payer(payer.clone());
         }
         if self.fetch_owner {
+            req = req.fetch_owner(true);
+        }
+        if self.fetch_restore_status {
             req = req.optional_object_attributes(
                 aws_sdk_s3::types::OptionalObjectAttributes::RestoreStatus,
             );
-            req = req.fetch_owner(true);
         }
 
         let response = req.send().await.map_err(|e| {
@@ -669,6 +672,7 @@ impl S3Storage {
         max_depth: Option<u16>,
         allow_parallel_listings_in_express_one_zone: bool,
         fetch_owner: bool,
+        fetch_restore_status: bool,
     ) -> Self {
         let client = client_config.create_client().await;
         let delimiter = if recursive {
@@ -684,6 +688,7 @@ impl S3Storage {
             bucket: bucket.clone(),
             request_payer,
             fetch_owner,
+            fetch_restore_status,
         };
 
         let engine = ListingEngine {
