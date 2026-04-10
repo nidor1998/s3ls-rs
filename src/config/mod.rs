@@ -14,7 +14,7 @@ pub struct Config {
     // Listing mode
     pub recursive: bool,
     pub all_versions: bool,
-    pub hide_delete_marker: bool,
+    pub hide_delete_markers: bool,
     pub max_depth: Option<u16>,
     pub bucket_name_prefix: Option<String>,
     pub list_express_one_zone_buckets: bool,
@@ -73,7 +73,7 @@ impl Default for Config {
             },
             recursive: false,
             all_versions: false,
-            hide_delete_marker: false,
+            hide_delete_markers: false,
             max_depth: None,
             bucket_name_prefix: None,
             list_express_one_zone_buckets: false,

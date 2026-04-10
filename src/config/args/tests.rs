@@ -44,30 +44,30 @@ fn all_versions() {
 }
 
 // ===========================================================================
-// 2b. --hide-delete-marker
+// 2b. --hide-delete-markers
 // ===========================================================================
 
 #[test]
-fn hide_delete_marker_with_all_versions() {
+fn hide_delete_markers_with_all_versions() {
     let cli = parse_from_args(args(&[
         "s3://bucket",
         "--all-versions",
-        "--hide-delete-marker",
+        "--hide-delete-markers",
     ]))
     .unwrap();
-    assert!(cli.hide_delete_marker);
+    assert!(cli.hide_delete_markers);
 }
 
 #[test]
-fn hide_delete_marker_without_all_versions_rejected() {
-    let result = parse_from_args(args(&["s3://bucket", "--hide-delete-marker"]));
+fn hide_delete_markers_without_all_versions_rejected() {
+    let result = parse_from_args(args(&["s3://bucket", "--hide-delete-markers"]));
     assert!(result.is_err());
 }
 
 #[test]
-fn hide_delete_marker_default_is_false() {
+fn hide_delete_markers_default_is_false() {
     let cli = parse_from_args(args(&["s3://bucket", "--all-versions"])).unwrap();
-    assert!(!cli.hide_delete_marker);
+    assert!(!cli.hide_delete_markers);
 }
 
 // ===========================================================================
@@ -924,7 +924,7 @@ fn verify_all_defaults() {
     // General
     assert!(!cli.recursive);
     assert!(!cli.all_versions);
-    assert!(!cli.hide_delete_marker);
+    assert!(!cli.hide_delete_markers);
     assert!(cli.max_depth.is_none());
     assert!(cli.bucket_name_prefix.is_none());
 
