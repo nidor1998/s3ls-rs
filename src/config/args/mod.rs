@@ -222,6 +222,7 @@ pub struct CLIArgs {
         long = "human-readable",
         env = "HUMAN_READABLE",
         default_value_t = false,
+        conflicts_with = "json",
         help_heading = "Display"
     )]
     pub human: bool,
@@ -231,19 +232,43 @@ pub struct CLIArgs {
     pub show_relative_path: bool,
 
     /// Show ETag column
-    #[arg(long, env, default_value_t = false, help_heading = "Display")]
+    #[arg(
+        long,
+        env,
+        default_value_t = false,
+        conflicts_with = "json",
+        help_heading = "Display"
+    )]
     pub show_etag: bool,
 
     /// Show storage class column
-    #[arg(long, env, default_value_t = false, help_heading = "Display")]
+    #[arg(
+        long,
+        env,
+        default_value_t = false,
+        conflicts_with = "json",
+        help_heading = "Display"
+    )]
     pub show_storage_class: bool,
 
     /// Show checksum algorithm column
-    #[arg(long, env, default_value_t = false, help_heading = "Display")]
+    #[arg(
+        long,
+        env,
+        default_value_t = false,
+        conflicts_with = "json",
+        help_heading = "Display"
+    )]
     pub show_checksum_algorithm: bool,
 
     /// Show checksum type column
-    #[arg(long, env, default_value_t = false, help_heading = "Display")]
+    #[arg(
+        long,
+        env,
+        default_value_t = false,
+        conflicts_with = "json",
+        help_heading = "Display"
+    )]
     pub show_checksum_type: bool,
 
     /// Show is_latest column (requires --all-versions)
@@ -252,20 +277,39 @@ pub struct CLIArgs {
         env,
         default_value_t = false,
         requires = "all_versions",
+        conflicts_with = "json",
         help_heading = "Display"
     )]
     pub show_is_latest: bool,
 
     /// Show owner DisplayName and ID columns
-    #[arg(long, env, default_value_t = false, help_heading = "Display")]
+    #[arg(
+        long,
+        env,
+        default_value_t = false,
+        conflicts_with = "json",
+        help_heading = "Display"
+    )]
     pub show_owner: bool,
 
     /// Show restore status column
-    #[arg(long, env, default_value_t = false, help_heading = "Display")]
+    #[arg(
+        long,
+        env,
+        default_value_t = false,
+        conflicts_with = "json",
+        help_heading = "Display"
+    )]
     pub show_restore_status: bool,
 
     /// Show bucket ARN column (when listing buckets)
-    #[arg(long, env, default_value_t = false, help_heading = "Display")]
+    #[arg(
+        long,
+        env,
+        default_value_t = false,
+        conflicts_with = "json",
+        help_heading = "Display"
+    )]
     pub show_bucket_arn: bool,
 
     /// Add a header row to each column
@@ -279,13 +323,7 @@ pub struct CLIArgs {
     pub header: bool,
 
     /// Output as NDJSON (one JSON object per line)
-    #[arg(
-        long,
-        env,
-        default_value_t = false,
-        conflicts_with = "header",
-        help_heading = "Display"
-    )]
+    #[arg(long, env, default_value_t = false, help_heading = "Display")]
     pub json: bool,
 
     // -----------------------------------------------------------------------

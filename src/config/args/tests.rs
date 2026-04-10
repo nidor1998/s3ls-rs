@@ -588,7 +588,7 @@ fn all_display_options_combined() {
         "--show-storage-class",
         "--show-checksum-algorithm",
         "--show-checksum-type",
-        "--json",
+        "--header",
     ]))
     .unwrap();
     assert!(cli.summary);
@@ -598,7 +598,7 @@ fn all_display_options_combined() {
     assert!(cli.show_storage_class);
     assert!(cli.show_checksum_algorithm);
     assert!(cli.show_checksum_type);
-    assert!(cli.json);
+    assert!(cli.header);
 }
 
 // ===========================================================================
@@ -1099,7 +1099,7 @@ fn full_combination_many_flags() {
         "--human-readable",
         "--show-relative-path",
         "--show-etag",
-        "--json",
+        "--header",
         "--target-region",
         "eu-west-1",
         "--max-parallel-listings",
@@ -1129,7 +1129,7 @@ fn full_combination_many_flags() {
     assert!(cli.human);
     assert!(cli.show_relative_path);
     assert!(cli.show_etag);
-    assert!(cli.json);
+    assert!(cli.header);
     assert_eq!(cli.target_region.as_deref(), Some("eu-west-1"));
     assert_eq!(cli.max_parallel_listings, 64);
     assert_eq!(cli.max_keys, 500);
@@ -1186,7 +1186,6 @@ fn config_from_full_args() {
         "--sort",
         "date",
         "--reverse",
-        "--human-readable",
         "--summarize",
         "--json",
     ])
@@ -1201,7 +1200,6 @@ fn config_from_full_args() {
     );
     assert_eq!(config.sort, vec![SortField::Date]);
     assert!(config.reverse);
-    assert!(config.display_config.human);
     assert!(config.display_config.summary);
     assert!(config.display_config.json);
 }
