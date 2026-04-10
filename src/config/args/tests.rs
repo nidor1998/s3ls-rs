@@ -504,6 +504,55 @@ fn bucket_listing_allows_no_sort() {
 }
 
 // ===========================================================================
+// 4b-3. Bucket-only options rejected in object listing mode
+// ===========================================================================
+
+#[test]
+fn object_listing_rejects_bucket_name_prefix() {
+    let result = build_config_from_args(args(&["s3://bucket", "--bucket-name-prefix", "data"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--bucket-name-prefix is not valid for object listing")
+    );
+}
+
+#[test]
+fn object_listing_rejects_list_express_one_zone_buckets() {
+    let result = build_config_from_args(args(&["s3://bucket", "--list-express-one-zone-buckets"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--list-express-one-zone-buckets is not valid for object listing")
+    );
+}
+
+#[test]
+fn object_listing_rejects_show_bucket_arn() {
+    let result = build_config_from_args(args(&["s3://bucket", "--show-bucket-arn"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--show-bucket-arn is not valid for object listing")
+    );
+}
+
+#[test]
+fn bucket_listing_allows_bucket_name_prefix() {
+    let config = build_config_from_args(args(&["--bucket-name-prefix", "data"])).unwrap();
+    assert_eq!(config.bucket_name_prefix.as_deref(), Some("data"));
+}
+
+#[test]
+fn bucket_listing_allows_show_bucket_arn() {
+    let config = build_config_from_args(args(&["--show-bucket-arn"])).unwrap();
+    assert!(config.display_config.show_bucket_arn);
+}
+
+// ===========================================================================
 // 4c. --no-sort
 // ===========================================================================
 

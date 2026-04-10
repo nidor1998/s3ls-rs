@@ -74,7 +74,6 @@ pub struct CLIArgs {
         env,
         help = "S3 target path: s3://<BUCKET_NAME>[/prefix] (omit to list buckets)",
         value_parser = check_s3_target,
-        default_value_if("auto_complete_shell", clap::builder::ArgPredicate::IsPresent, "s3://ignored"),
         required = false,
         default_value = "",
     )]
@@ -116,23 +115,35 @@ pub struct CLIArgs {
     #[arg(long, requires = "recursive", env = "MAX_DEPTH", value_parser = clap::value_parser!(u16).range(1..), help_heading = "General")]
     pub max_depth: Option<u16>,
 
-    /// Filter buckets by name prefix (when listing buckets)
-    #[arg(long, env, help_heading = "General")]
+    /// Filter buckets by name prefix (bucket listing only)
+    #[arg(long, env, help_heading = "Bucket Listing")]
     pub bucket_name_prefix: Option<String>,
 
-    /// List only Express One Zone directory buckets (when listing buckets)
-    #[arg(long, env, default_value_t = false, help_heading = "General")]
+    /// List only Express One Zone directory buckets (bucket listing only)
+    #[arg(long, env, default_value_t = false, help_heading = "Bucket Listing")]
     pub list_express_one_zone_buckets: bool,
 
     // -----------------------------------------------------------------------
     // Filtering options
     // -----------------------------------------------------------------------
     /// List only objects whose key matches this regex
-    #[arg(long, env, value_parser = value_parser::regex::parse_regex, help_heading = "Filtering")]
+    #[arg(
+        long,
+        env,
+        value_parser = value_parser::regex::parse_regex,
+        help_heading = "Filtering",
+        long_help = "List only objects whose key matches the given regular expression.\n\nExample: --filter-include-regex '\\.csv$'"
+    )]
     pub filter_include_regex: Option<String>,
 
     /// Skip objects whose key matches this regex
-    #[arg(long, env, value_parser = value_parser::regex::parse_regex, help_heading = "Filtering")]
+    #[arg(
+        long,
+        env,
+        value_parser = value_parser::regex::parse_regex,
+        help_heading = "Filtering",
+        long_help = "Skip objects whose key matches the given regular expression.\n\nExample: --filter-exclude-regex '^temp/'"
+    )]
     pub filter_exclude_regex: Option<String>,
 
     /// List only objects modified before this time
@@ -187,7 +198,7 @@ pub struct CLIArgs {
     // -----------------------------------------------------------------------
     // Sort options
     // -----------------------------------------------------------------------
-    /// Sort results by field(s): key/size/date for objects, bucket/region/date for bucket listing (comma-separated)
+    /// Sort results by field(s), comma-separated (default: key for objects, bucket for bucket listing)
     #[arg(
         long,
         env,
@@ -271,7 +282,7 @@ pub struct CLIArgs {
     )]
     pub show_checksum_type: bool,
 
-    /// Show is_latest column (requires --all-versions)
+    /// Show IsLatest column (requires --all-versions)
     #[arg(
         long,
         env,
@@ -302,13 +313,13 @@ pub struct CLIArgs {
     )]
     pub show_restore_status: bool,
 
-    /// Show bucket ARN column (when listing buckets)
+    /// Show bucket ARN column (bucket listing only)
     #[arg(
         long,
         env,
         default_value_t = false,
         conflicts_with = "json",
-        help_heading = "Display"
+        help_heading = "Bucket Listing"
     )]
     pub show_bucket_arn: bool,
 
@@ -633,6 +644,21 @@ impl TryFrom<CLIArgs> for crate::config::Config {
             }
             if args.storage_class.is_some() {
                 return Err("--storage-class is not valid for bucket listing".to_string());
+            }
+        }
+
+        // Reject bucket-only options in object listing mode.
+        if !is_bucket_listing {
+            if args.bucket_name_prefix.is_some() {
+                return Err("--bucket-name-prefix is not valid for object listing".to_string());
+            }
+            if args.list_express_one_zone_buckets {
+                return Err(
+                    "--list-express-one-zone-buckets is not valid for object listing".to_string(),
+                );
+            }
+            if args.show_bucket_arn {
+                return Err("--show-bucket-arn is not valid for object listing".to_string());
             }
         }
 
