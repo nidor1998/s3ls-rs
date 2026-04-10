@@ -1,14 +1,10 @@
-use crate::aggregate::{
-    FormatOptions, accumulate_statistics, compute_statistics, format_entry, format_entry_json,
-    format_header, format_summary, sort_entries,
-};
+use crate::aggregate::{Aggregator, AggregatorConfig, FormatOptions};
 use crate::config::Config;
 use crate::filters::build_filter_chain;
 use crate::lister::ObjectLister;
 use crate::storage::StorageTrait;
 use crate::types::token::PipelineCancellationToken;
 use anyhow::Result;
-use std::io::Write;
 use std::sync::Arc;
 
 pub struct ListingPipeline {
@@ -53,22 +49,48 @@ impl ListingPipeline {
         }
 
         let queue_size = self.config.object_listing_queue_size as usize;
-        let (tx, mut rx) = tokio::sync::mpsc::channel(queue_size);
+        let (tx, rx) = tokio::sync::mpsc::channel(queue_size);
 
         let storage = self.build_storage().await?;
 
+        let lister_handle = self.spawn_lister(storage, tx, queue_size)?;
+        let aggregator_handle = self.spawn_aggregator(rx)?;
+
+        // Wait for aggregator to finish (completes when rx closes)
+        match aggregator_handle.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return Err(e),
+            Err(join_err) => {
+                return Err(anyhow::anyhow!("Aggregator task panicked: {}", join_err));
+            }
+        }
+
+        // Wait for lister to finish and propagate errors
+        match lister_handle.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return Err(e),
+            Err(join_err) => {
+                return Err(anyhow::anyhow!("Lister+filter task panicked: {}", join_err));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn spawn_lister(
+        &self,
+        storage: Arc<dyn StorageTrait>,
+        tx: tokio::sync::mpsc::Sender<crate::types::ListEntry>,
+        queue_size: usize,
+    ) -> Result<tokio::task::JoinHandle<Result<()>>> {
         let filter_chain =
             build_filter_chain(&self.config.filter_config).map_err(|e| anyhow::anyhow!(e))?;
-
-        // Lister task: list objects, apply filter chain inline, send filtered
-        // entries to the aggregate channel. Matches spec: "Lister → apply
-        // filter chain → if passes: send to channel → if not: discard".
         let cancellation_token = self.cancellation_token.clone();
         let all_versions = self.config.all_versions;
         let hide_delete_markers = self.config.hide_delete_markers;
         let max_keys = self.config.max_keys;
 
-        let lister_handle = tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let (list_tx, mut list_rx) = tokio::sync::mpsc::channel(queue_size);
 
             let lister = ObjectLister {
@@ -106,106 +128,38 @@ impl ListingPipeline {
             }
         });
 
-        // Format options and output setup
+        Ok(handle)
+    }
+
+    fn spawn_aggregator(
+        &self,
+        rx: tokio::sync::mpsc::Receiver<crate::types::ListEntry>,
+    ) -> Result<tokio::task::JoinHandle<Result<()>>> {
         let opts = FormatOptions::from_display_config(
             &self.config.display_config,
             self.config.target.prefix.clone(),
             self.config.all_versions,
         );
         let use_json = self.config.display_config.json;
-        let stdout = std::io::stdout();
-        let mut writer = std::io::BufWriter::new(stdout.lock());
+        let writer: Box<dyn std::io::Write + Send> =
+            Box::new(std::io::BufWriter::new(std::io::stdout()));
+
+        let aggregator_config = AggregatorConfig {
+            use_json,
+            no_sort: self.config.no_sort,
+            sort_fields: self.config.sort.clone(),
+            reverse: self.config.reverse,
+            summary: self.config.display_config.summary,
+            human: self.config.display_config.human,
+            all_versions: self.config.all_versions,
+        };
+        let mut aggregator = Aggregator::new(rx, writer, opts, aggregator_config);
 
         if !use_json && self.config.display_config.header {
-            writeln!(writer, "{}", format_header(&opts))?;
+            aggregator.write_header()?;
         }
 
-        if self.config.no_sort {
-            // Streaming mode: write entries directly as they arrive
-            let mut stats = crate::types::ListingStatistics {
-                total_objects: 0,
-                total_size: 0,
-                total_versions: 0,
-                total_delete_markers: 0,
-            };
-            let track_summary = self.config.display_config.summary;
-
-            while let Some(entry) = rx.recv().await {
-                if track_summary {
-                    accumulate_statistics(&entry, &mut stats);
-                }
-                let line = if use_json {
-                    format_entry_json(&entry, &opts)
-                } else {
-                    format_entry(&entry, &opts)
-                };
-                writeln!(writer, "{line}")?;
-            }
-
-            match lister_handle.await {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => return Err(e),
-                Err(join_err) => {
-                    return Err(anyhow::anyhow!("Lister+filter task panicked: {}", join_err));
-                }
-            }
-
-            if track_summary {
-                let summary = format_summary(
-                    &stats,
-                    use_json,
-                    self.config.display_config.human,
-                    self.config.all_versions,
-                );
-                if !use_json {
-                    writeln!(writer)?;
-                }
-                writeln!(writer, "{summary}")?;
-            }
-        } else {
-            // Aggregate mode: collect, sort, then output
-            let mut entries = Vec::new();
-            while let Some(entry) = rx.recv().await {
-                entries.push(entry);
-            }
-
-            match lister_handle.await {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => return Err(e),
-                Err(join_err) => {
-                    return Err(anyhow::anyhow!("Lister+filter task panicked: {}", join_err));
-                }
-            }
-
-            sort_entries(&mut entries, &self.config.sort, self.config.reverse);
-
-            for entry in &entries {
-                let line = if use_json {
-                    format_entry_json(entry, &opts)
-                } else {
-                    format_entry(entry, &opts)
-                };
-                writeln!(writer, "{line}")?;
-            }
-
-            if self.config.display_config.summary {
-                let stats = compute_statistics(&entries);
-                let summary = format_summary(
-                    &stats,
-                    use_json,
-                    self.config.display_config.human,
-                    self.config.all_versions,
-                );
-                if !use_json {
-                    writeln!(writer)?;
-                }
-                writeln!(writer, "{summary}")?;
-            }
-        }
-
-        writer.flush()?;
-
-        Ok(())
+        Ok(tokio::spawn(async move { aggregator.run().await }))
     }
 
     async fn build_storage(&self) -> Result<Arc<dyn StorageTrait>> {

@@ -1,6 +1,9 @@
 use crate::config::args::SortField;
 use crate::types::ListEntry;
+use anyhow::Result;
 use byte_unit::Byte;
+use std::io::Write;
+use tokio::sync::mpsc;
 
 #[derive(Default)]
 pub struct FormatOptions {
@@ -36,6 +39,121 @@ impl FormatOptions {
             all_versions,
             prefix,
         }
+    }
+}
+
+pub struct AggregatorConfig {
+    pub use_json: bool,
+    pub no_sort: bool,
+    pub sort_fields: Vec<SortField>,
+    pub reverse: bool,
+    pub summary: bool,
+    pub human: bool,
+    pub all_versions: bool,
+}
+
+pub struct Aggregator<W: Write + Send + 'static> {
+    rx: mpsc::Receiver<ListEntry>,
+    writer: W,
+    opts: FormatOptions,
+    config: AggregatorConfig,
+}
+
+impl<W: Write + Send + 'static> Aggregator<W> {
+    pub fn new(
+        rx: mpsc::Receiver<ListEntry>,
+        writer: W,
+        opts: FormatOptions,
+        config: AggregatorConfig,
+    ) -> Self {
+        Self {
+            rx,
+            writer,
+            opts,
+            config,
+        }
+    }
+
+    pub async fn run(mut self) -> Result<()> {
+        if self.config.no_sort {
+            self.run_streaming().await
+        } else {
+            self.run_aggregate().await
+        }
+    }
+
+    /// Print the column header line (call before `run` if needed).
+    pub fn write_header(&mut self) -> Result<()> {
+        writeln!(self.writer, "{}", format_header(&self.opts))?;
+        Ok(())
+    }
+
+    async fn run_streaming(&mut self) -> Result<()> {
+        let mut stats = crate::types::ListingStatistics {
+            total_objects: 0,
+            total_size: 0,
+            total_versions: 0,
+            total_delete_markers: 0,
+        };
+
+        while let Some(entry) = self.rx.recv().await {
+            if self.config.summary {
+                accumulate_statistics(&entry, &mut stats);
+            }
+            let line = if self.config.use_json {
+                format_entry_json(&entry, &self.opts)
+            } else {
+                format_entry(&entry, &self.opts)
+            };
+            writeln!(self.writer, "{line}")?;
+        }
+
+        if self.config.summary {
+            self.write_summary(&stats)?;
+        }
+
+        self.writer.flush()?;
+        Ok(())
+    }
+
+    async fn run_aggregate(&mut self) -> Result<()> {
+        let mut entries = Vec::new();
+        while let Some(entry) = self.rx.recv().await {
+            entries.push(entry);
+        }
+
+        sort_entries(&mut entries, &self.config.sort_fields, self.config.reverse);
+
+        for entry in &entries {
+            let line = if self.config.use_json {
+                format_entry_json(entry, &self.opts)
+            } else {
+                format_entry(entry, &self.opts)
+            };
+            writeln!(self.writer, "{line}")?;
+        }
+
+        if self.config.summary {
+            let stats = compute_statistics(&entries);
+            self.write_summary(&stats)?;
+        }
+
+        self.writer.flush()?;
+        Ok(())
+    }
+
+    fn write_summary(&mut self, stats: &crate::types::ListingStatistics) -> Result<()> {
+        let summary = format_summary(
+            stats,
+            self.config.use_json,
+            self.config.human,
+            self.config.all_versions,
+        );
+        if !self.config.use_json {
+            writeln!(self.writer)?;
+        }
+        writeln!(self.writer, "{summary}")?;
+        Ok(())
     }
 }
 
