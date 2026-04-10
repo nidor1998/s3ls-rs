@@ -269,11 +269,23 @@ pub struct CLIArgs {
     pub show_bucket_arn: bool,
 
     /// Add a header row to each column
-    #[arg(long, env, default_value_t = false, help_heading = "Display")]
+    #[arg(
+        long,
+        env,
+        default_value_t = false,
+        conflicts_with = "json",
+        help_heading = "Display"
+    )]
     pub header: bool,
 
     /// Output as NDJSON (one JSON object per line)
-    #[arg(long, env, default_value_t = false, help_heading = "Display")]
+    #[arg(
+        long,
+        env,
+        default_value_t = false,
+        conflicts_with = "header",
+        help_heading = "Display"
+    )]
     pub json: bool,
 
     // -----------------------------------------------------------------------
