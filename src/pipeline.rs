@@ -74,6 +74,7 @@ impl ListingPipeline {
             }
         }
 
+        tracing::info!("Listing pipeline completed");
         Ok(())
     }
 
