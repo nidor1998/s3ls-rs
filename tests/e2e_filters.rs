@@ -345,3 +345,273 @@ async fn e2e_filter_larger_size() {
 
     _guard.cleanup().await;
 }
+
+/// `--filter-mtime-before`: include only objects with `last_modified < pivot`
+/// (strict `<`, verified against `src/filters/mtime_before.rs:27`).
+///
+/// Because S3 `LastModified` is second-precision, this test reads back
+/// the actual timestamps from S3 after upload and computes both the
+/// pivot and expected sets at runtime. If all 4 objects land in the
+/// same S3-second, the "middle pivot" sub-assertion is skipped with a
+/// logged note.
+#[tokio::test]
+async fn e2e_filter_mtime_before() {
+    use chrono::{DateTime, Utc};
+    use std::collections::BTreeSet;
+
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+
+        let fixture: Vec<(String, Vec<u8>)> = (1..=4)
+            .map(|i| (format!("obj{i}"), vec![0u8; 100]))
+            .collect();
+        helper.put_objects_parallel(&bucket, fixture).await;
+
+        // Read back actual LastModified values from S3.
+        let resp = helper
+            .client()
+            .list_objects_v2()
+            .bucket(&bucket)
+            .send()
+            .await
+            .expect("list_objects_v2 failed");
+
+        let pairs: Vec<(String, DateTime<Utc>)> = resp
+            .contents()
+            .iter()
+            .map(|obj| {
+                let key = obj.key().expect("object missing key").to_string();
+                let lm = obj.last_modified().expect("object missing last_modified");
+                // aws_smithy_types::DateTime -> chrono::DateTime<Utc>
+                let secs = lm.secs();
+                let nanos = lm.subsec_nanos();
+                let dt = DateTime::<Utc>::from_timestamp(secs, nanos)
+                    .expect("invalid timestamp from S3");
+                (key, dt)
+            })
+            .collect();
+        assert_eq!(
+            pairs.len(),
+            4,
+            "expected 4 uploaded objects, got {}",
+            pairs.len()
+        );
+
+        let distinct_times: BTreeSet<DateTime<Utc>> = pairs.iter().map(|(_, t)| *t).collect();
+        let distinct_times: Vec<DateTime<Utc>> = distinct_times.into_iter().collect();
+
+        let target = format!("s3://{bucket}/");
+
+        // Helper: compute expected set for `last_modified < pivot`
+        let expected_before = |pivot: DateTime<Utc>| -> Vec<String> {
+            let mut out: Vec<String> = pairs
+                .iter()
+                .filter(|(_, t)| *t < pivot)
+                .map(|(k, _)| k.clone())
+                .collect();
+            out.sort();
+            out
+        };
+
+        // Sub-assertion 1: middle pivot (skipped if all four in one second)
+        if distinct_times.len() >= 2 {
+            let pivot = distinct_times[distinct_times.len() / 2];
+            let expected = expected_before(pivot);
+            let expected_refs: Vec<&str> = expected.iter().map(|s| s.as_str()).collect();
+            let pivot_str = pivot.to_rfc3339();
+            let output = TestHelper::run_s3ls(&[
+                target.as_str(),
+                "--recursive",
+                "--json",
+                "--filter-mtime-before",
+                pivot_str.as_str(),
+            ]);
+            assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+            assert_json_keys_eq(
+                &output.stdout,
+                &expected_refs,
+                "mtime-before: match (middle pivot)",
+            );
+        } else {
+            println!("mtime-before: skipped middle-pivot case — all 4 uploads share one S3-second");
+        }
+
+        // Sub-assertion 2: earliest pivot. Strict-< against the minimum
+        // observed time means NO object can pass.
+        let earliest = distinct_times[0];
+        let pivot_str = earliest.to_rfc3339();
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--json",
+            "--filter-mtime-before",
+            pivot_str.as_str(),
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_json_keys_eq(
+            &output.stdout,
+            &[],
+            "mtime-before: no match (earliest pivot)",
+        );
+
+        // Sub-assertion 3: boundary = max observed time. All objects strictly
+        // earlier than the max are expected. If all 4 share one time, this
+        // yields the empty set.
+        let max_time = *distinct_times.last().unwrap();
+        let expected = expected_before(max_time);
+        let expected_refs: Vec<&str> = expected.iter().map(|s| s.as_str()).collect();
+        let pivot_str = max_time.to_rfc3339();
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--json",
+            "--filter-mtime-before",
+            pivot_str.as_str(),
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_json_keys_eq(
+            &output.stdout,
+            &expected_refs,
+            "mtime-before: boundary (max pivot)",
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// `--filter-mtime-after`: include only objects with `last_modified >= pivot`
+/// (inclusive `>=`, verified against `src/filters/mtime_after.rs:27`).
+///
+/// Tie-handling: same pattern as `e2e_filter_mtime_before` — the
+/// "middle pivot" case is skipped if all 4 uploads collide into one
+/// S3-second.
+#[tokio::test]
+async fn e2e_filter_mtime_after() {
+    use chrono::{DateTime, Duration, Utc};
+    use std::collections::BTreeSet;
+
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+
+        let fixture: Vec<(String, Vec<u8>)> = (1..=4)
+            .map(|i| (format!("obj{i}"), vec![0u8; 100]))
+            .collect();
+        helper.put_objects_parallel(&bucket, fixture).await;
+
+        let resp = helper
+            .client()
+            .list_objects_v2()
+            .bucket(&bucket)
+            .send()
+            .await
+            .expect("list_objects_v2 failed");
+
+        let pairs: Vec<(String, DateTime<Utc>)> = resp
+            .contents()
+            .iter()
+            .map(|obj| {
+                let key = obj.key().expect("object missing key").to_string();
+                let lm = obj.last_modified().expect("object missing last_modified");
+                let secs = lm.secs();
+                let nanos = lm.subsec_nanos();
+                let dt = DateTime::<Utc>::from_timestamp(secs, nanos)
+                    .expect("invalid timestamp from S3");
+                (key, dt)
+            })
+            .collect();
+        assert_eq!(
+            pairs.len(),
+            4,
+            "expected 4 uploaded objects, got {}",
+            pairs.len()
+        );
+
+        let distinct_times: BTreeSet<DateTime<Utc>> = pairs.iter().map(|(_, t)| *t).collect();
+        let distinct_times: Vec<DateTime<Utc>> = distinct_times.into_iter().collect();
+
+        let target = format!("s3://{bucket}/");
+
+        let expected_after = |pivot: DateTime<Utc>| -> Vec<String> {
+            let mut out: Vec<String> = pairs
+                .iter()
+                .filter(|(_, t)| *t >= pivot)
+                .map(|(k, _)| k.clone())
+                .collect();
+            out.sort();
+            out
+        };
+
+        // Sub-assertion 1: middle pivot (skipped if all in one second)
+        if distinct_times.len() >= 2 {
+            let pivot = distinct_times[distinct_times.len() / 2];
+            let expected = expected_after(pivot);
+            let expected_refs: Vec<&str> = expected.iter().map(|s| s.as_str()).collect();
+            let pivot_str = pivot.to_rfc3339();
+            let output = TestHelper::run_s3ls(&[
+                target.as_str(),
+                "--recursive",
+                "--json",
+                "--filter-mtime-after",
+                pivot_str.as_str(),
+            ]);
+            assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+            assert_json_keys_eq(
+                &output.stdout,
+                &expected_refs,
+                "mtime-after: match (middle pivot)",
+            );
+        } else {
+            println!("mtime-after: skipped middle-pivot case — all 4 uploads share one S3-second");
+        }
+
+        // Sub-assertion 2: pivot 1 second beyond the max observed time —
+        // inclusive `>=` cannot match anything.
+        let after_max = *distinct_times.last().unwrap() + Duration::seconds(1);
+        let pivot_str = after_max.to_rfc3339();
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--json",
+            "--filter-mtime-after",
+            pivot_str.as_str(),
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_json_keys_eq(&output.stdout, &[], "mtime-after: no match (after max)");
+
+        // Sub-assertion 3: pivot = earliest observed time — inclusive `>=`
+        // at the minimum always matches every object.
+        let earliest = distinct_times[0];
+        let expected = expected_after(earliest);
+        let expected_refs: Vec<&str> = expected.iter().map(|s| s.as_str()).collect();
+        assert_eq!(
+            expected.len(),
+            4,
+            "sanity: earliest pivot must match all 4 objects, got {}",
+            expected.len()
+        );
+        let pivot_str = earliest.to_rfc3339();
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--json",
+            "--filter-mtime-after",
+            pivot_str.as_str(),
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_json_keys_eq(
+            &output.stdout,
+            &expected_refs,
+            "mtime-after: boundary (earliest pivot inclusive)",
+        );
+    });
+
+    _guard.cleanup().await;
+}
