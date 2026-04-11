@@ -904,3 +904,144 @@ async fn e2e_filter_pair_include_and_exclude_regex() {
 
     _guard.cleanup().await;
 }
+
+/// Mtime × storage-class composition: `mtime-after pivot AND STANDARD`.
+///
+/// Two-batch upload with a 1.5s sleep between batches. Each batch
+/// contains one STANDARD and one STANDARD_IA object. The only survivor
+/// is the batch-2 STANDARD object.
+#[tokio::test]
+async fn e2e_filter_pair_mtime_and_storage_class() {
+    use chrono::{DateTime, Utc};
+    use std::time::Duration;
+    use tokio::time::sleep;
+
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+
+        // Batch 1
+        helper
+            .put_object(&bucket, "old_std.bin", vec![0u8; 100])
+            .await;
+        helper
+            .put_object_with_storage_class(&bucket, "old_ia.bin", vec![0u8; 100], "STANDARD_IA")
+            .await;
+
+        sleep(Duration::from_millis(1500)).await;
+
+        // Batch 2
+        helper
+            .put_object(&bucket, "new_std.bin", vec![0u8; 100])
+            .await;
+        helper
+            .put_object_with_storage_class(&bucket, "new_ia.bin", vec![0u8; 100], "STANDARD_IA")
+            .await;
+
+        // Read back LastModified for all 4 objects.
+        let resp = helper
+            .client()
+            .list_objects_v2()
+            .bucket(&bucket)
+            .send()
+            .await
+            .expect("list_objects_v2 failed");
+
+        let mut old_max: Option<DateTime<Utc>> = None;
+        let mut new_min: Option<DateTime<Utc>> = None;
+        for obj in resp.contents() {
+            let key = obj.key().expect("object missing key");
+            let lm = obj.last_modified().expect("object missing last_modified");
+            let dt = DateTime::<Utc>::from_timestamp(lm.secs(), lm.subsec_nanos())
+                .expect("invalid timestamp from S3");
+            if key.starts_with("old_") {
+                old_max = Some(match old_max {
+                    None => dt,
+                    Some(cur) => cur.max(dt),
+                });
+            } else {
+                new_min = Some(match new_min {
+                    None => dt,
+                    Some(cur) => cur.min(dt),
+                });
+            }
+        }
+        let old_max = old_max.expect("batch 1 objects not found");
+        let new_min = new_min.expect("batch 2 objects not found");
+
+        assert!(
+            new_min > old_max,
+            "new_min ({new_min}) must be strictly after old_max ({old_max}) \
+             — 1.5s sleep should have guaranteed this. Clock skew > 1.5s?"
+        );
+
+        let mtime_after = new_min.to_rfc3339();
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--json",
+            "--filter-mtime-after",
+            mtime_after.as_str(),
+            "--storage-class",
+            "STANDARD",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_json_keys_eq(
+            &output.stdout,
+            &["new_std.bin"],
+            "pair mtime+storage-class: new_std.bin only",
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// Exclude × size-range composition: `NOT .tmp AND >= 1000 AND < 4000`.
+///
+/// Fixture is designed so exactly one object (`keep_mid.bin`) satisfies
+/// all three constraints at once.
+#[tokio::test]
+async fn e2e_filter_pair_exclude_and_size_range() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+
+        let fixture: Vec<(String, Vec<u8>)> = vec![
+            ("keep_small.bin".to_string(), vec![0u8; 500]),
+            ("keep_big.bin".to_string(), vec![0u8; 5000]),
+            ("keep_mid.bin".to_string(), vec![0u8; 2000]),
+            ("skip_mid.tmp".to_string(), vec![0u8; 2000]),
+        ];
+        helper.put_objects_parallel(&bucket, fixture).await;
+
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--json",
+            "--filter-exclude-regex",
+            r"\.tmp$",
+            "--filter-larger-size",
+            "1000",
+            "--filter-smaller-size",
+            "4000",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_json_keys_eq(
+            &output.stdout,
+            &["keep_mid.bin"],
+            "pair exclude+size-range: keep_mid.bin only",
+        );
+    });
+
+    _guard.cleanup().await;
+}
