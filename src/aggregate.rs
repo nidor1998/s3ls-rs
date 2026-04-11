@@ -50,6 +50,7 @@ pub struct AggregatorConfig {
     pub summary: bool,
     pub human: bool,
     pub all_versions: bool,
+    pub cancellation_token: crate::types::token::PipelineCancellationToken,
 }
 
 pub struct Aggregator<W: Write + Send + 'static> {
@@ -97,6 +98,9 @@ impl<W: Write + Send + 'static> Aggregator<W> {
         };
 
         while let Some(entry) = self.rx.recv().await {
+            if self.config.cancellation_token.is_cancelled() {
+                break;
+            }
             if self.config.summary {
                 accumulate_statistics(&entry, &mut stats);
             }
@@ -119,6 +123,9 @@ impl<W: Write + Send + 'static> Aggregator<W> {
     async fn run_aggregate(&mut self) -> Result<()> {
         let mut entries = Vec::new();
         while let Some(entry) = self.rx.recv().await {
+            if self.config.cancellation_token.is_cancelled() {
+                break;
+            }
             entries.push(entry);
         }
 
@@ -1016,6 +1023,92 @@ mod tests {
         assert!(line.contains("PRE"));
         assert!(line.ends_with("2024/"));
         assert!(!line.contains("logs/2024/"));
+    }
+
+    fn make_entry_with_checksums(key: &str, checksums: Vec<&str>) -> ListEntry {
+        ListEntry::Object(S3Object::NotVersioning {
+            key: key.to_string(),
+            size: 100,
+            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            e_tag: "\"e\"".to_string(),
+            storage_class: Some("STANDARD".to_string()),
+            checksum_algorithm: checksums.iter().map(|s| s.to_string()).collect(),
+            checksum_type: None,
+            owner_display_name: None,
+            owner_id: None,
+            is_restore_in_progress: None,
+            restore_expiry_date: None,
+        })
+    }
+
+    #[test]
+    fn format_text_multiple_checksum_algorithms() {
+        let entry = make_entry_with_checksums("file.txt", vec!["CRC32", "SHA256"]);
+        let opts = FormatOptions {
+            show_checksum_algorithm: true,
+            ..Default::default()
+        };
+        let line = format_entry(&entry, &opts);
+        let fields: Vec<&str> = line.split('\t').collect();
+        // date \t size \t checksum_algorithm \t key
+        assert_eq!(fields.len(), 4);
+        assert_eq!(fields[2], "CRC32,SHA256");
+    }
+
+    #[test]
+    fn format_text_single_checksum_algorithm() {
+        let entry = make_entry_with_checksums("file.txt", vec!["SHA256"]);
+        let opts = FormatOptions {
+            show_checksum_algorithm: true,
+            ..Default::default()
+        };
+        let line = format_entry(&entry, &opts);
+        let fields: Vec<&str> = line.split('\t').collect();
+        assert_eq!(fields[2], "SHA256");
+    }
+
+    #[test]
+    fn format_text_no_checksum_algorithm() {
+        let entry = make_entry_with_checksums("file.txt", vec![]);
+        let opts = FormatOptions {
+            show_checksum_algorithm: true,
+            ..Default::default()
+        };
+        let line = format_entry(&entry, &opts);
+        let fields: Vec<&str> = line.split('\t').collect();
+        assert_eq!(fields[2], "");
+    }
+
+    #[test]
+    fn format_json_multiple_checksum_algorithms() {
+        let entry = make_entry_with_checksums("file.txt", vec!["CRC32", "SHA256"]);
+        let opts = FormatOptions::default();
+        let json_str = format_entry_json(&entry, &opts);
+        let val: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        let algos = val["ChecksumAlgorithm"].as_array().unwrap();
+        assert_eq!(algos.len(), 2);
+        assert_eq!(algos[0], "CRC32");
+        assert_eq!(algos[1], "SHA256");
+    }
+
+    #[test]
+    fn format_json_single_checksum_algorithm() {
+        let entry = make_entry_with_checksums("file.txt", vec!["CRC64NVME"]);
+        let opts = FormatOptions::default();
+        let json_str = format_entry_json(&entry, &opts);
+        let val: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        let algos = val["ChecksumAlgorithm"].as_array().unwrap();
+        assert_eq!(algos.len(), 1);
+        assert_eq!(algos[0], "CRC64NVME");
+    }
+
+    #[test]
+    fn format_json_no_checksum_algorithm() {
+        let entry = make_entry_with_checksums("file.txt", vec![]);
+        let opts = FormatOptions::default();
+        let json_str = format_entry_json(&entry, &opts);
+        let val: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert!(val.get("ChecksumAlgorithm").is_none());
     }
 
     #[test]
