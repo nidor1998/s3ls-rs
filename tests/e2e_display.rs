@@ -794,3 +794,199 @@ async fn e2e_display_all_show_flags_combined() {
 
     _guard.cleanup().await;
 }
+
+/// Verifies that `CommonPrefix` rows (rendered as "PRE" in text mode)
+/// correctly pad optional columns with empty cells. Uses `--max-depth 1`
+/// on a fixture where some keys are at depth 2, so s3ls emits PRE
+/// entries at the depth-1 boundary.
+#[tokio::test]
+async fn e2e_display_common_prefix_row() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+        // One top-level object, one deep object (collapses to `logs/` PRE
+        // under --max-depth 1).
+        helper.put_object(&bucket, "top.txt", vec![0u8; 100]).await;
+        helper
+            .put_object(&bucket, "logs/2025/a.log", vec![0u8; 100])
+            .await;
+
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--max-depth",
+            "1",
+            "--header",
+            "--show-etag",
+            "--show-storage-class",
+            "--show-owner",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        // Header: DATE, SIZE, STORAGE_CLASS, ETAG, OWNER_DISPLAY_NAME, OWNER_ID, KEY = 7 cols
+        assert_header_columns(
+            &output.stdout,
+            &[
+                "DATE",
+                "SIZE",
+                "STORAGE_CLASS",
+                "ETAG",
+                "OWNER_DISPLAY_NAME",
+                "OWNER_ID",
+                "KEY",
+            ],
+            "common-prefix-row: header",
+        );
+        assert_all_data_rows_have_columns(&output.stdout, 7, "common-prefix-row: row count");
+
+        // Find the PRE row (SIZE column contains "PRE") and verify optional
+        // columns are empty.
+        let pre_row = output
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .find(|l| {
+                let cols = parse_tsv_line(l);
+                cols.len() >= 2 && cols[1] == "PRE"
+            })
+            .expect("common-prefix-row: no PRE row found");
+        let cols = parse_tsv_line(pre_row);
+        assert!(
+            cols[0].is_empty(),
+            "common-prefix-row: PRE row DATE should be empty, got {:?}",
+            cols[0]
+        );
+        assert_eq!(cols[1], "PRE");
+        assert!(
+            cols[2].is_empty(),
+            "common-prefix-row: PRE row STORAGE_CLASS should be empty, got {:?}",
+            cols[2]
+        );
+        assert!(
+            cols[3].is_empty(),
+            "common-prefix-row: PRE row ETAG should be empty, got {:?}",
+            cols[3]
+        );
+        assert!(
+            cols[4].is_empty(),
+            "common-prefix-row: PRE row OWNER_DISPLAY_NAME should be empty"
+        );
+        assert!(
+            cols[5].is_empty(),
+            "common-prefix-row: PRE row OWNER_ID should be empty"
+        );
+        assert_eq!(
+            cols[6], "logs/",
+            "common-prefix-row: PRE row KEY should be 'logs/', got {:?}",
+            cols[6]
+        );
+
+        // Find the object row (SIZE column is numeric, not "PRE") and
+        // verify some optional cells are populated.
+        let obj_row = output
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .find(|l| {
+                let cols = parse_tsv_line(l);
+                cols.len() >= 2 && cols[1] != "PRE" && cols[1] != "SIZE"
+            })
+            .expect("common-prefix-row: no object row found");
+        let cols = parse_tsv_line(obj_row);
+        assert_eq!(cols[6], "top.txt");
+        assert!(
+            !cols[5].is_empty(),
+            "object row OWNER_ID should be populated"
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// Verifies that `DeleteMarker` rows (rendered as "DELETE" in text mode)
+/// correctly pad optional columns with empty cells for non-version
+/// columns, populate VERSION_ID and KEY, and populate Owner (since
+/// ListObjectVersions always returns owner per src/storage/s3/mod.rs:174).
+#[tokio::test]
+async fn e2e_display_delete_marker_row() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_versioned_bucket(&bucket).await;
+        helper.put_object(&bucket, "doc.txt", vec![0u8; 100]).await;
+        helper.create_delete_marker(&bucket, "doc.txt").await;
+
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--all-versions",
+            "--header",
+            "--show-etag",
+            "--show-storage-class",
+            "--show-owner",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        // Header: DATE, SIZE, STORAGE_CLASS, ETAG, VERSION_ID, OWNER_DISPLAY_NAME, OWNER_ID, KEY = 8 cols
+        assert_header_columns(
+            &output.stdout,
+            &[
+                "DATE",
+                "SIZE",
+                "STORAGE_CLASS",
+                "ETAG",
+                "VERSION_ID",
+                "OWNER_DISPLAY_NAME",
+                "OWNER_ID",
+                "KEY",
+            ],
+            "delete-marker-row: header",
+        );
+        assert_all_data_rows_have_columns(&output.stdout, 8, "delete-marker-row: row count");
+
+        // Find the DELETE row and verify optional columns.
+        let dm_row = output
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .find(|l| {
+                let cols = parse_tsv_line(l);
+                cols.len() >= 2 && cols[1] == "DELETE"
+            })
+            .expect("delete-marker-row: no DELETE row found");
+        let cols = parse_tsv_line(dm_row);
+        assert!(
+            !cols[0].is_empty(),
+            "delete-marker-row: DELETE row DATE should be populated, got {:?}",
+            cols[0]
+        );
+        assert_eq!(cols[1], "DELETE");
+        assert!(
+            cols[2].is_empty(),
+            "delete-marker-row: DELETE row STORAGE_CLASS should be empty, got {:?}",
+            cols[2]
+        );
+        assert!(
+            cols[3].is_empty(),
+            "delete-marker-row: DELETE row ETAG should be empty, got {:?}",
+            cols[3]
+        );
+        assert!(
+            !cols[4].is_empty(),
+            "delete-marker-row: DELETE row VERSION_ID should be populated, got {:?}",
+            cols[4]
+        );
+        assert_eq!(cols[7], "doc.txt");
+    });
+
+    _guard.cleanup().await;
+}
