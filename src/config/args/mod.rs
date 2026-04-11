@@ -320,13 +320,7 @@ pub struct CLIArgs {
     pub show_restore_status: bool,
 
     /// Show bucket ARN column (bucket listing only)
-    #[arg(
-        long,
-        env,
-        default_value_t = false,
-        conflicts_with = "json",
-        help_heading = "Bucket Listing"
-    )]
+    #[arg(long, env, default_value_t = false, help_heading = "Bucket Listing")]
     pub show_bucket_arn: bool,
 
     /// Add a header row to each column

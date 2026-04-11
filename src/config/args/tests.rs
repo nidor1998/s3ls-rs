@@ -1444,6 +1444,15 @@ fn show_restore_status_with_json() {
 }
 
 #[test]
+fn show_bucket_arn_with_json() {
+    // --show-bucket-arn and --json are both meaningful in bucket
+    // listing mode and should coexist.
+    let config = build_config_from_args(vec!["s3ls", "--json", "--show-bucket-arn"]).unwrap();
+    assert!(config.display_config.json);
+    assert!(config.display_config.show_bucket_arn);
+}
+
+#[test]
 fn show_owner_without_json() {
     let config = build_config_from_args(vec!["s3ls", "s3://bucket/", "--show-owner"]).unwrap();
     assert!(!config.display_config.json);
