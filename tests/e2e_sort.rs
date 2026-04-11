@@ -101,3 +101,77 @@ async fn e2e_sort_key_desc() {
 
     _guard.cleanup().await;
 }
+
+/// `--sort size`: objects sorted by size ascending. Fixture keys are
+/// non-alphabetical and sizes are distinct so sort-by-size produces
+/// a different order than sort-by-key.
+#[tokio::test]
+async fn e2e_sort_size_asc() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+
+        let fixture: Vec<(String, Vec<u8>)> = vec![
+            ("medium.bin".to_string(), vec![0u8; 5000]),
+            ("tiny.bin".to_string(), vec![0u8; 10]),
+            ("large.bin".to_string(), vec![0u8; 100_000]),
+            ("small.bin".to_string(), vec![0u8; 1000]),
+        ];
+        helper.put_objects_parallel(&bucket, fixture).await;
+
+        let target = format!("s3://{bucket}/");
+
+        let output =
+            TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--json", "--sort", "size"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_json_keys_order_eq(
+            &output.stdout,
+            &["tiny.bin", "small.bin", "medium.bin", "large.bin"],
+            "sort size asc",
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// `--sort size --reverse`: objects sorted by size descending.
+#[tokio::test]
+async fn e2e_sort_size_desc() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+
+        let fixture: Vec<(String, Vec<u8>)> = vec![
+            ("medium.bin".to_string(), vec![0u8; 5000]),
+            ("tiny.bin".to_string(), vec![0u8; 10]),
+            ("large.bin".to_string(), vec![0u8; 100_000]),
+            ("small.bin".to_string(), vec![0u8; 1000]),
+        ];
+        helper.put_objects_parallel(&bucket, fixture).await;
+
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--json",
+            "--sort",
+            "size",
+            "--reverse",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_json_keys_order_eq(
+            &output.stdout,
+            &["large.bin", "medium.bin", "small.bin", "tiny.bin"],
+            "sort size desc",
+        );
+    });
+
+    _guard.cleanup().await;
+}
