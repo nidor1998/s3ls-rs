@@ -34,9 +34,9 @@ impl ObjectFilter for ExcludeRegexFilter {
                     name = FILTER_NAME,
                     key = entry.key(),
                     error = %e,
-                    "regex match failed, skipping entry to be safe."
+                    "regex match failed, keeping entry to be safe."
                 );
-                return false;
+                return true;
             }
         };
 
@@ -99,7 +99,7 @@ mod tests {
     }
 
     #[test]
-    fn regex_error_returns_false() {
+    fn regex_error_keeps_entry() {
         use fancy_regex::RegexBuilder;
 
         // Backreference forces fancy_regex VM. With backtrack_limit(1),
@@ -112,7 +112,8 @@ mod tests {
         // Verify this actually produces an error (not Ok)
         assert!(regex.is_match("aaaaaaaaaaaaaaac").is_err());
 
+        // On error, exclude filter keeps entry (returns true) to be safe
         let filter = ExcludeRegexFilter::from_regex(regex);
-        assert!(!filter.matches(&make_entry("aaaaaaaaaaaaaaac")));
+        assert!(filter.matches(&make_entry("aaaaaaaaaaaaaaac")));
     }
 }

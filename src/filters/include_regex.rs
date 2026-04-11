@@ -34,7 +34,7 @@ impl ObjectFilter for IncludeRegexFilter {
                     name = FILTER_NAME,
                     key = entry.key(),
                     error = %e,
-                    "regex match failed, skipping entry to be safe."
+                    "regex match failed, excluding entry to be safe."
                 );
                 return false;
             }
