@@ -1115,8 +1115,9 @@ async fn e2e_display_summarize_versioned() {
 }
 
 /// Verifies `--human-readable` renders object row sizes in human form.
-/// Fixture is a 2048-byte object so the expected rendering is exactly
-/// "2 KiB" or "2.00 KiB" (2048 / 1024 = 2, binary units).
+/// Fixture is a 2048-byte object so the expected rendering is "2.0KiB"
+/// (2048 / 1024 = 2.0, binary units, no space between number and unit
+/// per `src/aggregate.rs:284-285` which strips the space via replacen).
 #[tokio::test]
 async fn e2e_display_human_readable() {
     let helper = TestHelper::new().await;
@@ -1138,11 +1139,13 @@ async fn e2e_display_human_readable() {
             output.stdout.contains("file.txt"),
             "human-readable: key missing from output"
         );
-        // 2048 bytes = 2 KiB exactly. byte-unit may render as "2 KiB" or
-        // "2.00 KiB" depending on precision — accept either.
+        // 2048 bytes = 2.0 KiB. format_size at src/aggregate.rs:284-285
+        // uses `{adjusted:.1}` and strips the space, yielding "2.0KiB".
+        // Accept "2.00KiB" defensively in case byte-unit's precision
+        // changes in a future version.
         assert!(
-            output.stdout.contains("2 KiB") || output.stdout.contains("2.00 KiB"),
-            "human-readable: expected '2 KiB' or '2.00 KiB' in output, got:\n{}",
+            output.stdout.contains("2.0KiB") || output.stdout.contains("2.00KiB"),
+            "human-readable: expected '2.0KiB' in output, got:\n{}",
             output.stdout
         );
         // And verify the non-human form is NOT there (no "2048" as a size).
