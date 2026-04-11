@@ -351,6 +351,11 @@ impl TestHelper {
     }
 
     /// Upload an object with S3 tags.
+    ///
+    /// NOTE: The caller is responsible for ensuring tag keys and values are
+    /// URL-safe. This helper does not URL-encode — a key or value containing
+    /// `=`, `&`, `+`, `%`, or non-ASCII characters will confuse S3's tagging
+    /// parser. Test fixtures should stick to alphanumerics.
     pub async fn put_object_with_tags(
         &self,
         bucket: &str,
@@ -376,6 +381,9 @@ impl TestHelper {
     }
 
     /// Upload an object with content-type, metadata, AND tags all at once.
+    ///
+    /// NOTE: Same URL-safety caveat as `put_object_with_tags` — tag keys and
+    /// values must not contain `=`, `&`, `+`, `%`, or non-ASCII characters.
     pub async fn put_object_full(
         &self,
         bucket: &str,
