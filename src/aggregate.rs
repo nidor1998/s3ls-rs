@@ -169,6 +169,23 @@ impl<W: Write + Send + 'static> Aggregator<W> {
     }
 }
 
+/// Split a size into (number, unit) for tab-delimited summary output.
+/// Mirrors `format_size(size, true)` but returns the two parts separately.
+fn format_size_split(size: u64) -> (String, String) {
+    if size < 1024 {
+        (size.to_string(), "bytes".to_string())
+    } else {
+        let byte = Byte::from_u64(size);
+        let adjusted = byte.get_appropriate_unit(byte_unit::UnitType::Binary);
+        // byte-unit formats as "5.4 MiB"; split on the space
+        let s = format!("{adjusted:.1}");
+        match s.split_once(' ') {
+            Some((num, unit)) => (num.to_string(), unit.to_string()),
+            None => (s, String::new()),
+        }
+    }
+}
+
 fn format_size(size: u64, human: bool) -> String {
     if human {
         let byte = Byte::from_u64(size);
@@ -597,14 +614,17 @@ pub fn format_summary(
         map.insert("summary".to_string(), serde_json::Value::Object(summary));
         serde_json::to_string(&map).unwrap()
     } else {
-        let size_str = if human {
-            format_size(stats.total_size, true)
+        let (size_num, size_unit) = if human {
+            format_size_split(stats.total_size)
         } else {
-            format!("{} bytes", stats.total_size)
+            (stats.total_size.to_string(), "bytes".to_string())
         };
-        let mut line = format!("Total: {} objects, {}", stats.total_objects, size_str);
+        let mut line = format!(
+            "Total:\t{}\tobjects\t{}\t{}",
+            stats.total_objects, size_num, size_unit
+        );
         if all_versions {
-            line.push_str(&format!(", {} delete markers", stats.total_delete_markers));
+            line.push_str(&format!("\t{}\tdelete markers", stats.total_delete_markers));
         }
         line
     }
@@ -1057,8 +1077,19 @@ mod tests {
             total_delete_markers: 0,
         };
         let summary = format_summary(&stats, false, true, false);
-        assert!(summary.contains("42 objects"));
-        assert!(summary.contains("5.4MiB"));
+        // Tab-delimited: Total:\t42\tobjects\t5.4\tMiB
+        assert_eq!(summary, "Total:\t42\tobjects\t5.4\tMiB");
+    }
+
+    #[test]
+    fn format_summary_text_non_human() {
+        let stats = crate::types::ListingStatistics {
+            total_objects: 200002,
+            total_size: 9578216,
+            total_delete_markers: 0,
+        };
+        let summary = format_summary(&stats, false, false, false);
+        assert_eq!(summary, "Total:\t200002\tobjects\t9578216\tbytes");
     }
 
     #[test]
@@ -1082,7 +1113,7 @@ mod tests {
             total_delete_markers: 3,
         };
         let summary = format_summary(&stats, false, false, true);
-        assert!(summary.contains("3 delete markers"));
+        assert!(summary.contains("\t3\tdelete markers"));
     }
 
     #[test]
