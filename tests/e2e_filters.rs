@@ -1045,3 +1045,61 @@ async fn e2e_filter_pair_exclude_and_size_range() {
 
     _guard.cleanup().await;
 }
+
+/// Locks in `CommonPrefix` passthrough under `--filter-include-regex`
+/// + `--max-depth`.
+///
+/// `FilterChain::matches` at `src/filters/mod.rs:37` short-circuits
+/// `CommonPrefix` entries to always pass every filter. Without this
+/// short-circuit, `--filter-include-regex '\.csv$'` would drop
+/// `{"Prefix": "logs/"}` (the prefix doesn't match `\.csv$`), which
+/// would break depth-limited recursion. This test hits that exact
+/// interaction with real S3 listing + `--max-depth 1`.
+///
+/// The expected output includes both a `{"Key": "readme.csv", ...}`
+/// object entry and a `{"Prefix": "logs/"}` common-prefix entry, so
+/// this is the one test that uses `assert_json_keys_or_prefixes_eq`.
+/// JSON shape confirmed against `src/aggregate.rs:514`.
+#[tokio::test]
+async fn e2e_filter_max_depth_common_prefix_passthrough() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+
+        let fixture: Vec<(String, Vec<u8>)> = vec![
+            ("logs/2025/a.log".to_string(), b"a".to_vec()),
+            ("logs/2025/b.log".to_string(), b"a".to_vec()),
+            ("logs/2026/a.log".to_string(), b"a".to_vec()),
+            ("readme.csv".to_string(), b"a".to_vec()),
+        ];
+        helper.put_objects_parallel(&bucket, fixture).await;
+
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--max-depth",
+            "1",
+            "--json",
+            "--filter-include-regex",
+            r"\.csv$",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        // Expected:
+        // - readme.csv matches the regex → {"Key": "readme.csv", ...}
+        // - logs/ is a CommonPrefix at depth 1 → {"Prefix": "logs/"}
+        //   passes through the filter because CommonPrefix is exempt.
+        assert_json_keys_or_prefixes_eq(
+            &output.stdout,
+            &["readme.csv", "logs/"],
+            "max-depth: CommonPrefix passthrough under include-regex",
+        );
+    });
+
+    _guard.cleanup().await;
+}
