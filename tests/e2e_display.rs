@@ -716,3 +716,81 @@ async fn e2e_display_show_relative_path_prefixed() {
 
     _guard.cleanup().await;
 }
+
+/// Every object `--show-*` flag enabled at once. Verifies the full
+/// 11-column header order and that every row has 11 columns. The
+/// fixture uses put_object_with_checksum_algorithm so CHECKSUM_ALGORITHM
+/// and CHECKSUM_TYPE cells are populated.
+///
+/// Does NOT include --all-versions or --show-is-latest (which would
+/// need a versioned bucket) — the combo is specifically about the
+/// column layout of the maximal non-versioned case.
+#[tokio::test]
+async fn e2e_display_all_show_flags_combined() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+        helper
+            .put_object_with_checksum_algorithm(&bucket, "file.txt", vec![0u8; 100], "CRC32")
+            .await;
+
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--header",
+            "--show-storage-class",
+            "--show-etag",
+            "--show-checksum-algorithm",
+            "--show-checksum-type",
+            "--show-owner",
+            "--show-restore-status",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        assert_header_columns(
+            &output.stdout,
+            &[
+                "DATE",
+                "SIZE",
+                "STORAGE_CLASS",
+                "ETAG",
+                "CHECKSUM_ALGORITHM",
+                "CHECKSUM_TYPE",
+                "OWNER_DISPLAY_NAME",
+                "OWNER_ID",
+                "IS_RESTORE_IN_PROGRESS",
+                "RESTORE_EXPIRY_DATE",
+                "KEY",
+            ],
+            "combo: header",
+        );
+        assert_all_data_rows_have_columns(&output.stdout, 11, "combo: row count");
+
+        // Spot-check: data row cells for CHECKSUM_ALGORITHM (index 4)
+        // contain "CRC32" and OWNER_ID (index 7) is non-empty.
+        let data_line = output
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .nth(1)
+            .expect("no data row found");
+        let cols = parse_tsv_line(data_line);
+        assert!(
+            cols[4].contains("CRC32"),
+            "combo: CHECKSUM_ALGORITHM should contain CRC32, got {:?}",
+            cols[4]
+        );
+        assert!(
+            !cols[7].is_empty(),
+            "combo: OWNER_ID should be non-empty, got {:?}",
+            cols[7]
+        );
+    });
+
+    _guard.cleanup().await;
+}
