@@ -340,7 +340,6 @@ impl ListEntry {
 pub struct ListingStatistics {
     pub total_objects: u64,
     pub total_size: u64,
-    pub total_versions: u64,
     pub total_delete_markers: u64,
 }
 

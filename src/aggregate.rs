@@ -93,7 +93,6 @@ impl<W: Write + Send + 'static> Aggregator<W> {
         let mut stats = crate::types::ListingStatistics {
             total_objects: 0,
             total_size: 0,
-            total_versions: 0,
             total_delete_markers: 0,
         };
 
@@ -521,9 +520,6 @@ pub fn accumulate_statistics(entry: &ListEntry, stats: &mut crate::types::Listin
         ListEntry::Object(obj) => {
             stats.total_objects += 1;
             stats.total_size += obj.size();
-            if obj.version_id().is_some() {
-                stats.total_versions += 1;
-            }
         }
         ListEntry::CommonPrefix(_) => {}
         ListEntry::DeleteMarker { .. } => {
@@ -535,7 +531,6 @@ pub fn accumulate_statistics(entry: &ListEntry, stats: &mut crate::types::Listin
 pub fn compute_statistics(entries: &[ListEntry]) -> crate::types::ListingStatistics {
     let mut total_objects: u64 = 0;
     let mut total_size: u64 = 0;
-    let mut total_versions: u64 = 0;
     let mut total_delete_markers: u64 = 0;
 
     for entry in entries {
@@ -543,9 +538,6 @@ pub fn compute_statistics(entries: &[ListEntry]) -> crate::types::ListingStatist
             ListEntry::Object(obj) => {
                 total_objects += 1;
                 total_size += obj.size();
-                if obj.version_id().is_some() {
-                    total_versions += 1;
-                }
             }
             ListEntry::CommonPrefix(_) => {}
             ListEntry::DeleteMarker { .. } => {
@@ -557,7 +549,6 @@ pub fn compute_statistics(entries: &[ListEntry]) -> crate::types::ListingStatist
     crate::types::ListingStatistics {
         total_objects,
         total_size,
-        total_versions,
         total_delete_markers,
     }
 }
@@ -581,10 +572,6 @@ pub fn format_summary(
         );
         if all_versions {
             summary.insert(
-                "total_versions".to_string(),
-                serde_json::json!(stats.total_versions),
-            );
-            summary.insert(
                 "total_delete_markers".to_string(),
                 serde_json::json!(stats.total_delete_markers),
             );
@@ -599,10 +586,7 @@ pub fn format_summary(
         };
         let mut line = format!("Total: {} objects, {}", stats.total_objects, size_str);
         if all_versions {
-            line.push_str(&format!(
-                ", {} versions, {} delete markers",
-                stats.total_versions, stats.total_delete_markers
-            ));
+            line.push_str(&format!(", {} delete markers", stats.total_delete_markers));
         }
         line
     }
@@ -951,7 +935,6 @@ mod tests {
         let stats = crate::types::ListingStatistics {
             total_objects: 42,
             total_size: 5678901,
-            total_versions: 0,
             total_delete_markers: 0,
         };
         let summary = format_summary(&stats, false, true, false);
@@ -964,7 +947,6 @@ mod tests {
         let stats = crate::types::ListingStatistics {
             total_objects: 10,
             total_size: 1024,
-            total_versions: 0,
             total_delete_markers: 0,
         };
         let summary = format_summary(&stats, true, false, false);
@@ -978,11 +960,9 @@ mod tests {
         let stats = crate::types::ListingStatistics {
             total_objects: 10,
             total_size: 1024,
-            total_versions: 15,
             total_delete_markers: 3,
         };
         let summary = format_summary(&stats, false, false, true);
-        assert!(summary.contains("15 versions"));
         assert!(summary.contains("3 delete markers"));
     }
 
