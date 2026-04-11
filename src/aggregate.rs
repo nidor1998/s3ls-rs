@@ -247,13 +247,14 @@ pub fn format_entry(entry: &ListEntry, opts: &FormatOptions) -> String {
             if opts.show_checksum_type {
                 cols.push(String::new());
             }
-            // version_id is only present in versioned entries; PRE never has one,
-            // but we still need the placeholder when other versioned rows exist.
-            // However, we can't know here whether the listing has versions, so
-            // we skip — version_id is always the last optional column before key
-            // and only appears on versioned objects/delete markers.
-            if opts.show_is_latest {
+            // In --all-versions mode, Object and DeleteMarker rows include a
+            // version_id column (and is_latest if enabled). CommonPrefix has
+            // neither, so emit placeholders to keep columns aligned.
+            if opts.all_versions {
                 cols.push(String::new());
+                if opts.show_is_latest {
+                    cols.push(String::new());
+                }
             }
             if opts.show_owner {
                 cols.push(String::new());
@@ -929,6 +930,60 @@ mod tests {
         let key_pos = line.rfind("readme.txt").unwrap();
         assert!(size_pos < vid_pos, "size before version_id");
         assert!(vid_pos < key_pos, "version_id before key");
+    }
+
+    #[test]
+    fn format_text_common_prefix_aligns_with_versioned_object() {
+        // In --all-versions mode, CommonPrefix and versioned Object rows must
+        // have the same number of tab-delimited columns.
+        let obj = ListEntry::Object(S3Object::Versioning {
+            key: "logs/file.txt".to_string(),
+            version_id: "v1".to_string(),
+            size: 100,
+            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            e_tag: "\"e\"".to_string(),
+            is_latest: true,
+            storage_class: Some("STANDARD".to_string()),
+            checksum_algorithm: vec![],
+            checksum_type: None,
+            owner_display_name: None,
+            owner_id: None,
+            is_restore_in_progress: None,
+            restore_expiry_date: None,
+        });
+        let prefix = ListEntry::CommonPrefix("logs/".to_string());
+
+        let opts = FormatOptions {
+            all_versions: true,
+            show_is_latest: true,
+            ..Default::default()
+        };
+        let obj_line = format_entry(&obj, &opts);
+        let prefix_line = format_entry(&prefix, &opts);
+        let obj_cols: Vec<&str> = obj_line.split('\t').collect();
+        let prefix_cols: Vec<&str> = prefix_line.split('\t').collect();
+        assert_eq!(
+            obj_cols.len(),
+            prefix_cols.len(),
+            "column count mismatch between Object ({:?}) and CommonPrefix ({:?})",
+            obj_cols,
+            prefix_cols
+        );
+    }
+
+    #[test]
+    fn format_text_common_prefix_no_version_placeholder_without_all_versions() {
+        // Without --all-versions, CommonPrefix should NOT emit a version_id
+        // placeholder. Verify column count matches a non-versioned Object.
+        let obj = make_entry("file.txt", 100, 2024, 1);
+        let prefix = ListEntry::CommonPrefix("logs/".to_string());
+
+        let opts = FormatOptions::default();
+        let obj_line = format_entry(&obj, &opts);
+        let prefix_line = format_entry(&prefix, &opts);
+        let obj_cols: Vec<&str> = obj_line.split('\t').collect();
+        let prefix_cols: Vec<&str> = prefix_line.split('\t').collect();
+        assert_eq!(obj_cols.len(), prefix_cols.len());
     }
 
     #[test]
