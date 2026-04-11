@@ -1103,3 +1103,48 @@ async fn e2e_filter_max_depth_common_prefix_passthrough() {
 
     _guard.cleanup().await;
 }
+
+/// Locks in that `--no-sort` still applies filters.
+///
+/// The streaming path bypasses the sort buffer. This test confirms
+/// that the filter chain still runs — a future refactor that moved
+/// filtering into the post-sort step would regress this.
+///
+/// Asserted as a set (order-independent) because `--no-sort` emits
+/// results in arrival order, which is non-deterministic across runs.
+#[tokio::test]
+async fn e2e_filter_no_sort_streaming() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+
+        // a1..a6 with sizes 1000..6000 (step 1000).
+        let fixture: Vec<(String, Vec<u8>)> = (1..=6)
+            .map(|i| (format!("a{i}.bin"), vec![0u8; (i * 1000) as usize]))
+            .collect();
+        helper.put_objects_parallel(&bucket, fixture).await;
+
+        let target = format!("s3://{bucket}/");
+
+        // --filter-larger-size 3000 → a3 (3000) through a6 (6000) pass.
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--no-sort",
+            "--json",
+            "--filter-larger-size",
+            "3000",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_json_keys_eq(
+            &output.stdout,
+            &["a3.bin", "a4.bin", "a5.bin", "a6.bin"],
+            "no-sort streaming: larger-size 3000",
+        );
+    });
+
+    _guard.cleanup().await;
+}
