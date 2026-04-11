@@ -392,3 +392,55 @@ async fn e2e_versioned_hide_delete_markers() {
 
     _guard.cleanup().await;
 }
+
+/// Locks in "size filters evaluate each version's own size" — the same
+/// key appears with 3 different sizes across versions, and only the
+/// middle version (v2, 5000 bytes) survives `--filter-larger-size 1000`.
+///
+/// This is the one test in the suite where the same key appears multiple
+/// times in the fixture but NOT all versions survive. It proves filters
+/// see each version's metadata independently rather than treating all
+/// versions of a key as a unit.
+#[tokio::test]
+async fn e2e_versioned_size_filter_per_version() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_versioned_bucket(&bucket).await;
+
+        // Three versions of growing.bin: small, large, small again.
+        helper
+            .put_object(&bucket, "growing.bin", vec![0u8; 100])
+            .await;
+        helper
+            .put_object(&bucket, "growing.bin", vec![0u8; 5000])
+            .await;
+        helper
+            .put_object(&bucket, "growing.bin", vec![0u8; 200])
+            .await;
+
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--all-versions",
+            "--json",
+            "--filter-larger-size",
+            "1000",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        // Expected: ONLY v2 (5000 bytes) survives. v1 (100) and v3 (200)
+        // fail the size filter on their own sizes.
+        assert_json_version_shapes_eq(
+            &output.stdout,
+            &[("growing.bin", false)],
+            "versioned size filter: only v2 survives per-version check",
+        );
+    });
+
+    _guard.cleanup().await;
+}
