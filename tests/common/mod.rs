@@ -13,7 +13,7 @@ use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client;
 use aws_sdk_s3::types::{
     BucketLocationConstraint, BucketVersioningStatus, CreateBucketConfiguration, Delete,
-    ObjectIdentifier, VersioningConfiguration,
+    ObjectIdentifier, StorageClass, VersioningConfiguration,
 };
 use uuid::Uuid;
 
@@ -380,6 +380,35 @@ impl TestHelper {
             .unwrap_or_else(|e| panic!("Failed to put object {key} with tags: {e}"));
     }
 
+    /// Upload an object with an explicit S3 StorageClass.
+    ///
+    /// Pass the storage class as the string form (e.g. `"STANDARD_IA"`,
+    /// `"ONEZONE_IA"`, `"REDUCED_REDUNDANCY"`, `"INTELLIGENT_TIERING"`).
+    /// The helper converts it via `StorageClass::from(&str)`, which is
+    /// the same path `src/config/args/value_parser/storage_class.rs` uses.
+    ///
+    /// Used by filter e2e tests that need objects in multiple storage
+    /// classes to exercise `--storage-class` filtering.
+    pub async fn put_object_with_storage_class(
+        &self,
+        bucket: &str,
+        key: &str,
+        body: Vec<u8>,
+        storage_class: &str,
+    ) {
+        self.client
+            .put_object()
+            .bucket(bucket)
+            .key(key)
+            .body(body.into())
+            .storage_class(StorageClass::from(storage_class))
+            .send()
+            .await
+            .unwrap_or_else(|e| {
+                panic!("Failed to put object {key} with storage-class {storage_class}: {e}")
+            });
+    }
+
     /// Upload an object with content-type, metadata, AND tags all at once.
     ///
     /// NOTE: Same URL-safety caveat as `put_object_with_tags` — tag keys and
@@ -679,6 +708,92 @@ pub fn assert_key_order(stdout: &str, expected_order: &[&str]) {
         assert!(
             pos_a < pos_b,
             "expected {key_a:?} before {key_b:?}; got positions {pos_a} vs {pos_b} in stdout:\n{stdout}"
+        );
+    }
+}
+
+/// Parse NDJSON stdout from `s3ls --json` and assert the set of `Key`
+/// fields equals `expected`. `label` is included in panic messages so
+/// tests with multiple sub-assertions can identify which sub-case failed.
+///
+/// Panics if:
+/// - any non-empty line fails to parse as JSON,
+/// - any JSON line is missing the `Key` field (use
+///   `assert_json_keys_or_prefixes_eq` if the output includes
+///   `{"Prefix": ...}` entries — only happens with `--max-depth`),
+/// - the actual set of keys does not equal `expected`.
+///
+/// Set-equality (not list-equality): catches both missing AND extra keys,
+/// order-independent, so filter tests don't accidentally depend on sort.
+pub fn assert_json_keys_eq(stdout: &str, expected: &[&str], label: &str) {
+    use std::collections::HashSet;
+
+    let actual: HashSet<String> = stdout
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|line| {
+            let v: serde_json::Value = serde_json::from_str(line).unwrap_or_else(|e| {
+                panic!("[{label}] failed to parse JSON line: {line}\nerror: {e}")
+            });
+            v.get("Key")
+                .and_then(|k| k.as_str())
+                .unwrap_or_else(|| panic!("[{label}] JSON line missing `Key`: {line}"))
+                .to_string()
+        })
+        .collect();
+
+    let expected_set: HashSet<String> = expected.iter().map(|s| s.to_string()).collect();
+
+    if actual != expected_set {
+        let mut missing: Vec<&String> = expected_set.difference(&actual).collect();
+        let mut extra: Vec<&String> = actual.difference(&expected_set).collect();
+        missing.sort();
+        extra.sort();
+        panic!(
+            "[{label}] key set mismatch\n  missing: {missing:?}\n  extra:   {extra:?}\n  stdout:\n{stdout}"
+        );
+    }
+}
+
+/// Like `assert_json_keys_eq`, but accepts JSON lines that have EITHER
+/// a `Key` field (for object entries) OR a `Prefix` field (for
+/// `CommonPrefix` entries under `--max-depth`). The actual set is the
+/// union of both kinds, and `expected` is compared against that union.
+///
+/// Used only by `e2e_filter_max_depth_common_prefix_passthrough`, which
+/// verifies that `--filter-include-regex` + `--max-depth` emits both
+/// matching objects (`{"Key": "readme.csv", ...}`) AND common prefixes
+/// (`{"Prefix": "logs/"}`) — the latter passes through every filter
+/// unconditionally per `src/filters/mod.rs:37`.
+pub fn assert_json_keys_or_prefixes_eq(stdout: &str, expected: &[&str], label: &str) {
+    use std::collections::HashSet;
+
+    let actual: HashSet<String> = stdout
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|line| {
+            let v: serde_json::Value = serde_json::from_str(line).unwrap_or_else(|e| {
+                panic!("[{label}] failed to parse JSON line: {line}\nerror: {e}")
+            });
+            if let Some(k) = v.get("Key").and_then(|k| k.as_str()) {
+                k.to_string()
+            } else if let Some(p) = v.get("Prefix").and_then(|p| p.as_str()) {
+                p.to_string()
+            } else {
+                panic!("[{label}] JSON line has neither `Key` nor `Prefix`: {line}");
+            }
+        })
+        .collect();
+
+    let expected_set: HashSet<String> = expected.iter().map(|s| s.to_string()).collect();
+
+    if actual != expected_set {
+        let mut missing: Vec<&String> = expected_set.difference(&actual).collect();
+        let mut extra: Vec<&String> = actual.difference(&expected_set).collect();
+        missing.sort();
+        extra.sort();
+        panic!(
+            "[{label}] key/prefix set mismatch\n  missing: {missing:?}\n  extra:   {extra:?}\n  stdout:\n{stdout}"
         );
     }
 }
