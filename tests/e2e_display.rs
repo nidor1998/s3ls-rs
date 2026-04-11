@@ -140,3 +140,151 @@ async fn e2e_display_show_etag() {
 
     _guard.cleanup().await;
 }
+
+/// `--show-checksum-algorithm` adds a CHECKSUM_ALGORITHM column. The test
+/// uploads with an explicit CRC32 checksum so the column has a non-empty
+/// value to assert. JSON output's `ChecksumAlgorithm` field is emitted
+/// whenever the checksum_algorithm Vec is non-empty, so the JSON
+/// sub-assertion verifies field presence and value.
+#[tokio::test]
+async fn e2e_display_show_checksum_algorithm() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+        helper
+            .put_object_with_checksum_algorithm(&bucket, "file.txt", vec![0u8; 100], "CRC32")
+            .await;
+
+        let target = format!("s3://{bucket}/");
+
+        // Sub-assertion 1: text with flag ON
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--header",
+            "--show-checksum-algorithm",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_header_columns(
+            &output.stdout,
+            &["DATE", "SIZE", "CHECKSUM_ALGORITHM", "KEY"],
+            "show-checksum-algorithm: text on header",
+        );
+        assert_all_data_rows_have_columns(
+            &output.stdout,
+            4,
+            "show-checksum-algorithm: text on row count",
+        );
+        // Find the data row and check column index 2 (CHECKSUM_ALGORITHM)
+        // contains "CRC32".
+        let data_line = output
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .nth(1)
+            .expect("no data row found");
+        let cols = parse_tsv_line(data_line);
+        assert!(
+            cols[2].contains("CRC32"),
+            "show-checksum-algorithm: CHECKSUM_ALGORITHM column did not contain CRC32, got {:?}",
+            cols[2]
+        );
+
+        // Sub-assertion 2: text with flag OFF
+        let output = TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--header"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_header_columns(
+            &output.stdout,
+            &["DATE", "SIZE", "KEY"],
+            "show-checksum-algorithm: text off header",
+        );
+
+        // Sub-assertion 3: JSON — ChecksumAlgorithm field is emitted when non-empty
+        let output = TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--json"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        let first_line = output
+            .stdout
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .expect("empty JSON output");
+        let v: serde_json::Value =
+            serde_json::from_str(first_line).expect("JSON line failed to parse");
+        let algos = v
+            .get("ChecksumAlgorithm")
+            .and_then(|a| a.as_array())
+            .expect("show-checksum-algorithm: ChecksumAlgorithm missing or not an array in JSON");
+        assert!(
+            algos.iter().any(|a| a.as_str() == Some("CRC32")),
+            "show-checksum-algorithm: ChecksumAlgorithm array did not contain CRC32, got {algos:?}"
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// `--show-checksum-type` adds a CHECKSUM_TYPE column. Same fixture
+/// strategy as show_checksum_algorithm — upload with an explicit CRC32
+/// checksum so S3 populates the ChecksumType field automatically.
+#[tokio::test]
+async fn e2e_display_show_checksum_type() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+        helper
+            .put_object_with_checksum_algorithm(&bucket, "file.txt", vec![0u8; 100], "CRC32")
+            .await;
+
+        let target = format!("s3://{bucket}/");
+
+        // Sub-assertion 1: text with flag ON
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--header",
+            "--show-checksum-type",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_header_columns(
+            &output.stdout,
+            &["DATE", "SIZE", "CHECKSUM_TYPE", "KEY"],
+            "show-checksum-type: text on header",
+        );
+        assert_all_data_rows_have_columns(
+            &output.stdout,
+            4,
+            "show-checksum-type: text on row count",
+        );
+
+        // Sub-assertion 2: text with flag OFF
+        let output = TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--header"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_header_columns(
+            &output.stdout,
+            &["DATE", "SIZE", "KEY"],
+            "show-checksum-type: text off header",
+        );
+
+        // Sub-assertion 3: JSON — ChecksumType field is emitted when set
+        let output = TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--json"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        let first_line = output
+            .stdout
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .expect("empty JSON output");
+        let v: serde_json::Value =
+            serde_json::from_str(first_line).expect("JSON line failed to parse");
+        assert!(
+            v.get("ChecksumType").is_some(),
+            "show-checksum-type: ChecksumType missing from JSON"
+        );
+    });
+
+    _guard.cleanup().await;
+}
