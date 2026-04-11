@@ -528,3 +528,157 @@ impl TestHelper {
         self.list_objects(bucket, prefix).await.len()
     }
 }
+
+// ---------------------------------------------------------------------------
+// Step 1: S3lsOutput and run_s3ls
+// ---------------------------------------------------------------------------
+
+/// Captured output of a single `s3ls` binary invocation.
+///
+/// Stdout and stderr are pre-decoded from UTF-8 (lossy) so tests can use
+/// them as `&str` without repeating the decode boilerplate.
+pub struct S3lsOutput {
+    pub stdout: String,
+    pub stderr: String,
+    pub status: std::process::ExitStatus,
+}
+
+impl TestHelper {
+    /// Run the s3ls binary with the given args and return captured output.
+    ///
+    /// Auto-appends `--target-profile s3ls-e2e-test` unless the args already
+    /// contain `--target-profile` or `--target-access-key`. This shadows any
+    /// inherited `AWS_PROFILE` env var on the calling shell, which is the
+    /// safer default for E2E tests.
+    ///
+    /// Synchronous by design: the framework does no other work while waiting
+    /// for a single subprocess, and a blocking spawn is simpler than
+    /// `tokio::process::Command`.
+    pub fn run_s3ls(args: &[&str]) -> S3lsOutput {
+        let has_profile = args.iter().any(|a| a.starts_with("--target-profile"));
+        let has_access_key = args.iter().any(|a| a.starts_with("--target-access-key"));
+
+        let mut full_args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        if !has_profile && !has_access_key {
+            full_args.push("--target-profile".to_string());
+            full_args.push(AWS_PROFILE.to_string());
+        }
+
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_s3ls"))
+            .args(&full_args)
+            .output()
+            .expect("Failed to spawn s3ls binary");
+
+        S3lsOutput {
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            status: output.status,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Step 2: build_config and run_pipeline
+// ---------------------------------------------------------------------------
+
+use s3ls_rs::{Config, ListingPipeline, create_pipeline_cancellation_token};
+
+impl TestHelper {
+    // -----------------------------------------------------------------------
+    // Programmatic pipeline helpers
+    // -----------------------------------------------------------------------
+
+    /// Build a `Config` from CLI-style args.
+    ///
+    /// Automatically prepends the binary name ("s3ls") and appends
+    /// `--target-profile s3ls-e2e-test` unless the args already contain
+    /// `--target-profile` or `--target-access-key`. Panics on build failure.
+    pub fn build_config(args: Vec<&str>) -> Config {
+        let mut full_args: Vec<String> = vec!["s3ls".to_string()];
+        full_args.extend(args.iter().map(|s| s.to_string()));
+
+        let has_profile = full_args.iter().any(|a| a.starts_with("--target-profile"));
+        let has_access_key = full_args
+            .iter()
+            .any(|a| a.starts_with("--target-access-key"));
+        if !has_profile && !has_access_key {
+            full_args.push("--target-profile".to_string());
+            full_args.push(AWS_PROFILE.to_string());
+        }
+
+        s3ls_rs::build_config_from_args(full_args)
+            .unwrap_or_else(|e| panic!("Failed to build config from args: {e}"))
+    }
+
+    /// Construct a `ListingPipeline` and run it to completion.
+    ///
+    /// Returns `ListingPipeline::run`'s `anyhow::Result<()>`. Intended for
+    /// tests that assert on pipeline behavior (error paths, cancellation,
+    /// credential loading) rather than rendered output — rendered output is
+    /// asserted via the binary path (`run_s3ls`).
+    pub async fn run_pipeline(config: Config) -> anyhow::Result<()> {
+        let token = create_pipeline_cancellation_token();
+        let pipeline = ListingPipeline::new(config, token);
+        pipeline.run().await
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Step 3: Timeout infrastructure and assert_key_order
+// ---------------------------------------------------------------------------
+
+/// Default hard timeout for E2E tests (60 seconds).
+///
+/// Generous for single listing operations but prevents indefinite hangs on
+/// network stalls or cancellation bugs. Tune here if the suite grows.
+pub const E2E_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Wraps an async E2E test body with a hard timeout.
+///
+/// Usage:
+/// ```ignore
+/// #[tokio::test]
+/// async fn e2e_my_test() {
+///     e2e_timeout!(async {
+///         // test body here
+///     });
+/// }
+/// ```
+#[macro_export]
+macro_rules! e2e_timeout {
+    ($body:expr) => {
+        tokio::time::timeout(common::E2E_TIMEOUT, $body)
+            .await
+            .expect("E2E test timed out")
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Assertion helpers
+// ---------------------------------------------------------------------------
+
+/// Assert that the given keys appear in `stdout` in the specified order.
+///
+/// Panics with a descriptive message (including the full stdout) if any key
+/// is missing or out of order. Uses byte-offset comparison via `str::find`;
+/// works for any text output where each expected key appears at most once.
+pub fn assert_key_order(stdout: &str, expected_order: &[&str]) {
+    let positions: Vec<(usize, &str)> = expected_order
+        .iter()
+        .map(|key| {
+            let pos = stdout
+                .find(key)
+                .unwrap_or_else(|| panic!("key {key:?} not found in stdout:\n{stdout}"));
+            (pos, *key)
+        })
+        .collect();
+
+    for window in positions.windows(2) {
+        let (pos_a, key_a) = window[0];
+        let (pos_b, key_b) = window[1];
+        assert!(
+            pos_a < pos_b,
+            "expected {key_a:?} before {key_b:?}; got positions {pos_a} vs {pos_b} in stdout:\n{stdout}"
+        );
+    }
+}
