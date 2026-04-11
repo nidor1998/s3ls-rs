@@ -294,23 +294,11 @@ pub struct CLIArgs {
     pub show_is_latest: bool,
 
     /// Show OWNER_DISPLAY_NAME and OWNER_ID columns
-    #[arg(
-        long,
-        env,
-        default_value_t = false,
-        conflicts_with = "json",
-        help_heading = "Display"
-    )]
+    #[arg(long, env, default_value_t = false, help_heading = "Display")]
     pub show_owner: bool,
 
     /// Show IS_RESTORE_IN_PROGRESS and RESTORE_EXPIRY_DATE columns
-    #[arg(
-        long,
-        env,
-        default_value_t = false,
-        conflicts_with = "json",
-        help_heading = "Display"
-    )]
+    #[arg(long, env, default_value_t = false, help_heading = "Display")]
     pub show_restore_status: bool,
 
     /// Show bucket ARN column (bucket listing only)

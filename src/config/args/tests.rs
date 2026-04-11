@@ -1313,3 +1313,57 @@ fn config_max_depth_none_by_default() {
     let config = build_config_from_args(vec!["s3ls", "s3://bucket/", "--recursive"]).unwrap();
     assert!(config.max_depth.is_none());
 }
+
+// ===========================================================================
+// show_owner / show_restore_status independence from --json
+// ===========================================================================
+
+#[test]
+fn json_alone_does_not_enable_show_owner() {
+    let config = build_config_from_args(vec!["s3ls", "s3://bucket/", "--json"]).unwrap();
+    assert!(config.display_config.json);
+    assert!(!config.display_config.show_owner);
+}
+
+#[test]
+fn json_alone_does_not_enable_show_restore_status() {
+    let config = build_config_from_args(vec!["s3ls", "s3://bucket/", "--json"]).unwrap();
+    assert!(config.display_config.json);
+    assert!(!config.display_config.show_restore_status);
+}
+
+#[test]
+fn show_owner_with_json() {
+    let config =
+        build_config_from_args(vec!["s3ls", "s3://bucket/", "--json", "--show-owner"]).unwrap();
+    assert!(config.display_config.json);
+    assert!(config.display_config.show_owner);
+}
+
+#[test]
+fn show_restore_status_with_json() {
+    let config = build_config_from_args(vec![
+        "s3ls",
+        "s3://bucket/",
+        "--json",
+        "--show-restore-status",
+    ])
+    .unwrap();
+    assert!(config.display_config.json);
+    assert!(config.display_config.show_restore_status);
+}
+
+#[test]
+fn show_owner_without_json() {
+    let config = build_config_from_args(vec!["s3ls", "s3://bucket/", "--show-owner"]).unwrap();
+    assert!(!config.display_config.json);
+    assert!(config.display_config.show_owner);
+}
+
+#[test]
+fn show_restore_status_without_json() {
+    let config =
+        build_config_from_args(vec!["s3ls", "s3://bucket/", "--show-restore-status"]).unwrap();
+    assert!(!config.display_config.json);
+    assert!(config.display_config.show_restore_status);
+}
