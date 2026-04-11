@@ -36,7 +36,11 @@ impl ObjectLister {
             }
         });
 
-        // Filter inline and forward to aggregate channel
+        // Filter inline and forward to aggregate channel. Rather than
+        // returning early on a filter error, record it and break out of the
+        // loop so the normal cleanup path runs (dropping list_rx, then
+        // joining the storage task).
+        let mut forward_err: Option<anyhow::Error> = None;
         while let Some(entry) = list_rx.recv().await {
             if self.cancellation_token.is_cancelled() {
                 break;
@@ -44,29 +48,45 @@ impl ObjectLister {
             if self.hide_delete_markers && entry.is_delete_marker() {
                 continue;
             }
-            let passes = match self.filter_chain.matches(&entry) {
-                Ok(p) => p,
+            match self.filter_chain.matches(&entry) {
+                Ok(true) => {
+                    if self.sender.send(entry).await.is_err() {
+                        break;
+                    }
+                }
+                Ok(false) => continue,
                 Err(e) => {
                     self.cancellation_token.cancel();
-                    return Err(e);
+                    forward_err = Some(e);
+                    break;
                 }
-            };
-            if passes && self.sender.send(entry).await.is_err() {
-                break;
             }
         }
 
-        match inner_handle.await {
-            Ok(Ok(())) => {}
+        // Drop the intermediate receiver before joining the storage task.
+        // Otherwise a storage task blocked on `list_tx.send(...)` (because
+        // the bounded queue is full and nobody is draining it) would prevent
+        // `inner_handle.await` from ever resolving, deadlocking the lister.
+        drop(list_rx);
+
+        let inner_result = match inner_handle.await {
+            Ok(Ok(())) => Ok(()),
             Ok(Err(e)) => {
                 self.cancellation_token.cancel();
-                return Err(e);
+                Err(e)
             }
             Err(join_err) => {
                 self.cancellation_token.cancel();
-                return Err(anyhow::anyhow!("Lister task panicked: {}", join_err));
+                Err(anyhow::anyhow!("Lister task panicked: {}", join_err))
             }
+        };
+
+        // A filter error takes precedence over the storage task's result,
+        // since it caused the cancellation.
+        if let Some(e) = forward_err {
+            return Err(e);
         }
+        inner_result?;
 
         debug!("list target objects has been completed.");
         Ok(())
@@ -129,6 +149,68 @@ mod tests {
         assert_eq!(received.len(), 2);
         assert_eq!(received[0].key(), "file1.txt");
         assert_eq!(received[1].key(), "logs/");
+    }
+
+    #[tokio::test]
+    async fn lister_does_not_deadlock_when_cancelled_with_full_queue() {
+        // Regression test for the deadlock where an early break in the
+        // forward loop left list_rx alive, causing the spawned storage task
+        // to block forever on a full-queue send().
+        //
+        // Setup:
+        //   - queue_size = 1 (tiny intermediate channel)
+        //   - MockStorage has many entries to try to send
+        //   - Token is pre-cancelled, so the forward loop will break after
+        //     receiving the first entry
+        //   - Without the fix, list_rx would stay alive and the storage task
+        //     would block forever on the second send(). We wrap the whole
+        //     run in a timeout so a regression fails rather than hangs.
+
+        // Generate 100 entries — plenty to overflow a queue of size 1.
+        let entries: Vec<ListEntry> = (0..100)
+            .map(|i| {
+                ListEntry::Object(S3Object::NotVersioning {
+                    key: format!("file_{i}.txt"),
+                    size: 100,
+                    last_modified: Utc::now(),
+                    e_tag: "\"e\"".to_string(),
+                    storage_class: Some("STANDARD".to_string()),
+                    checksum_algorithm: vec![],
+                    checksum_type: None,
+                    owner_display_name: None,
+                    owner_id: None,
+                    is_restore_in_progress: None,
+                    restore_expiry_date: None,
+                })
+            })
+            .collect();
+
+        let mock = Arc::new(MockStorage::new(entries));
+        let (tx, _rx) = mpsc::channel(10);
+
+        let token = create_pipeline_cancellation_token();
+        token.cancel(); // pre-cancel so the forward loop breaks immediately
+
+        let lister = ObjectLister {
+            storage: mock,
+            sender: tx,
+            all_versions: false,
+            max_keys: 1000,
+            queue_size: 1, // tiny — storage will fill it fast
+            cancellation_token: token,
+            hide_delete_markers: false,
+            filter_chain: FilterChain::new(vec![]),
+        };
+
+        // Should complete quickly. If the deadlock regresses, this times
+        // out and the test fails with an unambiguous signal.
+        let result =
+            tokio::time::timeout(std::time::Duration::from_secs(2), lister.list_target()).await;
+        assert!(
+            result.is_ok(),
+            "list_target deadlocked — list_rx was not dropped before joining storage task"
+        );
+        result.unwrap().unwrap();
     }
 
     #[tokio::test]
