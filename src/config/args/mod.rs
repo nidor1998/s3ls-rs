@@ -638,6 +638,34 @@ impl TryFrom<CLIArgs> for crate::config::Config {
             if args.storage_class.is_some() {
                 return Err("--storage-class is not valid for bucket listing".to_string());
             }
+            // Display flags that have no meaning for bucket listing rows
+            // (which only have name, creation date, region, ARN, owner).
+            // Rejecting them surfaces user mistakes rather than silently
+            // ignoring the flag.
+            if args.summary {
+                return Err("--summarize is not valid for bucket listing".to_string());
+            }
+            if args.human {
+                return Err("--human-readable is not valid for bucket listing".to_string());
+            }
+            if args.show_relative_path {
+                return Err("--show-relative-path is not valid for bucket listing".to_string());
+            }
+            if args.show_etag {
+                return Err("--show-etag is not valid for bucket listing".to_string());
+            }
+            if args.show_storage_class {
+                return Err("--show-storage-class is not valid for bucket listing".to_string());
+            }
+            if args.show_checksum_algorithm {
+                return Err("--show-checksum-algorithm is not valid for bucket listing".to_string());
+            }
+            if args.show_checksum_type {
+                return Err("--show-checksum-type is not valid for bucket listing".to_string());
+            }
+            if args.show_restore_status {
+                return Err("--show-restore-status is not valid for bucket listing".to_string());
+            }
         }
 
         // Reject bucket-only options in object listing mode.

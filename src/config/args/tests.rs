@@ -503,6 +503,96 @@ fn bucket_listing_allows_no_sort() {
     assert!(config.no_sort);
 }
 
+// Display flags that have no meaning for bucket rows should be rejected
+// rather than silently ignored.
+#[test]
+fn bucket_listing_rejects_summarize() {
+    let result = build_config_from_args(args(&["--summarize"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--summarize is not valid for bucket listing")
+    );
+}
+
+#[test]
+fn bucket_listing_rejects_human_readable() {
+    let result = build_config_from_args(args(&["--human-readable"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--human-readable is not valid for bucket listing")
+    );
+}
+
+#[test]
+fn bucket_listing_rejects_show_relative_path() {
+    let result = build_config_from_args(args(&["--show-relative-path"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--show-relative-path is not valid for bucket listing")
+    );
+}
+
+#[test]
+fn bucket_listing_rejects_show_etag() {
+    let result = build_config_from_args(args(&["--show-etag"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--show-etag is not valid for bucket listing")
+    );
+}
+
+#[test]
+fn bucket_listing_rejects_show_storage_class() {
+    let result = build_config_from_args(args(&["--show-storage-class"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--show-storage-class is not valid for bucket listing")
+    );
+}
+
+#[test]
+fn bucket_listing_rejects_show_checksum_algorithm() {
+    let result = build_config_from_args(args(&["--show-checksum-algorithm"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--show-checksum-algorithm is not valid for bucket listing")
+    );
+}
+
+#[test]
+fn bucket_listing_rejects_show_checksum_type() {
+    let result = build_config_from_args(args(&["--show-checksum-type"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--show-checksum-type is not valid for bucket listing")
+    );
+}
+
+#[test]
+fn bucket_listing_rejects_show_restore_status() {
+    let result = build_config_from_args(args(&["--show-restore-status"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--show-restore-status is not valid for bucket listing")
+    );
+}
+
 // ===========================================================================
 // 4b-3. Bucket-only options rejected in object listing mode
 // ===========================================================================

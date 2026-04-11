@@ -34,19 +34,21 @@ pub async fn list_buckets(config: &Config) -> Result<()> {
         list_general_buckets(&client, config.bucket_name_prefix.as_deref()).await?
     };
 
-    // Sort
-    entries.sort_by(|a, b| {
-        let mut cmp = std::cmp::Ordering::Equal;
-        for field in &config.sort {
-            cmp = cmp.then_with(|| match field {
-                SortField::Bucket | SortField::Key => a.name.cmp(&b.name),
-                SortField::Date => a.creation_date.cmp(&b.creation_date),
-                SortField::Region => a.region.cmp(&b.region),
-                SortField::Size => std::cmp::Ordering::Equal,
-            });
-        }
-        if config.reverse { cmp.reverse() } else { cmp }
-    });
+    // Sort (skipped when --no-sort is set)
+    if !config.no_sort {
+        entries.sort_by(|a, b| {
+            let mut cmp = std::cmp::Ordering::Equal;
+            for field in &config.sort {
+                cmp = cmp.then_with(|| match field {
+                    SortField::Bucket | SortField::Key => a.name.cmp(&b.name),
+                    SortField::Date => a.creation_date.cmp(&b.creation_date),
+                    SortField::Region => a.region.cmp(&b.region),
+                    SortField::Size => std::cmp::Ordering::Equal,
+                });
+            }
+            if config.reverse { cmp.reverse() } else { cmp }
+        });
+    }
 
     let stdout = std::io::stdout();
     let mut writer = std::io::BufWriter::new(stdout.lock());
