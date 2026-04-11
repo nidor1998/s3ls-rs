@@ -206,12 +206,22 @@ impl TestHelper {
                     .await;
             }
 
-            if resp.is_truncated() == Some(true) {
-                key_marker = resp.next_key_marker().map(|s| s.to_string());
-                version_id_marker = resp.next_version_id_marker().map(|s| s.to_string());
-            } else {
+            // Treat missing `is_truncated` as "not truncated" — safer to stop than loop.
+            if !resp.is_truncated().unwrap_or(false) {
                 break;
             }
+
+            let next_km = resp.next_key_marker().map(|s| s.to_string());
+            let next_vim = resp.next_version_id_marker().map(|s| s.to_string());
+
+            // Defensive: if truncated but no forward-progress markers, break to
+            // avoid an infinite loop on malformed S3-compatible responses.
+            if next_km.is_none() && next_vim.is_none() {
+                break;
+            }
+
+            key_marker = next_km;
+            version_id_marker = next_vim;
         }
     }
 
@@ -258,11 +268,20 @@ impl TestHelper {
                     .await;
             }
 
-            if resp.is_truncated() == Some(true) {
-                continuation_token = resp.next_continuation_token().map(|s| s.to_string());
-            } else {
+            // Treat missing `is_truncated` as "not truncated" — safer to stop than loop.
+            if !resp.is_truncated().unwrap_or(false) {
                 break;
             }
+
+            let next_token = resp.next_continuation_token().map(|s| s.to_string());
+
+            // Defensive: if truncated but no continuation token, break to avoid
+            // an infinite loop on malformed S3-compatible responses.
+            if next_token.is_none() {
+                break;
+            }
+
+            continuation_token = next_token;
         }
     }
 }
