@@ -288,3 +288,80 @@ async fn e2e_display_show_checksum_type() {
 
     _guard.cleanup().await;
 }
+
+/// `--show-is-latest` adds an IS_LATEST column (requires `--all-versions`).
+/// Two versions of the same key guarantee at least one LATEST row and
+/// one NOT_LATEST row. The JSON sub-assertion verifies `IsLatest` is
+/// present under `--all-versions` regardless of the text-mode flag.
+#[tokio::test]
+async fn e2e_display_show_is_latest() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_versioned_bucket(&bucket).await;
+
+        // Two versions of doc.txt — v1 becomes NOT_LATEST, v2 becomes LATEST.
+        helper.put_object(&bucket, "doc.txt", vec![0u8; 100]).await;
+        helper.put_object(&bucket, "doc.txt", vec![0u8; 200]).await;
+
+        let target = format!("s3://{bucket}/");
+
+        // Sub-assertion 1: text with flag ON
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--all-versions",
+            "--header",
+            "--show-is-latest",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_header_columns(
+            &output.stdout,
+            &["DATE", "SIZE", "VERSION_ID", "IS_LATEST", "KEY"],
+            "show-is-latest: text on header",
+        );
+        assert_all_data_rows_have_columns(&output.stdout, 5, "show-is-latest: text on row count");
+        assert!(
+            output.stdout.contains("LATEST"),
+            "show-is-latest: 'LATEST' token missing from text output"
+        );
+        assert!(
+            output.stdout.contains("NOT_LATEST"),
+            "show-is-latest: 'NOT_LATEST' token missing from text output"
+        );
+
+        // Sub-assertion 2: text with flag OFF (still with --all-versions)
+        let output =
+            TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--all-versions", "--header"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_header_columns(
+            &output.stdout,
+            &["DATE", "SIZE", "VERSION_ID", "KEY"],
+            "show-is-latest: text off header",
+        );
+
+        // Sub-assertion 3: JSON — IsLatest present under --all-versions
+        let output =
+            TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--all-versions", "--json"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        let first_line = output
+            .stdout
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .expect("empty JSON output");
+        let v: serde_json::Value =
+            serde_json::from_str(first_line).expect("JSON line failed to parse");
+        assert!(
+            v.get("VersionId").is_some(),
+            "show-is-latest: VersionId missing from JSON"
+        );
+        assert!(
+            v.get("IsLatest").is_some(),
+            "show-is-latest: IsLatest missing from JSON"
+        );
+    });
+
+    _guard.cleanup().await;
+}
