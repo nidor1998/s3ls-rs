@@ -81,7 +81,10 @@ impl ClientConfig {
                 config_loader.credentials_provider(builder.profile_name(profile_name).build())
             }
             S3Credentials::Credentials { access_keys } => {
-                debug!(access_key = %access_keys.access_key, "using explicit credentials");
+                debug!(
+                    access_key = %access_keys.masked_access_key(),
+                    "using explicit credentials"
+                );
                 let creds = aws_sdk_s3::config::Credentials::new(
                     &access_keys.access_key,
                     &access_keys.secret_access_key,
