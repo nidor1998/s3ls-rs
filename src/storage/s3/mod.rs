@@ -316,15 +316,24 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
     /// Calculate the depth of a key relative to the engine's prefix.
     /// Depth = (number of "/" in the relative part of the key) + 1.
     /// Returns None if the key doesn't start with the prefix.
+    ///
+    /// A trailing "/" on the key (directory-marker object) is stripped
+    /// before counting, so "foo/bar/" under prefix "foo/" has the same
+    /// depth (1) as "foo/bar.txt" — they're at the same hierarchical
+    /// level.
     fn key_depth(&self, key: &str) -> Option<u16> {
         let prefix = self.prefix.as_deref().unwrap_or("");
         let relative = key.strip_prefix(prefix)?;
         if relative.is_empty() {
             return None; // key IS the prefix, not an object under it
         }
-        let slash_count = relative.matches('/').count();
-        // "file.txt" => 0 slashes => depth 1
-        // "a/file.txt" => 1 slash => depth 2
+        // Strip a single trailing "/" so directory-marker objects are
+        // counted at the same depth as regular objects in the same "folder".
+        let counted = relative.strip_suffix('/').unwrap_or(relative);
+        let slash_count = counted.matches('/').count();
+        // "file.txt"      => 0 slashes => depth 1
+        // "sub/"          => 0 slashes => depth 1 (directory marker, same level)
+        // "a/file.txt"    => 1 slash  => depth 2
         Some(slash_count as u16 + 1)
     }
 
@@ -1752,5 +1761,55 @@ mod tests {
         keys.sort();
         // p/a/b/file.txt and p/a/b/c/file.txt collapse into CommonPrefix "p/a/b/"
         assert_eq!(keys, vec!["p/a/b/", "p/a/file.txt", "p/root.txt"]);
+    }
+
+    // ========================================================================
+    // key_depth unit tests (including directory-marker edge case)
+    // ========================================================================
+
+    fn engine_with_prefix(prefix: Option<&str>) -> ListingEngine<MockPageFetcher> {
+        let fetcher = MockPageFetcher::from_pages(prefix, None, vec![]);
+        make_engine(fetcher, "bucket", prefix, None, 1, 3, false)
+    }
+
+    #[test]
+    fn key_depth_regular_objects() {
+        let engine = engine_with_prefix(Some("p/"));
+        assert_eq!(engine.key_depth("p/file.txt"), Some(1));
+        assert_eq!(engine.key_depth("p/a/file.txt"), Some(2));
+        assert_eq!(engine.key_depth("p/a/b/file.txt"), Some(3));
+    }
+
+    #[test]
+    fn key_depth_directory_markers_match_regular_objects() {
+        // Regression: directory-marker objects (keys ending in "/") should
+        // be counted at the same depth as regular objects in the same
+        // "folder", not one level deeper.
+        let engine = engine_with_prefix(Some("p/"));
+        // "p/sub/" is at the top level under "p/" — same depth as
+        // "p/file.txt"
+        assert_eq!(engine.key_depth("p/sub/"), Some(1));
+        // "p/a/sub/" is one level down — same depth as "p/a/file.txt"
+        assert_eq!(engine.key_depth("p/a/sub/"), Some(2));
+    }
+
+    #[test]
+    fn key_depth_key_equals_prefix_returns_none() {
+        let engine = engine_with_prefix(Some("p/"));
+        assert_eq!(engine.key_depth("p/"), None);
+    }
+
+    #[test]
+    fn key_depth_key_not_under_prefix_returns_none() {
+        let engine = engine_with_prefix(Some("p/"));
+        assert_eq!(engine.key_depth("q/file.txt"), None);
+    }
+
+    #[test]
+    fn key_depth_empty_prefix() {
+        let engine = engine_with_prefix(None);
+        assert_eq!(engine.key_depth("file.txt"), Some(1));
+        assert_eq!(engine.key_depth("a/file.txt"), Some(2));
+        assert_eq!(engine.key_depth("sub/"), Some(1)); // directory marker at top
     }
 }

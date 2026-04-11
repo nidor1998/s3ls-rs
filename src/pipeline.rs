@@ -56,23 +56,36 @@ impl ListingPipeline {
         let lister_handle = self.spawn_lister(storage, tx, queue_size)?;
         let aggregator_handle = self.spawn_aggregator(rx)?;
 
-        // Wait for aggregator to finish (completes when rx closes)
-        match aggregator_handle.await {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => return Err(e),
-            Err(join_err) => {
-                return Err(anyhow::anyhow!("Aggregator task panicked: {}", join_err));
+        // Wait for aggregator to finish (completes when rx closes).
+        // On aggregator error, cancel the token and wait for the lister to
+        // wind down before returning — otherwise the lister keeps issuing
+        // S3 API calls until it notices the dropped aggregate receiver.
+        let aggregator_err = match aggregator_handle.await {
+            Ok(Ok(())) => None,
+            Ok(Err(e)) => {
+                self.cancellation_token.cancel();
+                Some(e)
             }
-        }
+            Err(join_err) => {
+                self.cancellation_token.cancel();
+                Some(anyhow::anyhow!("Aggregator task panicked: {}", join_err))
+            }
+        };
 
         // Wait for lister to finish and propagate errors
-        match lister_handle.await {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => return Err(e),
-            Err(join_err) => {
-                return Err(anyhow::anyhow!("Lister+filter task panicked: {}", join_err));
-            }
+        let lister_result = match lister_handle.await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(e),
+            Err(join_err) => Err(anyhow::anyhow!("Lister+filter task panicked: {}", join_err)),
+        };
+
+        // The aggregator error (if any) is the original cause; surface it
+        // in preference to the lister's error, which is usually a downstream
+        // symptom (cancellation or receiver dropped).
+        if let Some(e) = aggregator_err {
+            return Err(e);
         }
+        lister_result?;
 
         tracing::debug!("Listing pipeline completed");
         Ok(())
