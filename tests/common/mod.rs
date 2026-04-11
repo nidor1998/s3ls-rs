@@ -999,3 +999,41 @@ pub fn assert_summary_present_json(stdout: &str, label: &str) -> serde_json::Val
     }
     panic!("[{label}] no JSON 'Summary' line found in stdout:\n{stdout}");
 }
+
+/// Parse NDJSON stdout from `s3ls --json` and assert the sequence of
+/// `Key` fields (in order) equals `expected`. Unlike
+/// `assert_json_keys_eq` which does set comparison, this helper
+/// verifies exact ordering — the primary assertion for sort tests.
+///
+/// Duplicates in `expected` are handled naturally: a key that appears
+/// twice in the expected slice must also appear twice in the output,
+/// in the same positions. This makes the helper suitable for
+/// versioned-listing tests where the same key appears multiple times.
+///
+/// Lines that parse as JSON but have no `Key` field (e.g.,
+/// `{"Prefix": ...}` or `{"Summary": ...}`) are skipped — the ordering
+/// check applies only to object/delete-marker rows.
+///
+/// Panics if:
+/// - any non-empty line fails to parse as JSON,
+/// - the resulting sequence of `Key` values does not equal `expected`.
+pub fn assert_json_keys_order_eq(stdout: &str, expected: &[&str], label: &str) {
+    let actual: Vec<String> = stdout
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|line| {
+            let v: serde_json::Value = serde_json::from_str(line).unwrap_or_else(|e| {
+                panic!("[{label}] failed to parse JSON line: {line}\nerror: {e}")
+            });
+            v.get("Key").and_then(|k| k.as_str()).map(|s| s.to_string())
+        })
+        .collect();
+
+    let expected_owned: Vec<String> = expected.iter().map(|s| s.to_string()).collect();
+
+    if actual != expected_owned {
+        panic!(
+            "[{label}] key order mismatch\n  expected: {expected_owned:?}\n  actual:   {actual:?}\n  stdout:\n{stdout}"
+        );
+    }
+}
