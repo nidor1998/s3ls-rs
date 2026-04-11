@@ -346,7 +346,8 @@ pub fn format_entry(entry: &ListEntry, opts: &FormatOptions) -> String {
             version_id,
             last_modified,
             is_latest,
-            ..
+            owner_display_name,
+            owner_id,
         } => {
             cols.push(format_rfc3339(last_modified));
             cols.push("DELETE".to_string());
@@ -371,10 +372,11 @@ pub fn format_entry(entry: &ListEntry, opts: &FormatOptions) -> String {
                 });
             }
             if opts.show_owner {
-                cols.push(String::new());
-                cols.push(String::new());
+                cols.push(owner_display_name.clone().unwrap_or_default());
+                cols.push(owner_id.clone().unwrap_or_default());
             }
             if opts.show_restore_status {
+                // Delete markers have no restore status — leave empty.
                 cols.push(String::new());
                 cols.push(String::new());
             }
@@ -1039,6 +1041,35 @@ mod tests {
         let key_pos = line.rfind("readme.txt").unwrap();
         assert!(delete_pos < vid_pos, "DELETE before version_id");
         assert!(vid_pos < key_pos, "version_id before key");
+    }
+
+    #[test]
+    fn format_text_delete_marker_emits_owner_when_show_owner() {
+        // Regression: previously the DeleteMarker branch destructured owner
+        // fields with `..` and pushed two empty strings, silently losing
+        // owner data in --show-owner mode.
+        let entry = ListEntry::DeleteMarker {
+            key: "readme.txt".to_string(),
+            version_id: "v1".to_string(),
+            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            is_latest: false,
+            owner_display_name: Some("alice".to_string()),
+            owner_id: Some("id-123".to_string()),
+        };
+        let opts = FormatOptions {
+            all_versions: true,
+            show_owner: true,
+            ..Default::default()
+        };
+        let line = format_entry(&entry, &opts);
+        assert!(
+            line.contains("alice"),
+            "expected owner display name in output, got: {line:?}"
+        );
+        assert!(
+            line.contains("id-123"),
+            "expected owner id in output, got: {line:?}"
+        );
     }
 
     #[test]

@@ -171,6 +171,13 @@ impl S3PageFetcher {
         if let Some(ref payer) = self.request_payer {
             req = req.request_payer(payer.clone());
         }
+        // ListObjectVersions always returns Owner, so no fetch_owner toggle.
+        // RestoreStatus, however, must be opted into via OptionalObjectAttributes.
+        if self.fetch_restore_status {
+            req = req.optional_object_attributes(
+                aws_sdk_s3::types::OptionalObjectAttributes::RestoreStatus,
+            );
+        }
 
         let response = req.send().await.map_err(|e| {
             let (code, msg) = extract_sdk_error_details(&e);
@@ -812,9 +819,14 @@ fn convert_object_version(version: &aws_sdk_s3::types::ObjectVersion) -> Option<
         .and_then(|o| o.display_name())
         .map(|s| s.to_string());
     let owner_id = version.owner().and_then(|o| o.id()).map(|s| s.to_string());
-    // ObjectVersion does not have restore_status in the AWS SDK
-    let is_restore_in_progress = None;
-    let restore_expiry_date = None;
+    let is_restore_in_progress = version
+        .restore_status()
+        .and_then(|rs| rs.is_restore_in_progress());
+    let restore_expiry_date = version
+        .restore_status()
+        .and_then(|rs| rs.restore_expiry_date())
+        .and_then(|dt| aws_datetime_to_chrono(Some(dt)))
+        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
 
     Some(ListEntry::Object(S3Object::Versioning {
         key,
