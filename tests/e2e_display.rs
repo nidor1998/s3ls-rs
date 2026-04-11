@@ -1113,3 +1113,45 @@ async fn e2e_display_summarize_versioned() {
 
     _guard.cleanup().await;
 }
+
+/// Verifies `--human-readable` renders object row sizes in human form.
+/// Fixture is a 2048-byte object so the expected rendering is exactly
+/// "2 KiB" or "2.00 KiB" (2048 / 1024 = 2, binary units).
+#[tokio::test]
+async fn e2e_display_human_readable() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+        helper
+            .put_object(&bucket, "file.txt", vec![0u8; 2048])
+            .await;
+
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--human-readable"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        assert!(
+            output.stdout.contains("file.txt"),
+            "human-readable: key missing from output"
+        );
+        // 2048 bytes = 2 KiB exactly. byte-unit may render as "2 KiB" or
+        // "2.00 KiB" depending on precision — accept either.
+        assert!(
+            output.stdout.contains("2 KiB") || output.stdout.contains("2.00 KiB"),
+            "human-readable: expected '2 KiB' or '2.00 KiB' in output, got:\n{}",
+            output.stdout
+        );
+        // And verify the non-human form is NOT there (no "2048" as a size).
+        assert!(
+            !output.stdout.contains("\t2048\t"),
+            "human-readable: unexpected '\\t2048\\t' in output (should be rendered as KiB):\n{}",
+            output.stdout
+        );
+    });
+
+    _guard.cleanup().await;
+}
