@@ -615,3 +615,98 @@ async fn e2e_filter_mtime_after() {
 
     _guard.cleanup().await;
 }
+
+/// `--storage-class`: include only objects in listed storage classes.
+///
+/// S3 omits the `StorageClass` field for STANDARD objects (returning
+/// `None`), and `src/filters/storage_class.rs:33` treats `None` as
+/// `"STANDARD"` — so `--storage-class STANDARD` still matches objects
+/// uploaded with the default class. This test locks that in.
+#[tokio::test]
+async fn e2e_filter_storage_class() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+
+        // std.bin uses the default (no explicit class), so S3 records
+        // StorageClass=None → filter treats as STANDARD.
+        helper.put_object(&bucket, "std.bin", vec![0u8; 100]).await;
+        helper
+            .put_object_with_storage_class(&bucket, "rrs.bin", vec![0u8; 100], "REDUCED_REDUNDANCY")
+            .await;
+        helper
+            .put_object_with_storage_class(&bucket, "ia.bin", vec![0u8; 100], "STANDARD_IA")
+            .await;
+        helper
+            .put_object_with_storage_class(&bucket, "oz.bin", vec![0u8; 100], "ONEZONE_IA")
+            .await;
+        helper
+            .put_object_with_storage_class(&bucket, "it.bin", vec![0u8; 100], "INTELLIGENT_TIERING")
+            .await;
+
+        let target = format!("s3://{bucket}/");
+
+        // Sub-assertion 1: single class match
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--json",
+            "--storage-class",
+            "STANDARD_IA",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_json_keys_eq(
+            &output.stdout,
+            &["ia.bin"],
+            "storage-class: single STANDARD_IA",
+        );
+
+        // Sub-assertion 2: multiple classes (comma-separated)
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--json",
+            "--storage-class",
+            "STANDARD_IA,ONEZONE_IA",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_json_keys_eq(
+            &output.stdout,
+            &["ia.bin", "oz.bin"],
+            "storage-class: multiple",
+        );
+
+        // Sub-assertion 3: no object in GLACIER — empty result
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--json",
+            "--storage-class",
+            "GLACIER",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_json_keys_eq(&output.stdout, &[], "storage-class: no match GLACIER");
+
+        // Sub-assertion 4: STANDARD matches the None-StorageClass object
+        // (std.bin). REDUCED_REDUNDANCY is NOT STANDARD, and the other three
+        // are explicitly different classes.
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--json",
+            "--storage-class",
+            "STANDARD",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_json_keys_eq(
+            &output.stdout,
+            &["std.bin"],
+            "storage-class: STANDARD matches None",
+        );
+    });
+
+    _guard.cleanup().await;
+}
