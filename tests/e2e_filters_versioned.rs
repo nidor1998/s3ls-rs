@@ -223,3 +223,119 @@ async fn e2e_versioned_storage_class_passes_delete_markers() {
 
     _guard.cleanup().await;
 }
+
+/// Locks in "mtime filters DO apply to delete-marker timestamps" —
+/// verified against `src/filters/mtime_before.rs:27` and
+/// `mtime_after.rs:27`, which both use `entry.last_modified()` uniformly
+/// for both objects and delete markers.
+///
+/// Two-batch fixture with a 1.5s sleep between batches to guarantee a
+/// second-level time pivot:
+///   Batch 1: put_object("old.bin", ...) — v1 of old.bin, BEFORE pivot
+///   sleep 1.5s
+///   Batch 2: put_object("new.bin", ...) — v1 of new.bin, AFTER pivot
+///           create_delete_marker("old.bin") — DM on old.bin, AFTER pivot
+///
+/// Expected under `--filter-mtime-after <pivot>`:
+///   - new.bin v1 passes (batch 2)
+///   - old.bin v1 fails (batch 1, before pivot)
+///   - old.bin DM passes (created in batch 2, after pivot — DM mtime is
+///     its own creation time, not the original object's)
+#[tokio::test]
+async fn e2e_versioned_mtime_filter_applies_to_delete_markers() {
+    use chrono::{DateTime, Utc};
+    use std::time::Duration;
+    use tokio::time::sleep;
+
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_versioned_bucket(&bucket).await;
+
+        // Batch 1: old.bin v1 (BEFORE pivot)
+        helper.put_object(&bucket, "old.bin", vec![0u8; 100]).await;
+
+        sleep(Duration::from_millis(1500)).await;
+
+        // Batch 2: new.bin v1 + DM on old.bin (BOTH AFTER pivot)
+        helper.put_object(&bucket, "new.bin", vec![0u8; 100]).await;
+        helper.create_delete_marker(&bucket, "old.bin").await;
+
+        // Read back all rows via list_object_versions. This returns
+        // objects AND delete markers with their LastModified timestamps.
+        // Compute t_pivot = min(batch 2 last_modified) and sanity-check
+        // it is strictly after old.bin v1's LastModified.
+        let resp = helper
+            .client()
+            .list_object_versions()
+            .bucket(&bucket)
+            .send()
+            .await
+            .expect("list_object_versions failed");
+
+        let mut old_lm: Option<DateTime<Utc>> = None;
+        let mut batch2_min: Option<DateTime<Utc>> = None;
+
+        // Regular object versions
+        for v in resp.versions() {
+            let key = v.key().expect("version missing key");
+            let lm = v.last_modified().expect("version missing last_modified");
+            let dt = DateTime::<Utc>::from_timestamp(lm.secs(), lm.subsec_nanos())
+                .expect("invalid timestamp from S3");
+            if key == "old.bin" {
+                // old.bin v1 — batch 1
+                old_lm = Some(dt);
+            } else {
+                // new.bin v1 — batch 2
+                batch2_min = Some(match batch2_min {
+                    None => dt,
+                    Some(cur) => cur.min(dt),
+                });
+            }
+        }
+
+        // Delete markers (old.bin DM — batch 2)
+        for m in resp.delete_markers() {
+            let lm = m.last_modified().expect("DM missing last_modified");
+            let dt = DateTime::<Utc>::from_timestamp(lm.secs(), lm.subsec_nanos())
+                .expect("invalid timestamp from S3");
+            batch2_min = Some(match batch2_min {
+                None => dt,
+                Some(cur) => cur.min(dt),
+            });
+        }
+
+        let old_lm = old_lm.expect("old.bin v1 not found in listing");
+        let t_pivot = batch2_min.expect("batch 2 rows not found in listing");
+
+        assert!(
+            t_pivot > old_lm,
+            "t_pivot ({t_pivot}) must be strictly after old.bin v1 ({old_lm}) \
+             — the 1.5s sleep should have guaranteed this. Clock skew > 1.5s?"
+        );
+
+        let mtime_after = t_pivot.to_rfc3339();
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--all-versions",
+            "--json",
+            "--filter-mtime-after",
+            mtime_after.as_str(),
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        // Expected: new.bin v1 + old.bin DM. old.bin v1 fails mtime-after.
+        assert_json_version_shapes_eq(
+            &output.stdout,
+            &[("new.bin", false), ("old.bin", true)],
+            "versioned mtime-after: DM filtered by own timestamp",
+        );
+    });
+
+    _guard.cleanup().await;
+}
