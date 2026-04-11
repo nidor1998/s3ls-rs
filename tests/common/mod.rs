@@ -530,7 +530,7 @@ impl TestHelper {
 }
 
 // ---------------------------------------------------------------------------
-// Step 1: S3lsOutput and run_s3ls
+// Binary runner
 // ---------------------------------------------------------------------------
 
 /// Captured output of a single `s3ls` binary invocation.
@@ -578,7 +578,7 @@ impl TestHelper {
 }
 
 // ---------------------------------------------------------------------------
-// Step 2: build_config and run_pipeline
+// Programmatic pipeline helpers
 // ---------------------------------------------------------------------------
 
 use s3ls_rs::{Config, ListingPipeline, create_pipeline_cancellation_token};
@@ -624,7 +624,7 @@ impl TestHelper {
 }
 
 // ---------------------------------------------------------------------------
-// Step 3: Timeout infrastructure and assert_key_order
+// Timeout infrastructure
 // ---------------------------------------------------------------------------
 
 /// Default hard timeout for E2E tests (60 seconds).
