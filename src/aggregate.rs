@@ -99,7 +99,10 @@ impl<W: Write + Send + 'static> Aggregator<W> {
 
         while let Some(entry) = self.rx.recv().await {
             if self.config.cancellation_token.is_cancelled() {
-                break;
+                // Already-streamed entries can't be unwritten, but skip the
+                // summary so it doesn't reflect a partial count.
+                self.writer.flush()?;
+                return Ok(());
             }
             if self.config.summary {
                 accumulate_statistics(&entry, &mut stats);
@@ -110,6 +113,13 @@ impl<W: Write + Send + 'static> Aggregator<W> {
                 format_entry(&entry, &self.opts)
             };
             writeln!(self.writer, "{line}")?;
+        }
+
+        // Final guard: skip summary if cancellation happened after the sender
+        // closed but before we reach this point.
+        if self.config.cancellation_token.is_cancelled() {
+            self.writer.flush()?;
+            return Ok(());
         }
 
         if self.config.summary {
@@ -124,9 +134,18 @@ impl<W: Write + Send + 'static> Aggregator<W> {
         let mut entries = Vec::new();
         while let Some(entry) = self.rx.recv().await {
             if self.config.cancellation_token.is_cancelled() {
-                break;
+                // Partial collection: skip sort and output entirely since the
+                // caller has signalled the pipeline should stop.
+                return Ok(());
             }
             entries.push(entry);
+        }
+
+        // Final guard: the sender may have closed normally (loop exit above)
+        // after cancellation was observed elsewhere. Avoid emitting partial
+        // results in that case too.
+        if self.config.cancellation_token.is_cancelled() {
+            return Ok(());
         }
 
         sort_entries(
@@ -1291,6 +1310,174 @@ mod tests {
         let json_str = format_entry_json(&entry, &opts);
         let val: serde_json::Value = serde_json::from_str(&json_str).unwrap();
         assert!(val.get("ChecksumAlgorithm").is_none());
+    }
+
+    // ========================================================================
+    // Cancellation tests for run_streaming and run_aggregate
+    // ========================================================================
+
+    /// A `Write` impl backed by a shared Vec<u8> so tests can inspect what the
+    /// aggregator wrote after `run()` consumes it.
+    #[derive(Clone)]
+    struct SharedBuf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl SharedBuf {
+        fn new() -> Self {
+            Self(std::sync::Arc::new(std::sync::Mutex::new(Vec::new())))
+        }
+        fn as_string(&self) -> String {
+            String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+        }
+    }
+
+    impl std::io::Write for SharedBuf {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn default_aggregator_config(
+        no_sort: bool,
+        summary: bool,
+        token: crate::types::token::PipelineCancellationToken,
+    ) -> AggregatorConfig {
+        AggregatorConfig {
+            use_json: false,
+            no_sort,
+            sort_fields: vec![SortField::Key],
+            reverse: false,
+            summary,
+            human: false,
+            all_versions: false,
+            parallel_sort_threshold: usize::MAX,
+            cancellation_token: token,
+        }
+    }
+
+    #[tokio::test]
+    async fn run_aggregate_skips_output_when_cancelled_mid_stream() {
+        let (tx, rx) = mpsc::channel(10);
+        let buf = SharedBuf::new();
+        let token = crate::types::token::create_pipeline_cancellation_token();
+        let config = default_aggregator_config(false, true, token.clone());
+        let aggregator = Aggregator::new(rx, buf.clone(), FormatOptions::default(), config);
+
+        // Send a few entries, then cancel, then close the channel.
+        tx.send(make_entry("a.txt", 100, 2024, 1)).await.unwrap();
+        tx.send(make_entry("b.txt", 200, 2024, 2)).await.unwrap();
+        token.cancel();
+        tx.send(make_entry("c.txt", 300, 2024, 3)).await.unwrap();
+        drop(tx);
+
+        aggregator.run().await.unwrap();
+
+        // Nothing should have been written: no entries, no summary.
+        assert_eq!(
+            buf.as_string(),
+            "",
+            "expected empty output on mid-stream cancellation, got: {:?}",
+            buf.as_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn run_aggregate_skips_output_when_cancelled_after_close() {
+        let (tx, rx) = mpsc::channel(10);
+        let buf = SharedBuf::new();
+        let token = crate::types::token::create_pipeline_cancellation_token();
+        let config = default_aggregator_config(false, true, token.clone());
+        let aggregator = Aggregator::new(rx, buf.clone(), FormatOptions::default(), config);
+
+        // Send entries and close the channel normally, then cancel before run
+        // gets a chance to sort/write.
+        tx.send(make_entry("a.txt", 100, 2024, 1)).await.unwrap();
+        drop(tx);
+        token.cancel();
+
+        aggregator.run().await.unwrap();
+
+        assert_eq!(
+            buf.as_string(),
+            "",
+            "expected empty output when cancelled after sender close, got: {:?}",
+            buf.as_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn run_aggregate_emits_output_when_not_cancelled() {
+        // Sanity check: the cancellation guards don't suppress output in the
+        // happy path.
+        let (tx, rx) = mpsc::channel(10);
+        let buf = SharedBuf::new();
+        let token = crate::types::token::create_pipeline_cancellation_token();
+        let config = default_aggregator_config(false, true, token);
+        let aggregator = Aggregator::new(rx, buf.clone(), FormatOptions::default(), config);
+
+        tx.send(make_entry("a.txt", 100, 2024, 1)).await.unwrap();
+        drop(tx);
+
+        aggregator.run().await.unwrap();
+
+        let out = buf.as_string();
+        assert!(
+            out.contains("a.txt"),
+            "expected a.txt in output, got: {out:?}"
+        );
+        assert!(
+            out.contains("Total:"),
+            "expected summary in output, got: {out:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_streaming_skips_summary_on_cancellation() {
+        let (tx, rx) = mpsc::channel(10);
+        let buf = SharedBuf::new();
+        let token = crate::types::token::create_pipeline_cancellation_token();
+        let config = default_aggregator_config(true, true, token.clone());
+        let aggregator = Aggregator::new(rx, buf.clone(), FormatOptions::default(), config);
+
+        // Send one entry, let it stream out, then cancel.
+        tx.send(make_entry("a.txt", 100, 2024, 1)).await.unwrap();
+        // Give the aggregator a moment to process before cancelling.
+        let handle = tokio::spawn(async move { aggregator.run().await });
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        token.cancel();
+        // Try to send another entry; this wakes the recv loop to observe cancel.
+        let _ = tx.send(make_entry("b.txt", 200, 2024, 2)).await;
+        drop(tx);
+        handle.await.unwrap().unwrap();
+
+        let out = buf.as_string();
+        // The first entry may or may not have been streamed (timing-dependent),
+        // but the summary must not be present.
+        assert!(
+            !out.contains("Total:"),
+            "summary should be omitted when cancelled, got: {out:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_streaming_emits_summary_when_not_cancelled() {
+        let (tx, rx) = mpsc::channel(10);
+        let buf = SharedBuf::new();
+        let token = crate::types::token::create_pipeline_cancellation_token();
+        let config = default_aggregator_config(true, true, token);
+        let aggregator = Aggregator::new(rx, buf.clone(), FormatOptions::default(), config);
+
+        tx.send(make_entry("a.txt", 100, 2024, 1)).await.unwrap();
+        drop(tx);
+
+        aggregator.run().await.unwrap();
+
+        let out = buf.as_string();
+        assert!(out.contains("a.txt"));
+        assert!(out.contains("Total:"));
     }
 
     #[test]
