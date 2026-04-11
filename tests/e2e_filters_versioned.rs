@@ -339,3 +339,56 @@ async fn e2e_versioned_mtime_filter_applies_to_delete_markers() {
 
     _guard.cleanup().await;
 }
+
+/// Locks in `--hide-delete-markers` behavior. Runs s3ls twice against
+/// the same bucket: once WITH the flag (expect 2 rows) and once
+/// WITHOUT (expect 3 rows). The difference of exactly one delete
+/// marker row proves the flag strips DMs as documented.
+///
+/// `--hide-delete-markers` is applied at `src/lister.rs:48`, BEFORE
+/// the filter chain runs at line 51. This test doesn't combine the
+/// flag with any filter; it asserts the flag's effect in isolation.
+#[tokio::test]
+async fn e2e_versioned_hide_delete_markers() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_versioned_bucket(&bucket).await;
+
+        // Two versions of doc.txt plus a delete marker as the "latest".
+        helper.put_object(&bucket, "doc.txt", vec![0u8; 100]).await;
+        helper.put_object(&bucket, "doc.txt", vec![0u8; 200]).await;
+        helper.create_delete_marker(&bucket, "doc.txt").await;
+
+        let target = format!("s3://{bucket}/");
+
+        // Run 1: with --hide-delete-markers. Expect 2 object rows, no DM.
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--all-versions",
+            "--hide-delete-markers",
+            "--json",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_json_version_shapes_eq(
+            &output.stdout,
+            &[("doc.txt", false), ("doc.txt", false)],
+            "hide-delete-markers: DM stripped",
+        );
+
+        // Run 2: without --hide-delete-markers. Expect 2 object rows + 1 DM.
+        let output =
+            TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--all-versions", "--json"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_json_version_shapes_eq(
+            &output.stdout,
+            &[("doc.txt", false), ("doc.txt", false), ("doc.txt", true)],
+            "hide-delete-markers: baseline includes DM",
+        );
+    });
+
+    _guard.cleanup().await;
+}
