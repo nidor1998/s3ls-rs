@@ -710,3 +710,115 @@ async fn e2e_filter_storage_class() {
 
     _guard.cleanup().await;
 }
+
+/// All seven filters at once. Proves AND-composition across every filter
+/// flag simultaneously. Exactly one object (`target.csv`) is designed
+/// to survive the full filter chain.
+///
+/// Fixture strategy: two-batch upload with a 1.5s sleep between batches
+/// so that `t_pivot = min(batch_2.last_modified)` is strictly greater
+/// than `old.csv.last_modified`. S3 LastModified is second-precision,
+/// so the 1.5s sleep is enough to push the next upload into the
+/// following second even with clock skew.
+#[tokio::test]
+async fn e2e_filter_combo_all_seven() {
+    use chrono::{DateTime, Duration as ChronoDuration, Utc};
+    use std::time::Duration;
+    use tokio::time::sleep;
+
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+
+        // --- Batch 1: the one object that will fail mtime-after. ---
+        helper.put_object(&bucket, "old.csv", vec![0u8; 5000]).await;
+
+        // Guarantee a 1-second gap between the two batches.
+        sleep(Duration::from_millis(1500)).await;
+
+        // --- Batch 2: five objects, four of which each fail exactly one filter. ---
+        let batch2: Vec<(String, Vec<u8>)> = vec![
+            ("target.csv".to_string(), vec![0u8; 5000]),   // survivor
+            ("target.txt".to_string(), vec![0u8; 5000]),   // fails include-regex
+            ("excluded.csv".to_string(), vec![0u8; 5000]), // fails exclude-regex
+            ("small.csv".to_string(), vec![0u8; 100]),     // fails larger-size
+        ];
+        helper.put_objects_parallel(&bucket, batch2).await;
+
+        // ia.csv needs a distinct storage class, so it goes through the
+        // single-object storage-class helper.
+        helper
+            .put_object_with_storage_class(&bucket, "ia.csv", vec![0u8; 5000], "STANDARD_IA")
+            .await;
+
+        // --- Read back LastModified for all 6 objects. ---
+        let resp = helper
+            .client()
+            .list_objects_v2()
+            .bucket(&bucket)
+            .send()
+            .await
+            .expect("list_objects_v2 failed");
+
+        let mut old_lm: Option<DateTime<Utc>> = None;
+        let mut batch2_min: Option<DateTime<Utc>> = None;
+        for obj in resp.contents() {
+            let key = obj.key().expect("object missing key");
+            let lm = obj.last_modified().expect("object missing last_modified");
+            let dt = DateTime::<Utc>::from_timestamp(lm.secs(), lm.subsec_nanos())
+                .expect("invalid timestamp from S3");
+            if key == "old.csv" {
+                old_lm = Some(dt);
+            } else {
+                batch2_min = Some(match batch2_min {
+                    None => dt,
+                    Some(cur) => cur.min(dt),
+                });
+            }
+        }
+        let old_lm = old_lm.expect("old.csv not found in listing");
+        let t_pivot = batch2_min.expect("batch 2 objects not found in listing");
+
+        assert!(
+            t_pivot > old_lm,
+            "t_pivot ({t_pivot}) must be strictly after old.csv last-modified ({old_lm}) \
+             — the 1.5s sleep should have guaranteed this. Clock skew > 1.5s?"
+        );
+
+        let mtime_after = t_pivot.to_rfc3339();
+        let mtime_before = (t_pivot + ChronoDuration::hours(1)).to_rfc3339();
+
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--json",
+            "--filter-include-regex",
+            r"\.csv$",
+            "--filter-exclude-regex",
+            "^excluded",
+            "--filter-mtime-after",
+            mtime_after.as_str(),
+            "--filter-mtime-before",
+            mtime_before.as_str(),
+            "--filter-larger-size",
+            "1000",
+            "--filter-smaller-size",
+            "10000",
+            "--storage-class",
+            "STANDARD",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_json_keys_eq(
+            &output.stdout,
+            &["target.csv"],
+            "combo all seven: exactly target.csv survives",
+        );
+    });
+
+    _guard.cleanup().await;
+}
