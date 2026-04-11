@@ -122,3 +122,104 @@ async fn e2e_versioned_exclude_regex_drops_delete_marker() {
 
     _guard.cleanup().await;
 }
+
+/// Locks in "delete markers always pass size filters" — verified against
+/// `src/filters/smaller_size.rs:25` and `larger_size.rs:25`, both of which
+/// unconditionally return `Ok(true)` for `ListEntry::DeleteMarker` before
+/// any size comparison.
+///
+/// Does NOT use `--hide-delete-markers` because the test's entire point is
+/// to observe a delete marker surviving the filter; the hide flag would
+/// strip the DM before the filter chain runs (`src/lister.rs:48` applies
+/// it before `filter_chain.matches` at line 51).
+#[tokio::test]
+async fn e2e_versioned_size_filter_passes_delete_markers() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_versioned_bucket(&bucket).await;
+
+        // Two versions of big.bin, both passing --filter-larger-size 1000.
+        helper.put_object(&bucket, "big.bin", vec![0u8; 5000]).await;
+        helper.put_object(&bucket, "big.bin", vec![0u8; 7000]).await;
+
+        // One version of small.bin (100 bytes, fails size filter).
+        helper
+            .put_object(&bucket, "small.bin", vec![0u8; 100])
+            .await;
+
+        // DM on small.bin — has no size, must pass the filter anyway.
+        helper.create_delete_marker(&bucket, "small.bin").await;
+
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--all-versions",
+            "--json",
+            "--filter-larger-size",
+            "1000",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        // Expected: 2 big.bin versions + 1 small.bin DM.
+        // small.bin v1 (100 bytes) fails --filter-larger-size 1000.
+        assert_json_version_shapes_eq(
+            &output.stdout,
+            &[("big.bin", false), ("big.bin", false), ("small.bin", true)],
+            "versioned size filter: DM passes through",
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// Locks in "delete markers always pass storage-class filter" — verified
+/// against `src/filters/storage_class.rs:47`
+/// (`ListEntry::DeleteMarker { .. } => Ok(true)`).
+#[tokio::test]
+async fn e2e_versioned_storage_class_passes_delete_markers() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_versioned_bucket(&bucket).await;
+
+        // ia.bin: explicit STANDARD_IA class (fails --storage-class STANDARD).
+        helper
+            .put_object_with_storage_class(&bucket, "ia.bin", vec![0u8; 100], "STANDARD_IA")
+            .await;
+        // DM on ia.bin — has no storage class, must pass the filter anyway.
+        helper.create_delete_marker(&bucket, "ia.bin").await;
+
+        // std.bin: default STANDARD class (S3 reports as None, filter treats
+        // as STANDARD per src/filters/storage_class.rs:33).
+        helper.put_object(&bucket, "std.bin", vec![0u8; 100]).await;
+
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--all-versions",
+            "--json",
+            "--storage-class",
+            "STANDARD",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        // Expected: 1 std.bin object row + 1 ia.bin DM row.
+        // ia.bin v1 (STANDARD_IA) fails the filter.
+        assert_json_version_shapes_eq(
+            &output.stdout,
+            &[("std.bin", false), ("ia.bin", true)],
+            "versioned storage-class: DM passes through",
+        );
+    });
+
+    _guard.cleanup().await;
+}
