@@ -5,6 +5,12 @@ use clap_verbosity_flag::{Verbosity, WarnLevel};
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+#[cfg(feature = "version")]
+use shadow_rs::shadow;
+
+#[cfg(feature = "version")]
+shadow!(build);
+
 mod value_parser;
 
 #[cfg(test)]
@@ -68,7 +74,18 @@ impl std::fmt::Display for SortField {
 ///   s3ls s3://my-bucket/ --recursive --human-readable --summarize
 ///   s3ls s3://my-bucket/data/ --sort size --reverse --json
 #[derive(Parser, Clone, Debug)]
-#[command(name = "s3ls", about, long_about = None, version)]
+#[cfg_attr(
+    feature = "version",
+    command(version = format!(
+        "{} ({} {}), {}",
+        build::PKG_VERSION,
+        build::SHORT_COMMIT,
+        build::BUILD_TARGET,
+        build::RUST_VERSION
+    ))
+)]
+#[cfg_attr(not(feature = "version"), command(version))]
+#[command(name = "s3ls", about, long_about = None)]
 pub struct CLIArgs {
     /// S3 target path: s3://<BUCKET_NAME>[/prefix] (omit to list buckets)
     #[arg(

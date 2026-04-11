@@ -42,6 +42,17 @@ log = "0.4.29"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json", "local-time"] }
 
+# Build info (git commit, rustc version, target triple) — captured at
+# build time and shown in the --version output.
+shadow-rs = { version = "1.7.1", optional = true }
+
+[build-dependencies]
+shadow-rs = { version = "1.7.1", optional = true }
+
+[features]
+default = ["version"]
+version = ["dep:shadow-rs"]
+
 [dev-dependencies]
 proptest = "1.11"
 once_cell = "1.21.4"
