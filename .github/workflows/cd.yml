@@ -5,6 +5,13 @@ on:
     tags:
       - "v*.*.*"
 
+# Required by softprops/action-gh-release to create/update releases.
+# The default GITHUB_TOKEN is read-only; every job that uploads assets
+# (including the initial draft-create on the first build job) needs
+# contents:write.
+permissions:
+  contents: write
+
 env:
   APP_NAME: s3ls
 
@@ -226,8 +233,6 @@ jobs:
     name: publish release
     needs: [ release-linux, release-linux-musl, release-arm-linux, release-arm-linux-musl, release-others ]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - name: publish release
         uses: softprops/action-gh-release@v2
