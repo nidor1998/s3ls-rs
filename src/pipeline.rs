@@ -122,6 +122,7 @@ impl ListingPipeline {
             summary: self.config.display_config.summary,
             human: self.config.display_config.human,
             all_versions: self.config.all_versions,
+            parallel_sort_threshold: self.config.parallel_sort_threshold as usize,
             cancellation_token: self.cancellation_token.clone(),
         };
         let mut aggregator = Aggregator::new(rx, writer, opts, aggregator_config);

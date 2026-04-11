@@ -17,6 +17,7 @@ mod tests;
 const DEFAULT_MAX_PARALLEL_LISTINGS: u16 = 32;
 const DEFAULT_PARALLEL_LISTING_MAX_DEPTH: u16 = 2;
 const DEFAULT_OBJECT_LISTING_QUEUE_SIZE: u32 = 200000;
+const DEFAULT_PARALLEL_SORT_THRESHOLD: u32 = 1_000_000;
 const DEFAULT_AWS_MAX_ATTEMPTS: u32 = 10;
 const DEFAULT_INITIAL_BACKOFF_MILLISECONDS: u64 = 100;
 const DEFAULT_MAX_KEYS: i32 = 1000;
@@ -418,6 +419,10 @@ pub struct CLIArgs {
     #[arg(long, env, default_value_t = false, help_heading = "Performance")]
     pub allow_parallel_listings_in_express_one_zone: bool,
 
+    /// Minimum number of entries to trigger parallel sorting
+    #[arg(long, env, default_value_t = DEFAULT_PARALLEL_SORT_THRESHOLD, value_parser = clap::value_parser!(u32).range(1..), help_heading = "Performance")]
+    pub parallel_sort_threshold: u32,
+
     // -----------------------------------------------------------------------
     // Retry options (reused from s3rm-rs)
     // -----------------------------------------------------------------------
@@ -731,6 +736,7 @@ impl TryFrom<CLIArgs> for crate::config::Config {
             object_listing_queue_size: args.object_listing_queue_size,
             allow_parallel_listings_in_express_one_zone: args
                 .allow_parallel_listings_in_express_one_zone,
+            parallel_sort_threshold: args.parallel_sort_threshold,
             target_client_config,
             max_keys: args.max_keys,
             auto_complete_shell: args.auto_complete_shell,

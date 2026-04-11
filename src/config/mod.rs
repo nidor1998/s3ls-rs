@@ -35,6 +35,7 @@ pub struct Config {
     pub max_parallel_listing_max_depth: u16,
     pub object_listing_queue_size: u32,
     pub allow_parallel_listings_in_express_one_zone: bool,
+    pub parallel_sort_threshold: u32,
 
     // AWS Client
     pub target_client_config: Option<ClientConfig>,
@@ -86,6 +87,7 @@ impl Default for Config {
             max_parallel_listing_max_depth: 2,
             object_listing_queue_size: 200_000,
             allow_parallel_listings_in_express_one_zone: false,
+            parallel_sort_threshold: 1_000_000,
             target_client_config: None,
             max_keys: 1000,
             auto_complete_shell: None,

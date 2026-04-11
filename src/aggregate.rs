@@ -50,6 +50,7 @@ pub struct AggregatorConfig {
     pub summary: bool,
     pub human: bool,
     pub all_versions: bool,
+    pub parallel_sort_threshold: usize,
     pub cancellation_token: crate::types::token::PipelineCancellationToken,
 }
 
@@ -128,7 +129,12 @@ impl<W: Write + Send + 'static> Aggregator<W> {
             entries.push(entry);
         }
 
-        sort_entries(&mut entries, &self.config.sort_fields, self.config.reverse);
+        sort_entries(
+            &mut entries,
+            &self.config.sort_fields,
+            self.config.reverse,
+            self.config.parallel_sort_threshold,
+        );
 
         for entry in &entries {
             let line = if self.config.use_json {
@@ -369,10 +375,12 @@ fn cmp_mtime(a: &ListEntry, b: &ListEntry) -> std::cmp::Ordering {
     }
 }
 
-/// Entries beyond this count are sorted in parallel with rayon.
-const PARALLEL_SORT_THRESHOLD: usize = 1_000_000;
-
-pub fn sort_entries(entries: &mut [ListEntry], fields: &[SortField], reverse: bool) {
+pub fn sort_entries(
+    entries: &mut [ListEntry],
+    fields: &[SortField],
+    reverse: bool,
+    parallel_sort_threshold: usize,
+) {
     let cmp_fn = |a: &ListEntry, b: &ListEntry| {
         let mut cmp = std::cmp::Ordering::Equal;
         for field in fields {
@@ -386,7 +394,7 @@ pub fn sort_entries(entries: &mut [ListEntry], fields: &[SortField], reverse: bo
         if reverse { cmp.reverse() } else { cmp }
     };
 
-    if entries.len() >= PARALLEL_SORT_THRESHOLD {
+    if entries.len() >= parallel_sort_threshold {
         use rayon::slice::ParallelSliceMut;
         entries.par_sort_by(cmp_fn);
     } else {
@@ -634,7 +642,7 @@ mod tests {
             make_entry("a.txt", 200, 2024, 2),
             make_entry("b.txt", 300, 2024, 3),
         ];
-        sort_entries(&mut entries, &[SortField::Key], false);
+        sort_entries(&mut entries, &[SortField::Key], false, usize::MAX);
         assert_eq!(entries[0].key(), "a.txt");
         assert_eq!(entries[1].key(), "b.txt");
         assert_eq!(entries[2].key(), "c.txt");
@@ -647,7 +655,7 @@ mod tests {
             make_entry("b.txt", 100, 2024, 2),
             make_entry("c.txt", 200, 2024, 3),
         ];
-        sort_entries(&mut entries, &[SortField::Size], false);
+        sort_entries(&mut entries, &[SortField::Size], false, usize::MAX);
         assert_eq!(entries[0].size(), 100);
         assert_eq!(entries[1].size(), 200);
         assert_eq!(entries[2].size(), 300);
@@ -660,7 +668,7 @@ mod tests {
             make_entry("b.txt", 100, 2024, 1),
             make_entry("c.txt", 100, 2024, 2),
         ];
-        sort_entries(&mut entries, &[SortField::Date], false);
+        sort_entries(&mut entries, &[SortField::Date], false, usize::MAX);
         assert_eq!(entries[0].key(), "b.txt");
         assert_eq!(entries[1].key(), "c.txt");
         assert_eq!(entries[2].key(), "a.txt");
@@ -672,7 +680,7 @@ mod tests {
             make_entry("a.txt", 100, 2024, 1),
             make_entry("b.txt", 200, 2024, 2),
         ];
-        sort_entries(&mut entries, &[SortField::Key], true);
+        sort_entries(&mut entries, &[SortField::Key], true, usize::MAX);
         assert_eq!(entries[0].key(), "b.txt");
         assert_eq!(entries[1].key(), "a.txt");
     }
@@ -684,7 +692,12 @@ mod tests {
             make_entry("a.txt", 100, 2024, 1),
             make_entry("b.txt", 200, 2024, 2),
         ];
-        sort_entries(&mut entries, &[SortField::Date, SortField::Key], false);
+        sort_entries(
+            &mut entries,
+            &[SortField::Date, SortField::Key],
+            false,
+            usize::MAX,
+        );
         // Same date (Jan): tiebreak by key -> a < c
         assert_eq!(entries[0].key(), "a.txt");
         assert_eq!(entries[1].key(), "c.txt");
@@ -699,12 +712,108 @@ mod tests {
             make_entry("b.txt", 100, 2024, 1),
             make_entry("c.txt", 200, 2024, 2),
         ];
-        sort_entries(&mut entries, &[SortField::Size, SortField::Date], false);
+        sort_entries(
+            &mut entries,
+            &[SortField::Size, SortField::Date],
+            false,
+            usize::MAX,
+        );
         // Same size (100): tiebreak by date -> Jan < Mar
         assert_eq!(entries[0].key(), "b.txt");
         assert_eq!(entries[1].key(), "a.txt");
         // Larger size last
         assert_eq!(entries[2].key(), "c.txt");
+    }
+
+    // ========================================================================
+    // Parallel sort (rayon) tests — use a low threshold so the parallel path
+    // is actually exercised.
+    // ========================================================================
+
+    #[test]
+    fn parallel_sort_by_key_produces_same_order_as_sequential() {
+        // 200 entries with keys in pseudo-random order
+        let mut seq_entries: Vec<ListEntry> = (0..200)
+            .map(|i| make_entry(&format!("file_{:05}.txt", (i * 37) % 200), 100, 2024, 1))
+            .collect();
+        let mut par_entries = seq_entries.clone();
+
+        // Sequential (threshold = MAX never triggers parallel)
+        sort_entries(&mut seq_entries, &[SortField::Key], false, usize::MAX);
+        // Parallel (threshold = 0 always triggers parallel)
+        sort_entries(&mut par_entries, &[SortField::Key], false, 0);
+
+        let seq_keys: Vec<&str> = seq_entries.iter().map(|e| e.key()).collect();
+        let par_keys: Vec<&str> = par_entries.iter().map(|e| e.key()).collect();
+        assert_eq!(seq_keys, par_keys);
+
+        // And verify actually sorted
+        let mut expected = par_keys.clone();
+        expected.sort();
+        assert_eq!(par_keys, expected);
+    }
+
+    #[test]
+    fn parallel_sort_by_size_reverse() {
+        let mut entries: Vec<ListEntry> = (0..500)
+            .map(|i| make_entry(&format!("f{i}.txt"), ((i * 11) % 500) as u64, 2024, 1))
+            .collect();
+
+        // threshold = 100 triggers parallel path for 500 entries
+        sort_entries(&mut entries, &[SortField::Size], true, 100);
+
+        // Verify sorted descending by size
+        for window in entries.windows(2) {
+            assert!(
+                window[0].size() >= window[1].size(),
+                "not sorted descending: {} then {}",
+                window[0].size(),
+                window[1].size()
+            );
+        }
+    }
+
+    #[test]
+    fn parallel_sort_multi_field() {
+        // Mix of sizes and dates; sort by Size then Date
+        let mut entries = vec![
+            make_entry("a.txt", 100, 2024, 3),
+            make_entry("b.txt", 100, 2024, 1),
+            make_entry("c.txt", 200, 2024, 2),
+            make_entry("d.txt", 100, 2024, 2),
+            make_entry("e.txt", 200, 2024, 1),
+        ];
+        sort_entries(
+            &mut entries,
+            &[SortField::Size, SortField::Date],
+            false,
+            0, // force parallel
+        );
+        // Size 100: dates Jan, Feb, Mar → b, d, a
+        // Size 200: dates Jan, Feb → e, c
+        let keys: Vec<&str> = entries.iter().map(|e| e.key()).collect();
+        assert_eq!(keys, vec!["b.txt", "d.txt", "a.txt", "e.txt", "c.txt"]);
+    }
+
+    #[test]
+    fn parallel_sort_threshold_boundary() {
+        // Exactly at threshold should use parallel; below should use sequential.
+        // Both must produce identical results.
+        let mut at_threshold: Vec<ListEntry> = (0..10)
+            .map(|i| make_entry(&format!("k{}", 9 - i), 100, 2024, 1))
+            .collect();
+        let mut below_threshold = at_threshold.clone();
+
+        sort_entries(&mut at_threshold, &[SortField::Key], false, 10);
+        sort_entries(&mut below_threshold, &[SortField::Key], false, 11);
+
+        let at_keys: Vec<&str> = at_threshold.iter().map(|e| e.key()).collect();
+        let below_keys: Vec<&str> = below_threshold.iter().map(|e| e.key()).collect();
+        assert_eq!(at_keys, below_keys);
+        assert_eq!(
+            at_keys,
+            vec!["k0", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "k9"]
+        );
     }
 
     #[test]
@@ -714,7 +823,7 @@ mod tests {
             make_entry("a.txt", 100, 2024, 3),
             make_entry("a.txt", 200, 2024, 1),
         ];
-        sort_entries(&mut entries, &[SortField::Key], false);
+        sort_entries(&mut entries, &[SortField::Key], false, usize::MAX);
         // Both have same key, no tiebreaker -- stable sort preserves input order
         assert_eq!(entries[0].size(), 100);
         assert_eq!(entries[1].size(), 200);
@@ -831,7 +940,7 @@ mod tests {
             make_entry("a.txt", 100, 2024, 1),
             ListEntry::CommonPrefix("logs/".to_string()),
         ];
-        sort_entries(&mut entries, &[SortField::Size], false);
+        sort_entries(&mut entries, &[SortField::Size], false, usize::MAX);
         assert_eq!(entries[0].key(), "logs/");
         assert_eq!(entries[1].key(), "a.txt");
     }
