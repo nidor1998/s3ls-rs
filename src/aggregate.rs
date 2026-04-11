@@ -599,20 +599,17 @@ pub fn format_summary(
         let mut map = serde_json::Map::new();
         let mut summary = serde_json::Map::new();
         summary.insert(
-            "total_objects".to_string(),
+            "TotalObjects".to_string(),
             serde_json::json!(stats.total_objects),
         );
-        summary.insert(
-            "total_size".to_string(),
-            serde_json::json!(stats.total_size),
-        );
+        summary.insert("TotalSize".to_string(), serde_json::json!(stats.total_size));
         if all_versions {
             summary.insert(
-                "total_delete_markers".to_string(),
+                "TotalDeleteMarkers".to_string(),
                 serde_json::json!(stats.total_delete_markers),
             );
         }
-        map.insert("summary".to_string(), serde_json::Value::Object(summary));
+        map.insert("Summary".to_string(), serde_json::Value::Object(summary));
         serde_json::to_string(&map).unwrap()
     } else {
         let (size_num, size_unit) = if human {
@@ -1156,8 +1153,8 @@ mod tests {
         };
         let summary = format_summary(&stats, true, false, false);
         let parsed: serde_json::Value = serde_json::from_str(&summary).unwrap();
-        assert_eq!(parsed["summary"]["total_objects"], 10);
-        assert_eq!(parsed["summary"]["total_size"], 1024);
+        assert_eq!(parsed["Summary"]["TotalObjects"], 10);
+        assert_eq!(parsed["Summary"]["TotalSize"], 1024);
     }
 
     #[test]
