@@ -14,7 +14,7 @@ pub struct Config {
     // Listing mode
     pub recursive: bool,
     pub all_versions: bool,
-    pub hide_delete_marker: bool,
+    pub hide_delete_markers: bool,
     pub max_depth: Option<u16>,
     pub bucket_name_prefix: Option<String>,
     pub list_express_one_zone_buckets: bool,
@@ -35,6 +35,7 @@ pub struct Config {
     pub max_parallel_listing_max_depth: u16,
     pub object_listing_queue_size: u32,
     pub allow_parallel_listings_in_express_one_zone: bool,
+    pub parallel_sort_threshold: u32,
 
     // AWS Client
     pub target_client_config: Option<ClientConfig>,
@@ -73,7 +74,7 @@ impl Default for Config {
             },
             recursive: false,
             all_versions: false,
-            hide_delete_marker: false,
+            hide_delete_markers: false,
             max_depth: None,
             bucket_name_prefix: None,
             list_express_one_zone_buckets: false,
@@ -86,6 +87,7 @@ impl Default for Config {
             max_parallel_listing_max_depth: 2,
             object_listing_queue_size: 200_000,
             allow_parallel_listings_in_express_one_zone: false,
+            parallel_sort_threshold: 1_000_000,
             target_client_config: None,
             max_keys: 1000,
             auto_complete_shell: None,
@@ -122,6 +124,11 @@ pub struct DisplayConfig {
     pub show_bucket_arn: bool,
     pub header: bool,
     pub json: bool,
+    /// Emit raw S3 key/prefix bytes without escaping control characters.
+    /// Defaults to false — text-mode output replaces control chars with
+    /// `\xNN` escapes to prevent injection of fake rows or terminal
+    /// escape sequences by maliciously-named objects.
+    pub raw_output: bool,
 }
 
 /// AWS S3 client configuration.

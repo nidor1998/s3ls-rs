@@ -20,7 +20,7 @@ pub mod smaller_size;
 pub mod storage_class;
 
 pub trait ObjectFilter: Send + Sync {
-    fn matches(&self, entry: &ListEntry) -> bool;
+    fn matches(&self, entry: &ListEntry) -> anyhow::Result<bool>;
 }
 
 pub struct FilterChain {
@@ -32,12 +32,17 @@ impl FilterChain {
         Self { filters }
     }
 
-    pub fn matches(&self, entry: &ListEntry) -> bool {
+    pub fn matches(&self, entry: &ListEntry) -> anyhow::Result<bool> {
         // CommonPrefix entries always pass through
         if matches!(entry, ListEntry::CommonPrefix(_)) {
-            return true;
+            return Ok(true);
         }
-        self.filters.iter().all(|f| f.matches(entry))
+        for filter in &self.filters {
+            if !filter.matches(entry)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -93,27 +98,53 @@ mod tests {
             last_modified: chrono::Utc::now(),
             e_tag: "\"e\"".to_string(),
             storage_class: None,
-            checksum_algorithm: None,
+            checksum_algorithm: vec![],
             checksum_type: None,
             owner_display_name: None,
             owner_id: None,
             is_restore_in_progress: None,
             restore_expiry_date: None,
         });
-        assert!(chain.matches(&entry));
+        assert!(chain.matches(&entry).unwrap());
     }
 
     #[test]
     fn common_prefix_always_passes() {
         let chain = FilterChain::new(vec![Box::new(RejectAllFilter)]);
         let entry = ListEntry::CommonPrefix("logs/".to_string());
-        assert!(chain.matches(&entry));
+        assert!(chain.matches(&entry).unwrap());
+    }
+
+    #[test]
+    fn filter_error_propagates_through_chain() {
+        let chain = FilterChain::new(vec![Box::new(ErrorFilter)]);
+        let entry = ListEntry::Object(S3Object::NotVersioning {
+            key: "test.txt".to_string(),
+            size: 100,
+            last_modified: chrono::Utc::now(),
+            e_tag: "\"e\"".to_string(),
+            storage_class: None,
+            checksum_algorithm: vec![],
+            checksum_type: None,
+            owner_display_name: None,
+            owner_id: None,
+            is_restore_in_progress: None,
+            restore_expiry_date: None,
+        });
+        assert!(chain.matches(&entry).is_err());
     }
 
     struct RejectAllFilter;
     impl ObjectFilter for RejectAllFilter {
-        fn matches(&self, _entry: &ListEntry) -> bool {
-            false
+        fn matches(&self, _entry: &ListEntry) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+    }
+
+    struct ErrorFilter;
+    impl ObjectFilter for ErrorFilter {
+        fn matches(&self, _entry: &ListEntry) -> anyhow::Result<bool> {
+            Err(anyhow::anyhow!("simulated filter error"))
         }
     }
 }

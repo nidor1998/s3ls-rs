@@ -1,6 +1,10 @@
 use crate::config::args::SortField;
 use crate::types::ListEntry;
+use anyhow::Result;
 use byte_unit::Byte;
+use std::io::Write;
+use tokio::sync::mpsc;
+use tracing::debug;
 
 #[derive(Default)]
 pub struct FormatOptions {
@@ -15,6 +19,15 @@ pub struct FormatOptions {
     pub show_restore_status: bool,
     pub all_versions: bool,
     pub prefix: Option<String>,
+    /// When false (the default), control characters and ANSI escape
+    /// sequences in S3-returned strings (keys, prefixes, owner fields)
+    /// are replaced with `\xNN` hex escapes in text-mode output. This
+    /// prevents a maliciously-named S3 object from forging phantom rows
+    /// in tab-delimited output or injecting terminal escape sequences.
+    /// Users who want byte-exact keys can pass `--raw-output` or use
+    /// `--json` (JSON output always preserves the original bytes since
+    /// serde_json escapes them safely).
+    pub raw_output: bool,
 }
 
 impl FormatOptions {
@@ -35,6 +48,227 @@ impl FormatOptions {
             show_restore_status: display_config.show_restore_status,
             all_versions,
             prefix,
+            raw_output: display_config.raw_output,
+        }
+    }
+}
+
+/// Escape control characters and ESC in a string for safe text-mode
+/// output. Replaces `\x00-\x1f` and `\x7f` with `\xNN` hex escape
+/// notation. Returns `Cow::Borrowed` when no escaping is needed (the
+/// common case) so most strings incur zero allocations.
+///
+/// This is applied to any user-visible string that originated from S3
+/// (object keys, common prefixes, owner names, bucket names) so that a
+/// maliciously-named object cannot inject newlines, tabs, or ANSI
+/// escape sequences into the operator's terminal or break downstream
+/// tab-delimited parsing.
+pub(crate) fn escape_control_chars(s: &str) -> std::borrow::Cow<'_, str> {
+    // Fast path: any control byte in the UTF-8 encoding of `s` is
+    // itself a control character, because UTF-8 continuation bytes are
+    // all `>= 0x80`. So a byte scan is sufficient to detect "no
+    // escaping needed" and lets us return `Cow::Borrowed` zero-alloc.
+    if !s.bytes().any(|b| b < 0x20 || b == 0x7f) {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    // Slow path: iterate by `char` so multi-byte UTF-8 sequences
+    // survive intact. Iterating by byte and pushing each `b as char`
+    // would silently corrupt non-ASCII characters.
+    let mut out = String::with_capacity(s.len() + 8);
+    for ch in s.chars() {
+        let cp = ch as u32;
+        if cp < 0x20 || cp == 0x7f {
+            out.push_str(&format!("\\x{cp:02x}"));
+        } else {
+            out.push(ch);
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
+/// Apply `escape_control_chars` only when `raw_output` is false.
+fn maybe_escape<'a>(s: &'a str, opts: &FormatOptions) -> std::borrow::Cow<'a, str> {
+    if opts.raw_output {
+        std::borrow::Cow::Borrowed(s)
+    } else {
+        escape_control_chars(s)
+    }
+}
+
+pub struct AggregatorConfig {
+    pub use_json: bool,
+    pub no_sort: bool,
+    pub sort_fields: Vec<SortField>,
+    pub reverse: bool,
+    pub summary: bool,
+    pub human: bool,
+    pub all_versions: bool,
+    pub parallel_sort_threshold: usize,
+    pub cancellation_token: crate::types::token::PipelineCancellationToken,
+}
+
+pub struct Aggregator<W: Write + Send + 'static> {
+    rx: mpsc::Receiver<ListEntry>,
+    writer: W,
+    opts: FormatOptions,
+    config: AggregatorConfig,
+}
+
+impl<W: Write + Send + 'static> Aggregator<W> {
+    pub fn new(
+        rx: mpsc::Receiver<ListEntry>,
+        writer: W,
+        opts: FormatOptions,
+        config: AggregatorConfig,
+    ) -> Self {
+        Self {
+            rx,
+            writer,
+            opts,
+            config,
+        }
+    }
+
+    pub async fn run(mut self) -> Result<()> {
+        if self.config.no_sort {
+            self.run_streaming().await
+        } else {
+            self.run_aggregate().await
+        }
+    }
+
+    /// Print the column header line (call before `run` if needed).
+    pub fn write_header(&mut self) -> Result<()> {
+        writeln!(self.writer, "{}", format_header(&self.opts))?;
+        Ok(())
+    }
+
+    async fn run_streaming(&mut self) -> Result<()> {
+        let mut stats = crate::types::ListingStatistics {
+            total_objects: 0,
+            total_size: 0,
+            total_delete_markers: 0,
+        };
+
+        while let Some(entry) = self.rx.recv().await {
+            if self.config.cancellation_token.is_cancelled() {
+                // Already-streamed entries can't be unwritten, but skip the
+                // summary so it doesn't reflect a partial count.
+                self.writer.flush()?;
+                return Ok(());
+            }
+            if self.config.summary {
+                accumulate_statistics(&entry, &mut stats);
+            }
+            let line = if self.config.use_json {
+                format_entry_json(&entry, &self.opts)
+            } else {
+                format_entry(&entry, &self.opts)
+            };
+            writeln!(self.writer, "{line}")?;
+        }
+
+        // Final guard: skip summary if cancellation happened after the sender
+        // closed but before we reach this point.
+        if self.config.cancellation_token.is_cancelled() {
+            self.writer.flush()?;
+            return Ok(());
+        }
+
+        if self.config.summary {
+            self.write_summary(&stats)?;
+        }
+
+        self.writer.flush()?;
+        Ok(())
+    }
+
+    async fn run_aggregate(&mut self) -> Result<()> {
+        let mut entries = Vec::new();
+        while let Some(entry) = self.rx.recv().await {
+            if self.config.cancellation_token.is_cancelled() {
+                // Partial collection: skip sort and output entirely since the
+                // caller has signalled the pipeline should stop.
+                return Ok(());
+            }
+            entries.push(entry);
+        }
+
+        // Final guard: the sender may have closed normally (loop exit above)
+        // after cancellation was observed elsewhere. Avoid emitting partial
+        // results in that case too.
+        if self.config.cancellation_token.is_cancelled() {
+            return Ok(());
+        }
+
+        debug!(
+            entry_count = entries.len(),
+            parallel_sort_threshold = self.config.parallel_sort_threshold,
+            "sort_entries started"
+        );
+        let sort_started = std::time::Instant::now();
+        sort_entries(
+            &mut entries,
+            &self.config.sort_fields,
+            self.config.reverse,
+            self.config.parallel_sort_threshold,
+        );
+        debug!(
+            entry_count = entries.len(),
+            elapsed_ms = sort_started.elapsed().as_millis() as u64,
+            "sort_entries finished"
+        );
+
+        for entry in &entries {
+            if self.config.cancellation_token.is_cancelled() {
+                self.writer.flush()?;
+                return Ok(());
+            }
+            let line = if self.config.use_json {
+                format_entry_json(entry, &self.opts)
+            } else {
+                format_entry(entry, &self.opts)
+            };
+            writeln!(self.writer, "{line}")?;
+        }
+
+        if self.config.summary {
+            let stats = compute_statistics(&entries);
+            self.write_summary(&stats)?;
+        }
+
+        self.writer.flush()?;
+        Ok(())
+    }
+
+    fn write_summary(&mut self, stats: &crate::types::ListingStatistics) -> Result<()> {
+        let summary = format_summary(
+            stats,
+            self.config.use_json,
+            self.config.human,
+            self.config.all_versions,
+        );
+        if !self.config.use_json {
+            writeln!(self.writer)?;
+        }
+        writeln!(self.writer, "{summary}")?;
+        Ok(())
+    }
+}
+
+/// Split a size into (number, unit) for tab-delimited summary output.
+/// Mirrors `format_size(size, true)` but returns the two parts separately.
+fn format_size_split(size: u64) -> (String, String) {
+    if size < 1024 {
+        (size.to_string(), "bytes".to_string())
+    } else {
+        let byte = Byte::from_u64(size);
+        let adjusted = byte.get_appropriate_unit(byte_unit::UnitType::Binary);
+        // byte-unit formats as "5.4 MiB"; split on the space
+        let s = format!("{adjusted:.1}");
+        match s.split_once(' ') {
+            Some((num, unit)) => (num.to_string(), unit.to_string()),
+            None => (s, String::new()),
         }
     }
 }
@@ -100,13 +334,14 @@ pub fn format_entry(entry: &ListEntry, opts: &FormatOptions) -> String {
             if opts.show_checksum_type {
                 cols.push(String::new());
             }
-            // version_id is only present in versioned entries; PRE never has one,
-            // but we still need the placeholder when other versioned rows exist.
-            // However, we can't know here whether the listing has versions, so
-            // we skip — version_id is always the last optional column before key
-            // and only appears on versioned objects/delete markers.
-            if opts.show_is_latest {
+            // In --all-versions mode, Object and DeleteMarker rows include a
+            // version_id column (and is_latest if enabled). CommonPrefix has
+            // neither, so emit placeholders to keep columns aligned.
+            if opts.all_versions {
                 cols.push(String::new());
+                if opts.show_is_latest {
+                    cols.push(String::new());
+                }
             }
             if opts.show_owner {
                 cols.push(String::new());
@@ -116,8 +351,8 @@ pub fn format_entry(entry: &ListEntry, opts: &FormatOptions) -> String {
                 cols.push(String::new());
                 cols.push(String::new());
             }
-            // key
-            cols.push(format_key_display(entry.key(), opts));
+            // key (escape control chars in text mode to avoid injection)
+            cols.push(maybe_escape(&format_key_display(entry.key(), opts), opts).into_owned());
         }
         ListEntry::Object(obj) => {
             cols.push(format_rfc3339(obj.last_modified()));
@@ -129,7 +364,7 @@ pub fn format_entry(entry: &ListEntry, opts: &FormatOptions) -> String {
                 cols.push(obj.e_tag().trim_matches('"').to_string());
             }
             if opts.show_checksum_algorithm {
-                cols.push(obj.checksum_algorithm().unwrap_or("").to_string());
+                cols.push(obj.checksum_algorithm().join(","));
             }
             if opts.show_checksum_type {
                 cols.push(obj.checksum_type().unwrap_or("").to_string());
@@ -145,8 +380,8 @@ pub fn format_entry(entry: &ListEntry, opts: &FormatOptions) -> String {
                 });
             }
             if opts.show_owner {
-                cols.push(obj.owner_display_name().unwrap_or("").to_string());
-                cols.push(obj.owner_id().unwrap_or("").to_string());
+                cols.push(maybe_escape(obj.owner_display_name().unwrap_or(""), opts).into_owned());
+                cols.push(maybe_escape(obj.owner_id().unwrap_or(""), opts).into_owned());
             }
             if opts.show_restore_status {
                 cols.push(
@@ -156,13 +391,15 @@ pub fn format_entry(entry: &ListEntry, opts: &FormatOptions) -> String {
                 );
                 cols.push(obj.restore_expiry_date().unwrap_or("").to_string());
             }
-            cols.push(format_key_display(entry.key(), opts));
+            cols.push(maybe_escape(&format_key_display(entry.key(), opts), opts).into_owned());
         }
         ListEntry::DeleteMarker {
             key,
             version_id,
             last_modified,
             is_latest,
+            owner_display_name,
+            owner_id,
         } => {
             cols.push(format_rfc3339(last_modified));
             cols.push("DELETE".to_string());
@@ -187,14 +424,17 @@ pub fn format_entry(entry: &ListEntry, opts: &FormatOptions) -> String {
                 });
             }
             if opts.show_owner {
-                cols.push(String::new());
-                cols.push(String::new());
+                cols.push(
+                    maybe_escape(owner_display_name.as_deref().unwrap_or(""), opts).into_owned(),
+                );
+                cols.push(maybe_escape(owner_id.as_deref().unwrap_or(""), opts).into_owned());
             }
             if opts.show_restore_status {
+                // Delete markers have no restore status — leave empty.
                 cols.push(String::new());
                 cols.push(String::new());
             }
-            cols.push(format_key_display(key, opts));
+            cols.push(maybe_escape(&format_key_display(key, opts), opts).into_owned());
         }
     }
 
@@ -244,8 +484,13 @@ fn cmp_mtime(a: &ListEntry, b: &ListEntry) -> std::cmp::Ordering {
     }
 }
 
-pub fn sort_entries(entries: &mut [ListEntry], fields: &[SortField], reverse: bool) {
-    entries.sort_by(|a, b| {
+pub fn sort_entries(
+    entries: &mut [ListEntry],
+    fields: &[SortField],
+    reverse: bool,
+    parallel_sort_threshold: usize,
+) {
+    let cmp_fn = |a: &ListEntry, b: &ListEntry| {
         let mut cmp = std::cmp::Ordering::Equal;
         for field in fields {
             cmp = cmp.then_with(|| match field {
@@ -256,16 +501,23 @@ pub fn sort_entries(entries: &mut [ListEntry], fields: &[SortField], reverse: bo
             });
         }
         if reverse { cmp.reverse() } else { cmp }
-    });
+    };
+
+    if entries.len() >= parallel_sort_threshold {
+        use rayon::slice::ParallelSliceMut;
+        entries.par_sort_by(cmp_fn);
+    } else {
+        entries.sort_by(cmp_fn);
+    }
 }
 
-pub fn format_entry_json(entry: &ListEntry) -> String {
+pub fn format_entry_json(entry: &ListEntry, opts: &FormatOptions) -> String {
     match entry {
         ListEntry::CommonPrefix(prefix) => {
             let mut map = serde_json::Map::new();
             map.insert(
                 "Prefix".to_string(),
-                serde_json::Value::String(prefix.clone()),
+                serde_json::Value::String(format_key_display(prefix, opts)),
             );
             serde_json::to_string(&map).unwrap()
         }
@@ -273,7 +525,7 @@ pub fn format_entry_json(entry: &ListEntry) -> String {
             let mut map = serde_json::Map::new();
             map.insert(
                 "Key".to_string(),
-                serde_json::Value::String(obj.key().to_string()),
+                serde_json::Value::String(format_key_display(obj.key(), opts)),
             );
             map.insert(
                 "LastModified".to_string(),
@@ -283,10 +535,15 @@ pub fn format_entry_json(entry: &ListEntry) -> String {
                 "ETag".to_string(),
                 serde_json::Value::String(obj.e_tag().to_string()),
             );
-            if let Some(algo) = obj.checksum_algorithm() {
+            if !obj.checksum_algorithm().is_empty() {
                 map.insert(
                     "ChecksumAlgorithm".to_string(),
-                    serde_json::Value::Array(vec![serde_json::Value::String(algo.to_string())]),
+                    serde_json::Value::Array(
+                        obj.checksum_algorithm()
+                            .iter()
+                            .map(|a| serde_json::Value::String(a.clone()))
+                            .collect(),
+                    ),
                 );
             }
             if let Some(ctype) = obj.checksum_type() {
@@ -348,9 +605,14 @@ pub fn format_entry_json(entry: &ListEntry) -> String {
             version_id,
             last_modified,
             is_latest,
+            owner_display_name,
+            owner_id,
         } => {
             let mut map = serde_json::Map::new();
-            map.insert("Key".to_string(), serde_json::Value::String(key.clone()));
+            map.insert(
+                "Key".to_string(),
+                serde_json::Value::String(format_key_display(key, opts)),
+            );
             map.insert(
                 "VersionId".to_string(),
                 serde_json::Value::String(version_id.clone()),
@@ -360,6 +622,20 @@ pub fn format_entry_json(entry: &ListEntry) -> String {
                 "LastModified".to_string(),
                 serde_json::Value::String(last_modified.to_rfc3339()),
             );
+            map.insert("DeleteMarker".to_string(), serde_json::json!(true));
+            if owner_id.is_some() || owner_display_name.is_some() {
+                let mut owner = serde_json::Map::new();
+                if let Some(name) = owner_display_name {
+                    owner.insert(
+                        "DisplayName".to_string(),
+                        serde_json::Value::String(name.clone()),
+                    );
+                }
+                if let Some(id) = owner_id {
+                    owner.insert("ID".to_string(), serde_json::Value::String(id.clone()));
+                }
+                map.insert("Owner".to_string(), serde_json::Value::Object(owner));
+            }
             serde_json::to_string(&map).unwrap()
         }
     }
@@ -371,9 +647,6 @@ pub fn accumulate_statistics(entry: &ListEntry, stats: &mut crate::types::Listin
         ListEntry::Object(obj) => {
             stats.total_objects += 1;
             stats.total_size += obj.size();
-            if obj.version_id().is_some() {
-                stats.total_versions += 1;
-            }
         }
         ListEntry::CommonPrefix(_) => {}
         ListEntry::DeleteMarker { .. } => {
@@ -385,7 +658,6 @@ pub fn accumulate_statistics(entry: &ListEntry, stats: &mut crate::types::Listin
 pub fn compute_statistics(entries: &[ListEntry]) -> crate::types::ListingStatistics {
     let mut total_objects: u64 = 0;
     let mut total_size: u64 = 0;
-    let mut total_versions: u64 = 0;
     let mut total_delete_markers: u64 = 0;
 
     for entry in entries {
@@ -393,9 +665,6 @@ pub fn compute_statistics(entries: &[ListEntry]) -> crate::types::ListingStatist
             ListEntry::Object(obj) => {
                 total_objects += 1;
                 total_size += obj.size();
-                if obj.version_id().is_some() {
-                    total_versions += 1;
-                }
             }
             ListEntry::CommonPrefix(_) => {}
             ListEntry::DeleteMarker { .. } => {
@@ -407,7 +676,6 @@ pub fn compute_statistics(entries: &[ListEntry]) -> crate::types::ListingStatist
     crate::types::ListingStatistics {
         total_objects,
         total_size,
-        total_versions,
         total_delete_markers,
     }
 }
@@ -422,37 +690,30 @@ pub fn format_summary(
         let mut map = serde_json::Map::new();
         let mut summary = serde_json::Map::new();
         summary.insert(
-            "total_objects".to_string(),
+            "TotalObjects".to_string(),
             serde_json::json!(stats.total_objects),
         );
-        summary.insert(
-            "total_size".to_string(),
-            serde_json::json!(stats.total_size),
-        );
+        summary.insert("TotalSize".to_string(), serde_json::json!(stats.total_size));
         if all_versions {
             summary.insert(
-                "total_versions".to_string(),
-                serde_json::json!(stats.total_versions),
-            );
-            summary.insert(
-                "total_delete_markers".to_string(),
+                "TotalDeleteMarkers".to_string(),
                 serde_json::json!(stats.total_delete_markers),
             );
         }
-        map.insert("summary".to_string(), serde_json::Value::Object(summary));
+        map.insert("Summary".to_string(), serde_json::Value::Object(summary));
         serde_json::to_string(&map).unwrap()
     } else {
-        let size_str = if human {
-            format_size(stats.total_size, true)
+        let (size_num, size_unit) = if human {
+            format_size_split(stats.total_size)
         } else {
-            format!("{} bytes", stats.total_size)
+            (stats.total_size.to_string(), "bytes".to_string())
         };
-        let mut line = format!("Total: {} objects, {}", stats.total_objects, size_str);
+        let mut line = format!(
+            "Total:\t{}\tobjects\t{}\t{}",
+            stats.total_objects, size_num, size_unit
+        );
         if all_versions {
-            line.push_str(&format!(
-                ", {} versions, {} delete markers",
-                stats.total_versions, stats.total_delete_markers
-            ));
+            line.push_str(&format!("\t{}\tdelete markers", stats.total_delete_markers));
         }
         line
     }
@@ -474,7 +735,7 @@ mod tests {
                 .unwrap(),
             e_tag: "\"e\"".to_string(),
             storage_class: Some("STANDARD".to_string()),
-            checksum_algorithm: None,
+            checksum_algorithm: vec![],
             checksum_type: None,
             owner_display_name: None,
             owner_id: None,
@@ -490,7 +751,7 @@ mod tests {
             make_entry("a.txt", 200, 2024, 2),
             make_entry("b.txt", 300, 2024, 3),
         ];
-        sort_entries(&mut entries, &[SortField::Key], false);
+        sort_entries(&mut entries, &[SortField::Key], false, usize::MAX);
         assert_eq!(entries[0].key(), "a.txt");
         assert_eq!(entries[1].key(), "b.txt");
         assert_eq!(entries[2].key(), "c.txt");
@@ -503,7 +764,7 @@ mod tests {
             make_entry("b.txt", 100, 2024, 2),
             make_entry("c.txt", 200, 2024, 3),
         ];
-        sort_entries(&mut entries, &[SortField::Size], false);
+        sort_entries(&mut entries, &[SortField::Size], false, usize::MAX);
         assert_eq!(entries[0].size(), 100);
         assert_eq!(entries[1].size(), 200);
         assert_eq!(entries[2].size(), 300);
@@ -516,7 +777,7 @@ mod tests {
             make_entry("b.txt", 100, 2024, 1),
             make_entry("c.txt", 100, 2024, 2),
         ];
-        sort_entries(&mut entries, &[SortField::Date], false);
+        sort_entries(&mut entries, &[SortField::Date], false, usize::MAX);
         assert_eq!(entries[0].key(), "b.txt");
         assert_eq!(entries[1].key(), "c.txt");
         assert_eq!(entries[2].key(), "a.txt");
@@ -528,7 +789,7 @@ mod tests {
             make_entry("a.txt", 100, 2024, 1),
             make_entry("b.txt", 200, 2024, 2),
         ];
-        sort_entries(&mut entries, &[SortField::Key], true);
+        sort_entries(&mut entries, &[SortField::Key], true, usize::MAX);
         assert_eq!(entries[0].key(), "b.txt");
         assert_eq!(entries[1].key(), "a.txt");
     }
@@ -540,7 +801,12 @@ mod tests {
             make_entry("a.txt", 100, 2024, 1),
             make_entry("b.txt", 200, 2024, 2),
         ];
-        sort_entries(&mut entries, &[SortField::Date, SortField::Key], false);
+        sort_entries(
+            &mut entries,
+            &[SortField::Date, SortField::Key],
+            false,
+            usize::MAX,
+        );
         // Same date (Jan): tiebreak by key -> a < c
         assert_eq!(entries[0].key(), "a.txt");
         assert_eq!(entries[1].key(), "c.txt");
@@ -555,12 +821,108 @@ mod tests {
             make_entry("b.txt", 100, 2024, 1),
             make_entry("c.txt", 200, 2024, 2),
         ];
-        sort_entries(&mut entries, &[SortField::Size, SortField::Date], false);
+        sort_entries(
+            &mut entries,
+            &[SortField::Size, SortField::Date],
+            false,
+            usize::MAX,
+        );
         // Same size (100): tiebreak by date -> Jan < Mar
         assert_eq!(entries[0].key(), "b.txt");
         assert_eq!(entries[1].key(), "a.txt");
         // Larger size last
         assert_eq!(entries[2].key(), "c.txt");
+    }
+
+    // ========================================================================
+    // Parallel sort (rayon) tests — use a low threshold so the parallel path
+    // is actually exercised.
+    // ========================================================================
+
+    #[test]
+    fn parallel_sort_by_key_produces_same_order_as_sequential() {
+        // 200 entries with keys in pseudo-random order
+        let mut seq_entries: Vec<ListEntry> = (0..200)
+            .map(|i| make_entry(&format!("file_{:05}.txt", (i * 37) % 200), 100, 2024, 1))
+            .collect();
+        let mut par_entries = seq_entries.clone();
+
+        // Sequential (threshold = MAX never triggers parallel)
+        sort_entries(&mut seq_entries, &[SortField::Key], false, usize::MAX);
+        // Parallel (threshold = 0 always triggers parallel)
+        sort_entries(&mut par_entries, &[SortField::Key], false, 0);
+
+        let seq_keys: Vec<&str> = seq_entries.iter().map(|e| e.key()).collect();
+        let par_keys: Vec<&str> = par_entries.iter().map(|e| e.key()).collect();
+        assert_eq!(seq_keys, par_keys);
+
+        // And verify actually sorted
+        let mut expected = par_keys.clone();
+        expected.sort();
+        assert_eq!(par_keys, expected);
+    }
+
+    #[test]
+    fn parallel_sort_by_size_reverse() {
+        let mut entries: Vec<ListEntry> = (0..500)
+            .map(|i| make_entry(&format!("f{i}.txt"), ((i * 11) % 500) as u64, 2024, 1))
+            .collect();
+
+        // threshold = 100 triggers parallel path for 500 entries
+        sort_entries(&mut entries, &[SortField::Size], true, 100);
+
+        // Verify sorted descending by size
+        for window in entries.windows(2) {
+            assert!(
+                window[0].size() >= window[1].size(),
+                "not sorted descending: {} then {}",
+                window[0].size(),
+                window[1].size()
+            );
+        }
+    }
+
+    #[test]
+    fn parallel_sort_multi_field() {
+        // Mix of sizes and dates; sort by Size then Date
+        let mut entries = vec![
+            make_entry("a.txt", 100, 2024, 3),
+            make_entry("b.txt", 100, 2024, 1),
+            make_entry("c.txt", 200, 2024, 2),
+            make_entry("d.txt", 100, 2024, 2),
+            make_entry("e.txt", 200, 2024, 1),
+        ];
+        sort_entries(
+            &mut entries,
+            &[SortField::Size, SortField::Date],
+            false,
+            0, // force parallel
+        );
+        // Size 100: dates Jan, Feb, Mar → b, d, a
+        // Size 200: dates Jan, Feb → e, c
+        let keys: Vec<&str> = entries.iter().map(|e| e.key()).collect();
+        assert_eq!(keys, vec!["b.txt", "d.txt", "a.txt", "e.txt", "c.txt"]);
+    }
+
+    #[test]
+    fn parallel_sort_threshold_boundary() {
+        // Exactly at threshold should use parallel; below should use sequential.
+        // Both must produce identical results.
+        let mut at_threshold: Vec<ListEntry> = (0..10)
+            .map(|i| make_entry(&format!("k{}", 9 - i), 100, 2024, 1))
+            .collect();
+        let mut below_threshold = at_threshold.clone();
+
+        sort_entries(&mut at_threshold, &[SortField::Key], false, 10);
+        sort_entries(&mut below_threshold, &[SortField::Key], false, 11);
+
+        let at_keys: Vec<&str> = at_threshold.iter().map(|e| e.key()).collect();
+        let below_keys: Vec<&str> = below_threshold.iter().map(|e| e.key()).collect();
+        assert_eq!(at_keys, below_keys);
+        assert_eq!(
+            at_keys,
+            vec!["k0", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "k9"]
+        );
     }
 
     #[test]
@@ -570,7 +932,7 @@ mod tests {
             make_entry("a.txt", 100, 2024, 3),
             make_entry("a.txt", 200, 2024, 1),
         ];
-        sort_entries(&mut entries, &[SortField::Key], false);
+        sort_entries(&mut entries, &[SortField::Key], false, usize::MAX);
         // Both have same key, no tiebreaker -- stable sort preserves input order
         assert_eq!(entries[0].size(), 100);
         assert_eq!(entries[1].size(), 200);
@@ -641,7 +1003,7 @@ mod tests {
             e_tag: "\"e\"".to_string(),
             is_latest: true,
             storage_class: Some("STANDARD".to_string()),
-            checksum_algorithm: None,
+            checksum_algorithm: vec![],
             checksum_type: None,
             owner_display_name: None,
             owner_id: None,
@@ -659,6 +1021,60 @@ mod tests {
     }
 
     #[test]
+    fn format_text_common_prefix_aligns_with_versioned_object() {
+        // In --all-versions mode, CommonPrefix and versioned Object rows must
+        // have the same number of tab-delimited columns.
+        let obj = ListEntry::Object(S3Object::Versioning {
+            key: "logs/file.txt".to_string(),
+            version_id: "v1".to_string(),
+            size: 100,
+            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            e_tag: "\"e\"".to_string(),
+            is_latest: true,
+            storage_class: Some("STANDARD".to_string()),
+            checksum_algorithm: vec![],
+            checksum_type: None,
+            owner_display_name: None,
+            owner_id: None,
+            is_restore_in_progress: None,
+            restore_expiry_date: None,
+        });
+        let prefix = ListEntry::CommonPrefix("logs/".to_string());
+
+        let opts = FormatOptions {
+            all_versions: true,
+            show_is_latest: true,
+            ..Default::default()
+        };
+        let obj_line = format_entry(&obj, &opts);
+        let prefix_line = format_entry(&prefix, &opts);
+        let obj_cols: Vec<&str> = obj_line.split('\t').collect();
+        let prefix_cols: Vec<&str> = prefix_line.split('\t').collect();
+        assert_eq!(
+            obj_cols.len(),
+            prefix_cols.len(),
+            "column count mismatch between Object ({:?}) and CommonPrefix ({:?})",
+            obj_cols,
+            prefix_cols
+        );
+    }
+
+    #[test]
+    fn format_text_common_prefix_no_version_placeholder_without_all_versions() {
+        // Without --all-versions, CommonPrefix should NOT emit a version_id
+        // placeholder. Verify column count matches a non-versioned Object.
+        let obj = make_entry("file.txt", 100, 2024, 1);
+        let prefix = ListEntry::CommonPrefix("logs/".to_string());
+
+        let opts = FormatOptions::default();
+        let obj_line = format_entry(&obj, &opts);
+        let prefix_line = format_entry(&prefix, &opts);
+        let obj_cols: Vec<&str> = obj_line.split('\t').collect();
+        let prefix_cols: Vec<&str> = prefix_line.split('\t').collect();
+        assert_eq!(obj_cols.len(), prefix_cols.len());
+    }
+
+    #[test]
     fn format_text_delete_marker() {
         // Spec: 2024-01-16T09:00:00Z     DELETE def456-version-id readme.txt
         let entry = ListEntry::DeleteMarker {
@@ -666,6 +1082,8 @@ mod tests {
             version_id: "def456-version-id".to_string(),
             last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 16, 9, 0, 0).unwrap(),
             is_latest: false,
+            owner_display_name: None,
+            owner_id: None,
         };
         let opts = FormatOptions::default();
         let line = format_entry(&entry, &opts);
@@ -680,12 +1098,231 @@ mod tests {
     }
 
     #[test]
+    fn format_text_delete_marker_emits_owner_when_show_owner() {
+        // Regression: previously the DeleteMarker branch destructured owner
+        // fields with `..` and pushed two empty strings, silently losing
+        // owner data in --show-owner mode.
+        let entry = ListEntry::DeleteMarker {
+            key: "readme.txt".to_string(),
+            version_id: "v1".to_string(),
+            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            is_latest: false,
+            owner_display_name: Some("alice".to_string()),
+            owner_id: Some("id-123".to_string()),
+        };
+        let opts = FormatOptions {
+            all_versions: true,
+            show_owner: true,
+            ..Default::default()
+        };
+        let line = format_entry(&entry, &opts);
+        assert!(
+            line.contains("alice"),
+            "expected owner display name in output, got: {line:?}"
+        );
+        assert!(
+            line.contains("id-123"),
+            "expected owner id in output, got: {line:?}"
+        );
+    }
+
+    // ========================================================================
+    // Control-char escaping in text output (injection defense)
+    // ========================================================================
+
+    #[test]
+    fn escape_control_chars_passes_plain_ascii() {
+        let s = "hello/world.txt";
+        // Should return a borrowed Cow (zero-alloc) for plain input
+        assert!(matches!(
+            escape_control_chars(s),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        assert_eq!(escape_control_chars(s).as_ref(), "hello/world.txt");
+    }
+
+    #[test]
+    fn escape_control_chars_replaces_newline_and_tab() {
+        assert_eq!(escape_control_chars("a\nb").as_ref(), "a\\x0ab");
+        assert_eq!(escape_control_chars("a\tb").as_ref(), "a\\x09b");
+        assert_eq!(escape_control_chars("a\rb").as_ref(), "a\\x0db");
+    }
+
+    #[test]
+    fn escape_control_chars_replaces_ansi_escape() {
+        // ESC = 0x1b — the classic terminal injection vector
+        assert_eq!(escape_control_chars("\x1b[2Jevil").as_ref(), "\\x1b[2Jevil");
+    }
+
+    #[test]
+    fn escape_control_chars_replaces_del() {
+        assert_eq!(escape_control_chars("a\x7fb").as_ref(), "a\\x7fb");
+    }
+
+    #[test]
+    fn escape_control_chars_leaves_printable_utf8_alone() {
+        // Multi-byte UTF-8 should not be escaped (code points >= 0x80).
+        // Goes through the fast-path (Borrowed) so no iteration at all.
+        let s = "héllo-日本語.txt";
+        assert_eq!(escape_control_chars(s).as_ref(), s);
+    }
+
+    #[test]
+    fn escape_control_chars_preserves_utf8_around_control_chars() {
+        // Regression: the slow path must iterate by char, not by byte.
+        // A byte-level loop would push each continuation byte of a
+        // multi-byte UTF-8 sequence as a separate Rust `char`,
+        // producing mojibake like "æ—¥" instead of "日".
+        assert_eq!(escape_control_chars("日\n本").as_ref(), "日\\x0a本");
+        assert_eq!(escape_control_chars("résumé\t").as_ref(), "résumé\\x09");
+        // 4-byte UTF-8 (emoji) plus a control char
+        assert_eq!(escape_control_chars("🦀\x1bend").as_ref(), "🦀\\x1bend");
+    }
+
+    #[test]
+    fn format_text_escapes_malicious_key_by_default() {
+        // Regression: a key containing newline and tab must not be able
+        // to forge a phantom row in tab-delimited output.
+        let evil_key = "innocent.txt\n2024-01-01T00:00:00Z\t0\tphantom.txt";
+        let entry = ListEntry::Object(S3Object::NotVersioning {
+            key: evil_key.to_string(),
+            size: 100,
+            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            e_tag: "\"e\"".to_string(),
+            storage_class: Some("STANDARD".to_string()),
+            checksum_algorithm: vec![],
+            checksum_type: None,
+            owner_display_name: None,
+            owner_id: None,
+            is_restore_in_progress: None,
+            restore_expiry_date: None,
+        });
+        let opts = FormatOptions::default();
+        let line = format_entry(&entry, &opts);
+        // Raw \n must not appear in the output line
+        assert!(
+            !line.contains('\n'),
+            "newline should have been escaped, got: {line:?}"
+        );
+        // The escaped form should be present
+        assert!(line.contains("\\x0a"));
+    }
+
+    #[test]
+    fn format_text_preserves_malicious_key_when_raw_output() {
+        // With --raw-output, escaping is disabled — user opted in.
+        let evil_key = "evil\nkey";
+        let entry = ListEntry::Object(S3Object::NotVersioning {
+            key: evil_key.to_string(),
+            size: 100,
+            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            e_tag: "\"e\"".to_string(),
+            storage_class: Some("STANDARD".to_string()),
+            checksum_algorithm: vec![],
+            checksum_type: None,
+            owner_display_name: None,
+            owner_id: None,
+            is_restore_in_progress: None,
+            restore_expiry_date: None,
+        });
+        let opts = FormatOptions {
+            raw_output: true,
+            ..Default::default()
+        };
+        let line = format_entry(&entry, &opts);
+        assert!(line.contains("evil\nkey"));
+    }
+
+    #[test]
+    fn format_text_escapes_owner_fields() {
+        let entry = ListEntry::Object(S3Object::NotVersioning {
+            key: "file.txt".to_string(),
+            size: 100,
+            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            e_tag: "\"e\"".to_string(),
+            storage_class: Some("STANDARD".to_string()),
+            checksum_algorithm: vec![],
+            checksum_type: None,
+            owner_display_name: Some("alice\x1b[31m".to_string()),
+            owner_id: None,
+            is_restore_in_progress: None,
+            restore_expiry_date: None,
+        });
+        let opts = FormatOptions {
+            show_owner: true,
+            ..Default::default()
+        };
+        let line = format_entry(&entry, &opts);
+        assert!(!line.contains('\x1b'));
+        assert!(line.contains("\\x1b"));
+    }
+
+    #[test]
+    fn format_text_escapes_delete_marker_owner() {
+        let entry = ListEntry::DeleteMarker {
+            key: "file.txt".to_string(),
+            version_id: "v1".to_string(),
+            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            is_latest: false,
+            owner_display_name: Some("alice\nbob".to_string()),
+            owner_id: Some("id\tnext".to_string()),
+        };
+        let opts = FormatOptions {
+            all_versions: true,
+            show_owner: true,
+            ..Default::default()
+        };
+        let line = format_entry(&entry, &opts);
+        assert!(!line.contains('\n'));
+        assert!(line.contains("alice\\x0abob"));
+        assert!(line.contains("id\\x09next"));
+    }
+
+    #[test]
+    fn format_text_escapes_common_prefix() {
+        let entry = ListEntry::CommonPrefix("logs\n/evil/".to_string());
+        let opts = FormatOptions::default();
+        let line = format_entry(&entry, &opts);
+        assert!(!line.contains('\n'));
+        assert!(line.contains("logs\\x0a/evil/"));
+    }
+
+    #[test]
+    fn format_json_preserves_control_chars() {
+        // JSON output leaves control chars to serde_json, which escapes
+        // them as \u00XX. The raw bytes should never appear as literal
+        // newlines/tabs in the output either way.
+        let entry = ListEntry::Object(S3Object::NotVersioning {
+            key: "evil\nkey".to_string(),
+            size: 100,
+            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            e_tag: "\"e\"".to_string(),
+            storage_class: Some("STANDARD".to_string()),
+            checksum_algorithm: vec![],
+            checksum_type: None,
+            owner_display_name: None,
+            owner_id: None,
+            is_restore_in_progress: None,
+            restore_expiry_date: None,
+        });
+        let opts = FormatOptions::default();
+        let json = format_entry_json(&entry, &opts);
+        // serde_json escapes the literal \n in the JSON *string*; the
+        // final output line contains "\n" as two characters but no raw
+        // newline byte. Parse it back to confirm the original value is
+        // still exactly "evil\nkey".
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["Key"], "evil\nkey");
+        assert!(!json.contains('\n'));
+    }
+
+    #[test]
     fn sort_common_prefix_by_size_sorts_as_zero() {
         let mut entries = vec![
             make_entry("a.txt", 100, 2024, 1),
             ListEntry::CommonPrefix("logs/".to_string()),
         ];
-        sort_entries(&mut entries, &[SortField::Size], false);
+        sort_entries(&mut entries, &[SortField::Size], false, usize::MAX);
         assert_eq!(entries[0].key(), "logs/");
         assert_eq!(entries[1].key(), "a.txt");
     }
@@ -693,7 +1330,8 @@ mod tests {
     #[test]
     fn format_ndjson_object() {
         let entry = make_entry("readme.txt", 1234, 2024, 1);
-        let json = format_entry_json(&entry);
+        let opts = FormatOptions::default();
+        let json = format_entry_json(&entry, &opts);
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["Key"], "readme.txt");
         assert_eq!(parsed["Size"], 1234);
@@ -704,7 +1342,8 @@ mod tests {
     #[test]
     fn format_ndjson_common_prefix() {
         let entry = ListEntry::CommonPrefix("logs/".to_string());
-        let json = format_entry_json(&entry);
+        let opts = FormatOptions::default();
+        let json = format_entry_json(&entry, &opts);
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["Prefix"], "logs/");
     }
@@ -716,12 +1355,80 @@ mod tests {
             version_id: "v1".to_string(),
             last_modified: chrono::Utc::now(),
             is_latest: true,
+            owner_display_name: None,
+            owner_id: None,
         };
-        let json = format_entry_json(&entry);
+        let opts = FormatOptions::default();
+        let json = format_entry_json(&entry, &opts);
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["Key"], "deleted.txt");
         assert_eq!(parsed["VersionId"], "v1");
         assert_eq!(parsed["IsLatest"], true);
+        assert_eq!(parsed["DeleteMarker"], true);
+    }
+
+    #[test]
+    fn format_ndjson_object_relative_path() {
+        let entry = make_entry("logs/2024/readme.txt", 1234, 2024, 1);
+        let opts = FormatOptions {
+            show_relative_path: true,
+            prefix: Some("logs/2024/".to_string()),
+            ..FormatOptions::default()
+        };
+        let json = format_entry_json(&entry, &opts);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["Key"], "readme.txt");
+    }
+
+    #[test]
+    fn format_ndjson_common_prefix_relative_path() {
+        let entry = ListEntry::CommonPrefix("logs/2024/subdir/".to_string());
+        let opts = FormatOptions {
+            show_relative_path: true,
+            prefix: Some("logs/2024/".to_string()),
+            ..FormatOptions::default()
+        };
+        let json = format_entry_json(&entry, &opts);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["Prefix"], "subdir/");
+    }
+
+    #[test]
+    fn format_ndjson_delete_marker_relative_path() {
+        let entry = ListEntry::DeleteMarker {
+            key: "logs/2024/deleted.txt".to_string(),
+            version_id: "v1".to_string(),
+            last_modified: chrono::Utc::now(),
+            is_latest: true,
+            owner_display_name: None,
+            owner_id: None,
+        };
+        let opts = FormatOptions {
+            show_relative_path: true,
+            prefix: Some("logs/2024/".to_string()),
+            ..FormatOptions::default()
+        };
+        let json = format_entry_json(&entry, &opts);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["Key"], "deleted.txt");
+    }
+
+    #[test]
+    fn format_ndjson_delete_marker_with_owner() {
+        let entry = ListEntry::DeleteMarker {
+            key: "deleted.txt".to_string(),
+            version_id: "v1".to_string(),
+            last_modified: chrono::Utc::now(),
+            is_latest: true,
+            owner_display_name: Some("alice".to_string()),
+            owner_id: Some("id123".to_string()),
+        };
+        let opts = FormatOptions::default();
+        let json = format_entry_json(&entry, &opts);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["Owner"]["DisplayName"], "alice");
+        assert_eq!(parsed["Owner"]["ID"], "id123");
+        assert_eq!(parsed["DeleteMarker"], true);
     }
 
     #[test]
@@ -729,12 +1436,22 @@ mod tests {
         let stats = crate::types::ListingStatistics {
             total_objects: 42,
             total_size: 5678901,
-            total_versions: 0,
             total_delete_markers: 0,
         };
         let summary = format_summary(&stats, false, true, false);
-        assert!(summary.contains("42 objects"));
-        assert!(summary.contains("5.4MiB"));
+        // Tab-delimited: Total:\t42\tobjects\t5.4\tMiB
+        assert_eq!(summary, "Total:\t42\tobjects\t5.4\tMiB");
+    }
+
+    #[test]
+    fn format_summary_text_non_human() {
+        let stats = crate::types::ListingStatistics {
+            total_objects: 200002,
+            total_size: 9578216,
+            total_delete_markers: 0,
+        };
+        let summary = format_summary(&stats, false, false, false);
+        assert_eq!(summary, "Total:\t200002\tobjects\t9578216\tbytes");
     }
 
     #[test]
@@ -742,13 +1459,12 @@ mod tests {
         let stats = crate::types::ListingStatistics {
             total_objects: 10,
             total_size: 1024,
-            total_versions: 0,
             total_delete_markers: 0,
         };
         let summary = format_summary(&stats, true, false, false);
         let parsed: serde_json::Value = serde_json::from_str(&summary).unwrap();
-        assert_eq!(parsed["summary"]["total_objects"], 10);
-        assert_eq!(parsed["summary"]["total_size"], 1024);
+        assert_eq!(parsed["Summary"]["TotalObjects"], 10);
+        assert_eq!(parsed["Summary"]["TotalSize"], 1024);
     }
 
     #[test]
@@ -756,12 +1472,10 @@ mod tests {
         let stats = crate::types::ListingStatistics {
             total_objects: 10,
             total_size: 1024,
-            total_versions: 15,
             total_delete_markers: 3,
         };
         let summary = format_summary(&stats, false, false, true);
-        assert!(summary.contains("15 versions"));
-        assert!(summary.contains("3 delete markers"));
+        assert!(summary.contains("\t3\tdelete markers"));
     }
 
     #[test]
@@ -803,6 +1517,260 @@ mod tests {
         assert!(!line.contains("logs/2024/"));
     }
 
+    fn make_entry_with_checksums(key: &str, checksums: Vec<&str>) -> ListEntry {
+        ListEntry::Object(S3Object::NotVersioning {
+            key: key.to_string(),
+            size: 100,
+            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            e_tag: "\"e\"".to_string(),
+            storage_class: Some("STANDARD".to_string()),
+            checksum_algorithm: checksums.iter().map(|s| s.to_string()).collect(),
+            checksum_type: None,
+            owner_display_name: None,
+            owner_id: None,
+            is_restore_in_progress: None,
+            restore_expiry_date: None,
+        })
+    }
+
+    #[test]
+    fn format_text_multiple_checksum_algorithms() {
+        let entry = make_entry_with_checksums("file.txt", vec!["CRC32", "SHA256"]);
+        let opts = FormatOptions {
+            show_checksum_algorithm: true,
+            ..Default::default()
+        };
+        let line = format_entry(&entry, &opts);
+        let fields: Vec<&str> = line.split('\t').collect();
+        // date \t size \t checksum_algorithm \t key
+        assert_eq!(fields.len(), 4);
+        assert_eq!(fields[2], "CRC32,SHA256");
+    }
+
+    #[test]
+    fn format_text_single_checksum_algorithm() {
+        let entry = make_entry_with_checksums("file.txt", vec!["SHA256"]);
+        let opts = FormatOptions {
+            show_checksum_algorithm: true,
+            ..Default::default()
+        };
+        let line = format_entry(&entry, &opts);
+        let fields: Vec<&str> = line.split('\t').collect();
+        assert_eq!(fields[2], "SHA256");
+    }
+
+    #[test]
+    fn format_text_no_checksum_algorithm() {
+        let entry = make_entry_with_checksums("file.txt", vec![]);
+        let opts = FormatOptions {
+            show_checksum_algorithm: true,
+            ..Default::default()
+        };
+        let line = format_entry(&entry, &opts);
+        let fields: Vec<&str> = line.split('\t').collect();
+        assert_eq!(fields[2], "");
+    }
+
+    #[test]
+    fn format_json_multiple_checksum_algorithms() {
+        let entry = make_entry_with_checksums("file.txt", vec!["CRC32", "SHA256"]);
+        let opts = FormatOptions::default();
+        let json_str = format_entry_json(&entry, &opts);
+        let val: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        let algos = val["ChecksumAlgorithm"].as_array().unwrap();
+        assert_eq!(algos.len(), 2);
+        assert_eq!(algos[0], "CRC32");
+        assert_eq!(algos[1], "SHA256");
+    }
+
+    #[test]
+    fn format_json_single_checksum_algorithm() {
+        let entry = make_entry_with_checksums("file.txt", vec!["CRC64NVME"]);
+        let opts = FormatOptions::default();
+        let json_str = format_entry_json(&entry, &opts);
+        let val: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        let algos = val["ChecksumAlgorithm"].as_array().unwrap();
+        assert_eq!(algos.len(), 1);
+        assert_eq!(algos[0], "CRC64NVME");
+    }
+
+    #[test]
+    fn format_json_no_checksum_algorithm() {
+        let entry = make_entry_with_checksums("file.txt", vec![]);
+        let opts = FormatOptions::default();
+        let json_str = format_entry_json(&entry, &opts);
+        let val: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert!(val.get("ChecksumAlgorithm").is_none());
+    }
+
+    // ========================================================================
+    // Cancellation tests for run_streaming and run_aggregate
+    // ========================================================================
+
+    /// A `Write` impl backed by a shared Vec<u8> so tests can inspect what the
+    /// aggregator wrote after `run()` consumes it.
+    #[derive(Clone)]
+    struct SharedBuf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl SharedBuf {
+        fn new() -> Self {
+            Self(std::sync::Arc::new(std::sync::Mutex::new(Vec::new())))
+        }
+        fn as_string(&self) -> String {
+            String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+        }
+    }
+
+    impl std::io::Write for SharedBuf {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn default_aggregator_config(
+        no_sort: bool,
+        summary: bool,
+        token: crate::types::token::PipelineCancellationToken,
+    ) -> AggregatorConfig {
+        AggregatorConfig {
+            use_json: false,
+            no_sort,
+            sort_fields: vec![SortField::Key],
+            reverse: false,
+            summary,
+            human: false,
+            all_versions: false,
+            parallel_sort_threshold: usize::MAX,
+            cancellation_token: token,
+        }
+    }
+
+    #[tokio::test]
+    async fn run_aggregate_skips_output_when_cancelled_mid_stream() {
+        let (tx, rx) = mpsc::channel(10);
+        let buf = SharedBuf::new();
+        let token = crate::types::token::create_pipeline_cancellation_token();
+        let config = default_aggregator_config(false, true, token.clone());
+        let aggregator = Aggregator::new(rx, buf.clone(), FormatOptions::default(), config);
+
+        // Send a few entries, then cancel, then close the channel.
+        tx.send(make_entry("a.txt", 100, 2024, 1)).await.unwrap();
+        tx.send(make_entry("b.txt", 200, 2024, 2)).await.unwrap();
+        token.cancel();
+        tx.send(make_entry("c.txt", 300, 2024, 3)).await.unwrap();
+        drop(tx);
+
+        aggregator.run().await.unwrap();
+
+        // Nothing should have been written: no entries, no summary.
+        assert_eq!(
+            buf.as_string(),
+            "",
+            "expected empty output on mid-stream cancellation, got: {:?}",
+            buf.as_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn run_aggregate_skips_output_when_cancelled_after_close() {
+        let (tx, rx) = mpsc::channel(10);
+        let buf = SharedBuf::new();
+        let token = crate::types::token::create_pipeline_cancellation_token();
+        let config = default_aggregator_config(false, true, token.clone());
+        let aggregator = Aggregator::new(rx, buf.clone(), FormatOptions::default(), config);
+
+        // Send entries and close the channel normally, then cancel before run
+        // gets a chance to sort/write.
+        tx.send(make_entry("a.txt", 100, 2024, 1)).await.unwrap();
+        drop(tx);
+        token.cancel();
+
+        aggregator.run().await.unwrap();
+
+        assert_eq!(
+            buf.as_string(),
+            "",
+            "expected empty output when cancelled after sender close, got: {:?}",
+            buf.as_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn run_aggregate_emits_output_when_not_cancelled() {
+        // Sanity check: the cancellation guards don't suppress output in the
+        // happy path.
+        let (tx, rx) = mpsc::channel(10);
+        let buf = SharedBuf::new();
+        let token = crate::types::token::create_pipeline_cancellation_token();
+        let config = default_aggregator_config(false, true, token);
+        let aggregator = Aggregator::new(rx, buf.clone(), FormatOptions::default(), config);
+
+        tx.send(make_entry("a.txt", 100, 2024, 1)).await.unwrap();
+        drop(tx);
+
+        aggregator.run().await.unwrap();
+
+        let out = buf.as_string();
+        assert!(
+            out.contains("a.txt"),
+            "expected a.txt in output, got: {out:?}"
+        );
+        assert!(
+            out.contains("Total:"),
+            "expected summary in output, got: {out:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_streaming_skips_summary_on_cancellation() {
+        let (tx, rx) = mpsc::channel(10);
+        let buf = SharedBuf::new();
+        let token = crate::types::token::create_pipeline_cancellation_token();
+        let config = default_aggregator_config(true, true, token.clone());
+        let aggregator = Aggregator::new(rx, buf.clone(), FormatOptions::default(), config);
+
+        // Send one entry, let it stream out, then cancel.
+        tx.send(make_entry("a.txt", 100, 2024, 1)).await.unwrap();
+        // Give the aggregator a moment to process before cancelling.
+        let handle = tokio::spawn(async move { aggregator.run().await });
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        token.cancel();
+        // Try to send another entry; this wakes the recv loop to observe cancel.
+        let _ = tx.send(make_entry("b.txt", 200, 2024, 2)).await;
+        drop(tx);
+        handle.await.unwrap().unwrap();
+
+        let out = buf.as_string();
+        // The first entry may or may not have been streamed (timing-dependent),
+        // but the summary must not be present.
+        assert!(
+            !out.contains("Total:"),
+            "summary should be omitted when cancelled, got: {out:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_streaming_emits_summary_when_not_cancelled() {
+        let (tx, rx) = mpsc::channel(10);
+        let buf = SharedBuf::new();
+        let token = crate::types::token::create_pipeline_cancellation_token();
+        let config = default_aggregator_config(true, true, token);
+        let aggregator = Aggregator::new(rx, buf.clone(), FormatOptions::default(), config);
+
+        tx.send(make_entry("a.txt", 100, 2024, 1)).await.unwrap();
+        drop(tx);
+
+        aggregator.run().await.unwrap();
+
+        let out = buf.as_string();
+        assert!(out.contains("a.txt"));
+        assert!(out.contains("Total:"));
+    }
+
     #[test]
     fn compute_statistics_counts_correctly() {
         let entries = vec![
@@ -814,6 +1782,8 @@ mod tests {
                 version_id: "v1".to_string(),
                 last_modified: chrono::Utc::now(),
                 is_latest: true,
+                owner_display_name: None,
+                owner_id: None,
             },
         ];
         let stats = compute_statistics(&entries);

@@ -21,9 +21,9 @@ impl SmallerSizeFilter {
 }
 
 impl ObjectFilter for SmallerSizeFilter {
-    fn matches(&self, entry: &ListEntry) -> bool {
+    fn matches(&self, entry: &ListEntry) -> anyhow::Result<bool> {
         if matches!(entry, ListEntry::DeleteMarker { .. }) {
-            return true;
+            return Ok(true);
         }
         let size = entry.size();
         if size >= self.threshold {
@@ -36,9 +36,9 @@ impl ObjectFilter for SmallerSizeFilter {
                 config_size = self.threshold,
                 "entry filtered."
             );
-            return false;
+            return Ok(false);
         }
-        true
+        Ok(true)
     }
 }
 
@@ -55,7 +55,7 @@ mod tests {
             last_modified: chrono::Utc::now(),
             e_tag: "\"e\"".to_string(),
             storage_class: None,
-            checksum_algorithm: None,
+            checksum_algorithm: vec![],
             checksum_type: None,
             owner_display_name: None,
             owner_id: None,
@@ -67,9 +67,9 @@ mod tests {
     #[test]
     fn matches_smaller_entries() {
         let filter = SmallerSizeFilter::new(100);
-        assert!(filter.matches(&make_entry_with_size(50)));
-        assert!(!filter.matches(&make_entry_with_size(100)));
-        assert!(!filter.matches(&make_entry_with_size(200)));
+        assert!(filter.matches(&make_entry_with_size(50)).unwrap());
+        assert!(!filter.matches(&make_entry_with_size(100)).unwrap());
+        assert!(!filter.matches(&make_entry_with_size(200)).unwrap());
     }
 
     #[test]
@@ -80,46 +80,48 @@ mod tests {
             version_id: "v1".to_string(),
             last_modified: chrono::Utc::now(),
             is_latest: true,
+            owner_display_name: None,
+            owner_id: None,
         };
-        assert!(filter.matches(&entry));
+        assert!(filter.matches(&entry).unwrap());
     }
 
     #[test]
     fn zero_size_smaller_than_threshold() {
         let filter = SmallerSizeFilter::new(1);
-        assert!(filter.matches(&make_entry_with_size(0)));
+        assert!(filter.matches(&make_entry_with_size(0)).unwrap());
     }
 
     #[test]
     fn zero_size_not_smaller_than_zero_threshold() {
         let filter = SmallerSizeFilter::new(0);
         // 0 >= 0, so NOT smaller
-        assert!(!filter.matches(&make_entry_with_size(0)));
+        assert!(!filter.matches(&make_entry_with_size(0)).unwrap());
     }
 
     #[test]
     fn size_one_below_threshold() {
         let filter = SmallerSizeFilter::new(100);
-        assert!(filter.matches(&make_entry_with_size(99)));
+        assert!(filter.matches(&make_entry_with_size(99)).unwrap());
     }
 
     #[test]
     fn size_one_above_threshold() {
         let filter = SmallerSizeFilter::new(100);
-        assert!(!filter.matches(&make_entry_with_size(101)));
+        assert!(!filter.matches(&make_entry_with_size(101)).unwrap());
     }
 
     #[test]
     fn threshold_at_u64_max() {
         let filter = SmallerSizeFilter::new(u64::MAX);
         // Any finite size < u64::MAX
-        assert!(filter.matches(&make_entry_with_size(u64::MAX - 1)));
+        assert!(filter.matches(&make_entry_with_size(u64::MAX - 1)).unwrap());
     }
 
     #[test]
     fn size_at_u64_max_equals_threshold() {
         let filter = SmallerSizeFilter::new(u64::MAX);
         // Equal, so NOT smaller
-        assert!(!filter.matches(&make_entry_with_size(u64::MAX)));
+        assert!(!filter.matches(&make_entry_with_size(u64::MAX)).unwrap());
     }
 }

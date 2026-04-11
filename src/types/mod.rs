@@ -42,6 +42,32 @@ pub struct AccessKeys {
     pub session_token: Option<String>,
 }
 
+impl AccessKeys {
+    /// Return a masked form of the access key ID safe to log.
+    ///
+    /// For a 20-character AWS access key ID (e.g. `AKIAIOSFODNN7EXAMPLE`),
+    /// returns `AKIA************MPLE` — the first 4 characters (which
+    /// identify the credential type: `AKIA` for long-term IAM user keys,
+    /// `ASIA` for STS temporary credentials, `AROA` for role credentials,
+    /// etc.) and the last 4 characters, with the middle replaced by
+    /// asterisks. Keys shorter than 8 characters are fully redacted to
+    /// avoid accidentally revealing short secrets.
+    pub fn masked_access_key(&self) -> String {
+        mask_access_key(&self.access_key)
+    }
+}
+
+fn mask_access_key(key: &str) -> String {
+    let len = key.chars().count();
+    if len < 8 {
+        return "** redacted **".to_string();
+    }
+    let prefix: String = key.chars().take(4).collect();
+    let suffix: String = key.chars().skip(len - 4).collect();
+    let masked_middle = "*".repeat(len - 8);
+    format!("{prefix}{masked_middle}{suffix}")
+}
+
 impl std::fmt::Debug for AccessKeys {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let session_token = self
@@ -49,7 +75,7 @@ impl std::fmt::Debug for AccessKeys {
             .as_ref()
             .map_or("None", |_| "** redacted **");
         f.debug_struct("AccessKeys")
-            .field("access_key", &self.access_key)
+            .field("access_key", &self.masked_access_key())
             .field("secret_access_key", &"** redacted **")
             .field("session_token", &session_token)
             .finish()
@@ -141,6 +167,8 @@ pub enum ListEntry {
         version_id: String,
         last_modified: DateTime<Utc>,
         is_latest: bool,
+        owner_display_name: Option<String>,
+        owner_id: Option<String>,
     },
 }
 
@@ -156,7 +184,7 @@ pub enum S3Object {
         last_modified: DateTime<Utc>,
         e_tag: String,
         storage_class: Option<String>,
-        checksum_algorithm: Option<String>,
+        checksum_algorithm: Vec<String>,
         checksum_type: Option<String>,
         owner_display_name: Option<String>,
         owner_id: Option<String>,
@@ -171,7 +199,7 @@ pub enum S3Object {
         e_tag: String,
         is_latest: bool,
         storage_class: Option<String>,
-        checksum_algorithm: Option<String>,
+        checksum_algorithm: Vec<String>,
         checksum_type: Option<String>,
         owner_display_name: Option<String>,
         owner_id: Option<String>,
@@ -216,14 +244,14 @@ impl S3Object {
         }
     }
 
-    pub fn checksum_algorithm(&self) -> Option<&str> {
+    pub fn checksum_algorithm(&self) -> &[String] {
         match self {
             Self::NotVersioning {
                 checksum_algorithm, ..
-            } => checksum_algorithm.as_deref(),
+            } => checksum_algorithm,
             Self::Versioning {
                 checksum_algorithm, ..
-            } => checksum_algorithm.as_deref(),
+            } => checksum_algorithm,
         }
     }
 
@@ -338,7 +366,6 @@ impl ListEntry {
 pub struct ListingStatistics {
     pub total_objects: u64,
     pub total_size: u64,
-    pub total_versions: u64,
     pub total_delete_markers: u64,
 }
 
@@ -349,6 +376,54 @@ pub struct ListingStatistics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn masked_access_key_preserves_prefix_and_suffix() {
+        // Typical 20-char AWS access key ID
+        assert_eq!(
+            mask_access_key("AKIAIOSFODNN7EXAMPLE"),
+            "AKIA************MPLE"
+        );
+    }
+
+    #[test]
+    fn masked_access_key_preserves_sts_prefix() {
+        // STS temporary credentials start with ASIA
+        assert_eq!(
+            mask_access_key("ASIAIOSFODNN7EXAMPLE"),
+            "ASIA************MPLE"
+        );
+    }
+
+    #[test]
+    fn masked_access_key_fully_redacts_short_values() {
+        assert_eq!(mask_access_key(""), "** redacted **");
+        assert_eq!(mask_access_key("AKIA"), "** redacted **");
+        assert_eq!(mask_access_key("AKIA123"), "** redacted **");
+    }
+
+    #[test]
+    fn masked_access_key_handles_exact_minimum_length() {
+        // 8 characters: 4 prefix + 0 middle + 4 suffix, no asterisks
+        assert_eq!(mask_access_key("ABCD1234"), "ABCD1234");
+    }
+
+    #[test]
+    fn access_keys_debug_masks_access_key() {
+        let keys = AccessKeys {
+            access_key: "AKIAIOSFODNN7EXAMPLE".to_string(),
+            secret_access_key: "supersecret".to_string(),
+            session_token: Some("XYZZY-secret-token".to_string()),
+        };
+        let rendered = format!("{keys:?}");
+        // Masked access key appears, raw form does not
+        assert!(rendered.contains("AKIA************MPLE"));
+        assert!(!rendered.contains("AKIAIOSFODNN7EXAMPLE"));
+        // Secret is still fully redacted
+        assert!(rendered.contains("** redacted **"));
+        assert!(!rendered.contains("supersecret"));
+        assert!(!rendered.contains("XYZZY-secret-token"));
+    }
 
     #[test]
     fn s3_target_parse_bucket_only() {
@@ -422,7 +497,7 @@ mod tests {
             last_modified: Utc::now(),
             e_tag: "\"abc123\"".to_string(),
             storage_class: Some("STANDARD".to_string()),
-            checksum_algorithm: None,
+            checksum_algorithm: vec![],
             checksum_type: None,
             owner_display_name: None,
             owner_id: None,
@@ -447,7 +522,7 @@ mod tests {
             e_tag: "\"def456\"".to_string(),
             is_latest: false,
             storage_class: Some("GLACIER".to_string()),
-            checksum_algorithm: Some("SHA256".to_string()),
+            checksum_algorithm: vec!["SHA256".to_string()],
             checksum_type: Some("FULL_OBJECT".to_string()),
             owner_display_name: None,
             owner_id: None,
@@ -459,7 +534,7 @@ mod tests {
         assert_eq!(obj.version_id(), Some("v1"));
         assert!(!obj.is_latest());
         assert_eq!(obj.storage_class(), Some("GLACIER"));
-        assert_eq!(obj.checksum_algorithm(), Some("SHA256"));
+        assert_eq!(obj.checksum_algorithm(), &["SHA256"]);
         assert_eq!(obj.checksum_type(), Some("FULL_OBJECT"));
     }
 
@@ -471,7 +546,7 @@ mod tests {
             last_modified: Utc::now(),
             e_tag: "\"e\"".to_string(),
             storage_class: None,
-            checksum_algorithm: None,
+            checksum_algorithm: vec![],
             checksum_type: None,
             owner_display_name: None,
             owner_id: None,
@@ -498,6 +573,8 @@ mod tests {
             version_id: "dm-v1".to_string(),
             last_modified: Utc::now(),
             is_latest: true,
+            owner_display_name: None,
+            owner_id: None,
         };
         assert_eq!(entry.key(), "deleted.txt");
         assert_eq!(entry.size(), 0);

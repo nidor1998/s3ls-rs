@@ -5,8 +5,9 @@
 
 use crate::filters::ObjectFilter;
 use crate::types::ListEntry;
+use anyhow::{Context, Result};
 use fancy_regex::Regex;
-use tracing::{debug, warn};
+use tracing::{debug, error};
 
 const FILTER_NAME: &str = "IncludeRegexFilter";
 
@@ -26,19 +27,25 @@ impl IncludeRegexFilter {
 }
 
 impl ObjectFilter for IncludeRegexFilter {
-    fn matches(&self, entry: &ListEntry) -> bool {
-        let match_result = match self.regex.is_match(entry.key()) {
-            Ok(matched) => matched,
-            Err(e) => {
-                warn!(
+    fn matches(&self, entry: &ListEntry) -> Result<bool> {
+        let match_result = self
+            .regex
+            .is_match(entry.key())
+            .map_err(|e| {
+                error!(
                     name = FILTER_NAME,
                     key = entry.key(),
                     error = %e,
-                    "regex match failed, skipping entry to be safe."
+                    "regex match failed, stopping pipeline"
                 );
-                return false;
-            }
-        };
+                e
+            })
+            .with_context(|| {
+                format!(
+                    "{FILTER_NAME}: regex match failed for key {:?}",
+                    entry.key()
+                )
+            })?;
 
         if !match_result {
             debug!(
@@ -51,7 +58,7 @@ impl ObjectFilter for IncludeRegexFilter {
             );
         }
 
-        match_result
+        Ok(match_result)
     }
 }
 
@@ -68,7 +75,7 @@ mod tests {
             last_modified: chrono::Utc::now(),
             e_tag: "\"e\"".to_string(),
             storage_class: None,
-            checksum_algorithm: None,
+            checksum_algorithm: vec![],
             checksum_type: None,
             owner_display_name: None,
             owner_id: None,
@@ -80,8 +87,8 @@ mod tests {
     #[test]
     fn matches_matching_key() {
         let filter = IncludeRegexFilter::new(r".*\.log$").unwrap();
-        assert!(filter.matches(&make_entry("app.log")));
-        assert!(!filter.matches(&make_entry("app.txt")));
+        assert!(filter.matches(&make_entry("app.log")).unwrap());
+        assert!(!filter.matches(&make_entry("app.txt")).unwrap());
     }
 
     #[test]
@@ -92,12 +99,14 @@ mod tests {
             version_id: "v1".to_string(),
             last_modified: chrono::Utc::now(),
             is_latest: true,
+            owner_display_name: None,
+            owner_id: None,
         };
-        assert!(filter.matches(&entry));
+        assert!(filter.matches(&entry).unwrap());
     }
 
     #[test]
-    fn regex_error_returns_false() {
+    fn regex_error_returns_err() {
         use fancy_regex::RegexBuilder;
 
         // Backreference forces fancy_regex VM. With backtrack_limit(1),
@@ -110,7 +119,8 @@ mod tests {
         // Verify this actually produces an error (not Ok)
         assert!(regex.is_match("aaaaaaaaaaaaaaac").is_err());
 
+        // Filter should propagate the error (not silently keep or drop entry)
         let filter = IncludeRegexFilter::from_regex(regex);
-        assert!(!filter.matches(&make_entry("aaaaaaaaaaaaaaac")));
+        assert!(filter.matches(&make_entry("aaaaaaaaaaaaaaac")).is_err());
     }
 }

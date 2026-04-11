@@ -55,7 +55,7 @@ mod tests {
                 last_modified: Utc::now(),
                 e_tag: "\"abc\"".to_string(),
                 storage_class: Some("STANDARD".to_string()),
-                checksum_algorithm: None,
+                checksum_algorithm: vec![],
                 checksum_type: None,
                 owner_display_name: None,
                 owner_id: None,
@@ -68,6 +68,8 @@ mod tests {
                 version_id: "v1".to_string(),
                 last_modified: Utc::now(),
                 is_latest: true,
+                owner_display_name: None,
+                owner_id: None,
             },
         ]
     }

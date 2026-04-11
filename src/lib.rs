@@ -10,9 +10,9 @@ pub mod types;
 // Core pipeline
 pub use pipeline::ListingPipeline;
 
+pub use config::args::{CLIArgs, SortField, build_config_from_args, parse_from_args};
 // Configuration
 pub use config::Config;
-pub use config::args::{CLIArgs, SortField, build_config_from_args, parse_from_args};
 
 // Object types
 pub use types::{

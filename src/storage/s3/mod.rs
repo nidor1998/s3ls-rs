@@ -66,6 +66,7 @@ struct S3PageFetcher {
     bucket: String,
     request_payer: Option<RequestPayer>,
     fetch_owner: bool,
+    fetch_restore_status: bool,
 }
 
 impl S3PageFetcher {
@@ -95,10 +96,12 @@ impl S3PageFetcher {
             req = req.request_payer(payer.clone());
         }
         if self.fetch_owner {
+            req = req.fetch_owner(true);
+        }
+        if self.fetch_restore_status {
             req = req.optional_object_attributes(
                 aws_sdk_s3::types::OptionalObjectAttributes::RestoreStatus,
             );
-            req = req.fetch_owner(true);
         }
 
         let response = req.send().await.map_err(|e| {
@@ -167,6 +170,13 @@ impl S3PageFetcher {
         }
         if let Some(ref payer) = self.request_payer {
             req = req.request_payer(payer.clone());
+        }
+        // ListObjectVersions always returns Owner, so no fetch_owner toggle.
+        // RestoreStatus, however, must be opted into via OptionalObjectAttributes.
+        if self.fetch_restore_status {
+            req = req.optional_object_attributes(
+                aws_sdk_s3::types::OptionalObjectAttributes::RestoreStatus,
+            );
         }
 
         let response = req.send().await.map_err(|e| {
@@ -313,15 +323,24 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
     /// Calculate the depth of a key relative to the engine's prefix.
     /// Depth = (number of "/" in the relative part of the key) + 1.
     /// Returns None if the key doesn't start with the prefix.
+    ///
+    /// A trailing "/" on the key (directory-marker object) is stripped
+    /// before counting, so "foo/bar/" under prefix "foo/" has the same
+    /// depth (1) as "foo/bar.txt" — they're at the same hierarchical
+    /// level.
     fn key_depth(&self, key: &str) -> Option<u16> {
         let prefix = self.prefix.as_deref().unwrap_or("");
         let relative = key.strip_prefix(prefix)?;
         if relative.is_empty() {
             return None; // key IS the prefix, not an object under it
         }
-        let slash_count = relative.matches('/').count();
-        // "file.txt" => 0 slashes => depth 1
-        // "a/file.txt" => 1 slash => depth 2
+        // Strip a single trailing "/" so directory-marker objects are
+        // counted at the same depth as regular objects in the same "folder".
+        let counted = relative.strip_suffix('/').unwrap_or(relative);
+        let slash_count = counted.matches('/').count();
+        // "file.txt"      => 0 slashes => depth 1
+        // "sub/"          => 0 slashes => depth 1 (directory marker, same level)
+        // "a/file.txt"    => 1 slash  => depth 2
         Some(slash_count as u16 + 1)
     }
 
@@ -669,6 +688,7 @@ impl S3Storage {
         max_depth: Option<u16>,
         allow_parallel_listings_in_express_one_zone: bool,
         fetch_owner: bool,
+        fetch_restore_status: bool,
     ) -> Self {
         let client = client_config.create_client().await;
         let delimiter = if recursive {
@@ -684,6 +704,7 @@ impl S3Storage {
             bucket: bucket.clone(),
             request_payer,
             fetch_owner,
+            fetch_restore_status,
         };
 
         let engine = ListingEngine {
@@ -743,10 +764,11 @@ fn convert_object(object: &aws_sdk_s3::types::Object) -> Option<ListEntry> {
     let last_modified = aws_datetime_to_chrono(object.last_modified())?;
     let e_tag = object.e_tag().unwrap_or_default().to_string();
     let storage_class = object.storage_class().map(|sc| sc.as_str().to_string());
-    let checksum_algorithm = object
+    let checksum_algorithm: Vec<String> = object
         .checksum_algorithm()
-        .first()
-        .map(|a| a.as_str().to_string());
+        .iter()
+        .map(|a| a.as_str().to_string())
+        .collect();
     let checksum_type = object.checksum_type().map(|ct| ct.as_str().to_string());
     let owner_display_name = object
         .owner()
@@ -786,19 +808,25 @@ fn convert_object_version(version: &aws_sdk_s3::types::ObjectVersion) -> Option<
     let e_tag = version.e_tag().unwrap_or_default().to_string();
     let is_latest = version.is_latest().unwrap_or(false);
     let storage_class = version.storage_class().map(|sc| sc.as_str().to_string());
-    let checksum_algorithm = version
+    let checksum_algorithm: Vec<String> = version
         .checksum_algorithm()
-        .first()
-        .map(|a| a.as_str().to_string());
+        .iter()
+        .map(|a| a.as_str().to_string())
+        .collect();
     let checksum_type = version.checksum_type().map(|ct| ct.as_str().to_string());
     let owner_display_name = version
         .owner()
         .and_then(|o| o.display_name())
         .map(|s| s.to_string());
     let owner_id = version.owner().and_then(|o| o.id()).map(|s| s.to_string());
-    // ObjectVersion does not have restore_status in the AWS SDK
-    let is_restore_in_progress = None;
-    let restore_expiry_date = None;
+    let is_restore_in_progress = version
+        .restore_status()
+        .and_then(|rs| rs.is_restore_in_progress());
+    let restore_expiry_date = version
+        .restore_status()
+        .and_then(|rs| rs.restore_expiry_date())
+        .and_then(|dt| aws_datetime_to_chrono(Some(dt)))
+        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
 
     Some(ListEntry::Object(S3Object::Versioning {
         key,
@@ -823,12 +851,19 @@ fn convert_delete_marker(marker: &aws_sdk_s3::types::DeleteMarkerEntry) -> Optio
     let version_id = marker.version_id().unwrap_or("null").to_string();
     let last_modified = aws_datetime_to_chrono(marker.last_modified())?;
     let is_latest = marker.is_latest().unwrap_or(false);
+    let owner_display_name = marker
+        .owner()
+        .and_then(|o| o.display_name())
+        .map(str::to_string);
+    let owner_id = marker.owner().and_then(|o| o.id()).map(str::to_string);
 
     Some(ListEntry::DeleteMarker {
         key,
         version_id,
         last_modified,
         is_latest,
+        owner_display_name,
+        owner_id,
     })
 }
 
@@ -977,7 +1012,7 @@ mod tests {
             last_modified: chrono::Utc::now(),
             e_tag: "\"e\"".to_string(),
             storage_class: None,
-            checksum_algorithm: None,
+            checksum_algorithm: vec![],
             checksum_type: None,
             owner_display_name: None,
             owner_id: None,
@@ -1738,5 +1773,55 @@ mod tests {
         keys.sort();
         // p/a/b/file.txt and p/a/b/c/file.txt collapse into CommonPrefix "p/a/b/"
         assert_eq!(keys, vec!["p/a/b/", "p/a/file.txt", "p/root.txt"]);
+    }
+
+    // ========================================================================
+    // key_depth unit tests (including directory-marker edge case)
+    // ========================================================================
+
+    fn engine_with_prefix(prefix: Option<&str>) -> ListingEngine<MockPageFetcher> {
+        let fetcher = MockPageFetcher::from_pages(prefix, None, vec![]);
+        make_engine(fetcher, "bucket", prefix, None, 1, 3, false)
+    }
+
+    #[test]
+    fn key_depth_regular_objects() {
+        let engine = engine_with_prefix(Some("p/"));
+        assert_eq!(engine.key_depth("p/file.txt"), Some(1));
+        assert_eq!(engine.key_depth("p/a/file.txt"), Some(2));
+        assert_eq!(engine.key_depth("p/a/b/file.txt"), Some(3));
+    }
+
+    #[test]
+    fn key_depth_directory_markers_match_regular_objects() {
+        // Regression: directory-marker objects (keys ending in "/") should
+        // be counted at the same depth as regular objects in the same
+        // "folder", not one level deeper.
+        let engine = engine_with_prefix(Some("p/"));
+        // "p/sub/" is at the top level under "p/" — same depth as
+        // "p/file.txt"
+        assert_eq!(engine.key_depth("p/sub/"), Some(1));
+        // "p/a/sub/" is one level down — same depth as "p/a/file.txt"
+        assert_eq!(engine.key_depth("p/a/sub/"), Some(2));
+    }
+
+    #[test]
+    fn key_depth_key_equals_prefix_returns_none() {
+        let engine = engine_with_prefix(Some("p/"));
+        assert_eq!(engine.key_depth("p/"), None);
+    }
+
+    #[test]
+    fn key_depth_key_not_under_prefix_returns_none() {
+        let engine = engine_with_prefix(Some("p/"));
+        assert_eq!(engine.key_depth("q/file.txt"), None);
+    }
+
+    #[test]
+    fn key_depth_empty_prefix() {
+        let engine = engine_with_prefix(None);
+        assert_eq!(engine.key_depth("file.txt"), Some(1));
+        assert_eq!(engine.key_depth("a/file.txt"), Some(2));
+        assert_eq!(engine.key_depth("sub/"), Some(1)); // directory marker at top
     }
 }

@@ -26,7 +26,7 @@ impl StorageClassFilter {
 }
 
 impl ObjectFilter for StorageClassFilter {
-    fn matches(&self, entry: &ListEntry) -> bool {
+    fn matches(&self, entry: &ListEntry) -> anyhow::Result<bool> {
         match entry {
             ListEntry::Object(obj) => {
                 // S3 API omits StorageClass for STANDARD objects (returns None).
@@ -42,10 +42,10 @@ impl ObjectFilter for StorageClassFilter {
                         "entry filtered."
                     );
                 }
-                matched
+                Ok(matched)
             }
-            ListEntry::DeleteMarker { .. } => true,
-            ListEntry::CommonPrefix(_) => true,
+            ListEntry::DeleteMarker { .. } => Ok(true),
+            ListEntry::CommonPrefix(_) => Ok(true),
         }
     }
 }
@@ -63,7 +63,7 @@ mod tests {
             last_modified: chrono::Utc::now(),
             e_tag: "\"e\"".to_string(),
             storage_class: class.map(|s| s.to_string()),
-            checksum_algorithm: None,
+            checksum_algorithm: vec![],
             checksum_type: None,
             owner_display_name: None,
             owner_id: None,
@@ -75,22 +75,34 @@ mod tests {
     #[test]
     fn matches_listed_class() {
         let filter = StorageClassFilter::new(vec!["STANDARD".to_string(), "GLACIER".to_string()]);
-        assert!(filter.matches(&make_entry_with_class(Some("STANDARD"))));
-        assert!(filter.matches(&make_entry_with_class(Some("GLACIER"))));
-        assert!(!filter.matches(&make_entry_with_class(Some("DEEP_ARCHIVE"))));
+        assert!(
+            filter
+                .matches(&make_entry_with_class(Some("STANDARD")))
+                .unwrap()
+        );
+        assert!(
+            filter
+                .matches(&make_entry_with_class(Some("GLACIER")))
+                .unwrap()
+        );
+        assert!(
+            !filter
+                .matches(&make_entry_with_class(Some("DEEP_ARCHIVE")))
+                .unwrap()
+        );
     }
 
     #[test]
     fn none_class_treated_as_standard() {
         // S3 API omits StorageClass for STANDARD objects
         let filter = StorageClassFilter::new(vec!["STANDARD".to_string()]);
-        assert!(filter.matches(&make_entry_with_class(None)));
+        assert!(filter.matches(&make_entry_with_class(None)).unwrap());
     }
 
     #[test]
     fn none_class_does_not_match_non_standard() {
         let filter = StorageClassFilter::new(vec!["GLACIER".to_string()]);
-        assert!(!filter.matches(&make_entry_with_class(None)));
+        assert!(!filter.matches(&make_entry_with_class(None)).unwrap());
     }
 
     #[test]
@@ -101,7 +113,9 @@ mod tests {
             version_id: "v1".to_string(),
             last_modified: chrono::Utc::now(),
             is_latest: true,
+            owner_display_name: None,
+            owner_id: None,
         };
-        assert!(filter.matches(&entry));
+        assert!(filter.matches(&entry).unwrap());
     }
 }

@@ -44,30 +44,30 @@ fn all_versions() {
 }
 
 // ===========================================================================
-// 2b. --hide-delete-marker
+// 2b. --hide-delete-markers
 // ===========================================================================
 
 #[test]
-fn hide_delete_marker_with_all_versions() {
+fn hide_delete_markers_with_all_versions() {
     let cli = parse_from_args(args(&[
         "s3://bucket",
         "--all-versions",
-        "--hide-delete-marker",
+        "--hide-delete-markers",
     ]))
     .unwrap();
-    assert!(cli.hide_delete_marker);
+    assert!(cli.hide_delete_markers);
 }
 
 #[test]
-fn hide_delete_marker_without_all_versions_rejected() {
-    let result = parse_from_args(args(&["s3://bucket", "--hide-delete-marker"]));
+fn hide_delete_markers_without_all_versions_rejected() {
+    let result = parse_from_args(args(&["s3://bucket", "--hide-delete-markers"]));
     assert!(result.is_err());
 }
 
 #[test]
-fn hide_delete_marker_default_is_false() {
+fn hide_delete_markers_default_is_false() {
     let cli = parse_from_args(args(&["s3://bucket", "--all-versions"])).unwrap();
-    assert!(!cli.hide_delete_marker);
+    assert!(!cli.hide_delete_markers);
 }
 
 // ===========================================================================
@@ -265,13 +265,13 @@ fn sort_two_fields_size_date() {
 
 #[test]
 fn sort_rejects_three_fields() {
-    let result = parse_from_args(args(&["s3://bucket", "--sort", "key,size,date"]));
+    let result = build_config_from_args(args(&["s3://bucket", "--sort", "key,size,date"]));
     assert!(result.is_err());
 }
 
 #[test]
 fn sort_rejects_duplicate_fields() {
-    let result = parse_from_args(args(&["s3://bucket", "--sort", "date,date"]));
+    let result = build_config_from_args(args(&["s3://bucket", "--sort", "date,date"]));
     assert!(result.is_err());
 }
 
@@ -301,7 +301,349 @@ fn sort_and_reverse_combo() {
 }
 
 // ===========================================================================
-// 4b. --no-sort
+// 4b. Sort field validation by listing mode
+// ===========================================================================
+
+#[test]
+fn sort_object_listing_default_is_key() {
+    let config = build_config_from_args(args(&["s3://bucket"])).unwrap();
+    assert_eq!(config.sort, vec![SortField::Key]);
+}
+
+#[test]
+fn sort_bucket_listing_default_is_bucket() {
+    let config = build_config_from_args(args(&[])).unwrap();
+    assert_eq!(config.sort, vec![SortField::Bucket]);
+}
+
+#[test]
+fn sort_bucket_listing_accepts_bucket() {
+    let config = build_config_from_args(args(&["--sort", "bucket"])).unwrap();
+    assert_eq!(config.sort, vec![SortField::Bucket]);
+}
+
+#[test]
+fn sort_bucket_listing_accepts_region() {
+    let config = build_config_from_args(args(&["--sort", "region"])).unwrap();
+    assert_eq!(config.sort, vec![SortField::Region]);
+}
+
+#[test]
+fn sort_bucket_listing_accepts_date() {
+    let config = build_config_from_args(args(&["--sort", "date"])).unwrap();
+    assert_eq!(config.sort, vec![SortField::Date]);
+}
+
+#[test]
+fn sort_bucket_listing_accepts_two_fields() {
+    let config = build_config_from_args(args(&["--sort", "date,bucket"])).unwrap();
+    assert_eq!(config.sort, vec![SortField::Date, SortField::Bucket]);
+}
+
+#[test]
+fn sort_bucket_listing_rejects_key() {
+    let result = build_config_from_args(args(&["--sort", "key"]));
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("not valid for bucket listing"));
+}
+
+#[test]
+fn sort_bucket_listing_rejects_size() {
+    let result = build_config_from_args(args(&["--sort", "size"]));
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("not valid for bucket listing"));
+}
+
+#[test]
+fn sort_bucket_listing_rejects_three_fields() {
+    let result = build_config_from_args(args(&["--sort", "bucket,region,date"]));
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("at most 2 sort fields"));
+}
+
+#[test]
+fn sort_object_listing_rejects_bucket() {
+    let result = build_config_from_args(args(&["s3://bucket", "--sort", "bucket"]));
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("not valid for object listing"));
+}
+
+#[test]
+fn sort_object_listing_rejects_region() {
+    let result = build_config_from_args(args(&["s3://bucket", "--sort", "region"]));
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("not valid for object listing"));
+}
+
+#[test]
+fn sort_bucket_listing_rejects_duplicate() {
+    let result = build_config_from_args(args(&["--sort", "bucket,bucket"]));
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("duplicate sort field"));
+}
+
+// ===========================================================================
+// 4b-2. Object-only options rejected in bucket listing mode
+// ===========================================================================
+
+#[test]
+fn bucket_listing_rejects_recursive() {
+    let result = build_config_from_args(args(&["--recursive"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--recursive is not valid for bucket listing")
+    );
+}
+
+#[test]
+fn bucket_listing_rejects_all_versions() {
+    let result = build_config_from_args(args(&["--all-versions"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--all-versions is not valid for bucket listing")
+    );
+}
+
+#[test]
+fn bucket_listing_rejects_max_depth() {
+    let result = build_config_from_args(args(&["--recursive", "--max-depth", "3"]));
+    assert!(result.is_err());
+}
+
+#[test]
+fn bucket_listing_rejects_filter_include_regex() {
+    let result = build_config_from_args(args(&["--filter-include-regex", r"\.csv$"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--filter-include-regex is not valid for bucket listing")
+    );
+}
+
+#[test]
+fn bucket_listing_rejects_filter_exclude_regex() {
+    let result = build_config_from_args(args(&["--filter-exclude-regex", r"^temp/"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--filter-exclude-regex is not valid for bucket listing")
+    );
+}
+
+#[test]
+fn bucket_listing_rejects_filter_mtime_before() {
+    let result = build_config_from_args(args(&["--filter-mtime-before", "2025-01-01T00:00:00Z"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--filter-mtime-before is not valid for bucket listing")
+    );
+}
+
+#[test]
+fn bucket_listing_rejects_filter_mtime_after() {
+    let result = build_config_from_args(args(&["--filter-mtime-after", "2025-01-01T00:00:00Z"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--filter-mtime-after is not valid for bucket listing")
+    );
+}
+
+#[test]
+fn bucket_listing_rejects_filter_smaller_size() {
+    let result = build_config_from_args(args(&["--filter-smaller-size", "10MiB"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--filter-smaller-size is not valid for bucket listing")
+    );
+}
+
+#[test]
+fn bucket_listing_rejects_filter_larger_size() {
+    let result = build_config_from_args(args(&["--filter-larger-size", "1GiB"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--filter-larger-size is not valid for bucket listing")
+    );
+}
+
+#[test]
+fn bucket_listing_rejects_storage_class() {
+    let result = build_config_from_args(args(&["--storage-class", "STANDARD"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--storage-class is not valid for bucket listing")
+    );
+}
+
+#[test]
+fn bucket_listing_allows_reverse() {
+    let config = build_config_from_args(args(&["--reverse"])).unwrap();
+    assert!(config.reverse);
+}
+
+#[test]
+fn bucket_listing_allows_no_sort() {
+    let config = build_config_from_args(args(&["--no-sort"])).unwrap();
+    assert!(config.no_sort);
+}
+
+// Display flags that have no meaning for bucket rows should be rejected
+// rather than silently ignored.
+#[test]
+fn bucket_listing_rejects_summarize() {
+    let result = build_config_from_args(args(&["--summarize"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--summarize is not valid for bucket listing")
+    );
+}
+
+#[test]
+fn bucket_listing_rejects_human_readable() {
+    let result = build_config_from_args(args(&["--human-readable"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--human-readable is not valid for bucket listing")
+    );
+}
+
+#[test]
+fn bucket_listing_rejects_show_relative_path() {
+    let result = build_config_from_args(args(&["--show-relative-path"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--show-relative-path is not valid for bucket listing")
+    );
+}
+
+#[test]
+fn bucket_listing_rejects_show_etag() {
+    let result = build_config_from_args(args(&["--show-etag"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--show-etag is not valid for bucket listing")
+    );
+}
+
+#[test]
+fn bucket_listing_rejects_show_storage_class() {
+    let result = build_config_from_args(args(&["--show-storage-class"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--show-storage-class is not valid for bucket listing")
+    );
+}
+
+#[test]
+fn bucket_listing_rejects_show_checksum_algorithm() {
+    let result = build_config_from_args(args(&["--show-checksum-algorithm"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--show-checksum-algorithm is not valid for bucket listing")
+    );
+}
+
+#[test]
+fn bucket_listing_rejects_show_checksum_type() {
+    let result = build_config_from_args(args(&["--show-checksum-type"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--show-checksum-type is not valid for bucket listing")
+    );
+}
+
+#[test]
+fn bucket_listing_rejects_show_restore_status() {
+    let result = build_config_from_args(args(&["--show-restore-status"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--show-restore-status is not valid for bucket listing")
+    );
+}
+
+// ===========================================================================
+// 4b-3. Bucket-only options rejected in object listing mode
+// ===========================================================================
+
+#[test]
+fn object_listing_rejects_bucket_name_prefix() {
+    let result = build_config_from_args(args(&["s3://bucket", "--bucket-name-prefix", "data"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--bucket-name-prefix is not valid for object listing")
+    );
+}
+
+#[test]
+fn object_listing_rejects_list_express_one_zone_buckets() {
+    let result = build_config_from_args(args(&["s3://bucket", "--list-express-one-zone-buckets"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--list-express-one-zone-buckets is not valid for object listing")
+    );
+}
+
+#[test]
+fn object_listing_rejects_show_bucket_arn() {
+    let result = build_config_from_args(args(&["s3://bucket", "--show-bucket-arn"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--show-bucket-arn is not valid for object listing")
+    );
+}
+
+#[test]
+fn bucket_listing_allows_bucket_name_prefix() {
+    let config = build_config_from_args(args(&["--bucket-name-prefix", "data"])).unwrap();
+    assert_eq!(config.bucket_name_prefix.as_deref(), Some("data"));
+}
+
+#[test]
+fn bucket_listing_allows_show_bucket_arn() {
+    let config = build_config_from_args(args(&["--show-bucket-arn"])).unwrap();
+    assert!(config.display_config.show_bucket_arn);
+}
+
+// ===========================================================================
+// 4c. --no-sort
 // ===========================================================================
 
 #[test]
@@ -385,7 +727,7 @@ fn all_display_options_combined() {
         "--show-storage-class",
         "--show-checksum-algorithm",
         "--show-checksum-type",
-        "--json",
+        "--header",
     ]))
     .unwrap();
     assert!(cli.summary);
@@ -395,7 +737,7 @@ fn all_display_options_combined() {
     assert!(cli.show_storage_class);
     assert!(cli.show_checksum_algorithm);
     assert!(cli.show_checksum_type);
-    assert!(cli.json);
+    assert!(cli.header);
 }
 
 // ===========================================================================
@@ -721,7 +1063,7 @@ fn verify_all_defaults() {
     // General
     assert!(!cli.recursive);
     assert!(!cli.all_versions);
-    assert!(!cli.hide_delete_marker);
+    assert!(!cli.hide_delete_markers);
     assert!(cli.max_depth.is_none());
     assert!(cli.bucket_name_prefix.is_none());
 
@@ -734,8 +1076,8 @@ fn verify_all_defaults() {
     assert!(cli.filter_larger_size.is_none());
     assert!(cli.storage_class.is_none());
 
-    // Sort
-    assert_eq!(cli.sort, vec![SortField::Key]);
+    // Sort (no default — Config::try_from applies mode-specific default)
+    assert!(cli.sort.is_empty());
     assert!(!cli.reverse);
     assert!(!cli.no_sort);
 
@@ -896,7 +1238,7 @@ fn full_combination_many_flags() {
         "--human-readable",
         "--show-relative-path",
         "--show-etag",
-        "--json",
+        "--header",
         "--target-region",
         "eu-west-1",
         "--max-parallel-listings",
@@ -926,7 +1268,7 @@ fn full_combination_many_flags() {
     assert!(cli.human);
     assert!(cli.show_relative_path);
     assert!(cli.show_etag);
-    assert!(cli.json);
+    assert!(cli.header);
     assert_eq!(cli.target_region.as_deref(), Some("eu-west-1"));
     assert_eq!(cli.max_parallel_listings, 64);
     assert_eq!(cli.max_keys, 500);
@@ -983,7 +1325,6 @@ fn config_from_full_args() {
         "--sort",
         "date",
         "--reverse",
-        "--human-readable",
         "--summarize",
         "--json",
     ])
@@ -998,7 +1339,6 @@ fn config_from_full_args() {
     );
     assert_eq!(config.sort, vec![SortField::Date]);
     assert!(config.reverse);
-    assert!(config.display_config.human);
     assert!(config.display_config.summary);
     assert!(config.display_config.json);
 }
@@ -1062,4 +1402,67 @@ fn config_max_depth_wired_through() {
 fn config_max_depth_none_by_default() {
     let config = build_config_from_args(vec!["s3ls", "s3://bucket/", "--recursive"]).unwrap();
     assert!(config.max_depth.is_none());
+}
+
+// ===========================================================================
+// show_owner / show_restore_status independence from --json
+// ===========================================================================
+
+#[test]
+fn json_alone_does_not_enable_show_owner() {
+    let config = build_config_from_args(vec!["s3ls", "s3://bucket/", "--json"]).unwrap();
+    assert!(config.display_config.json);
+    assert!(!config.display_config.show_owner);
+}
+
+#[test]
+fn json_alone_does_not_enable_show_restore_status() {
+    let config = build_config_from_args(vec!["s3ls", "s3://bucket/", "--json"]).unwrap();
+    assert!(config.display_config.json);
+    assert!(!config.display_config.show_restore_status);
+}
+
+#[test]
+fn show_owner_with_json() {
+    let config =
+        build_config_from_args(vec!["s3ls", "s3://bucket/", "--json", "--show-owner"]).unwrap();
+    assert!(config.display_config.json);
+    assert!(config.display_config.show_owner);
+}
+
+#[test]
+fn show_restore_status_with_json() {
+    let config = build_config_from_args(vec![
+        "s3ls",
+        "s3://bucket/",
+        "--json",
+        "--show-restore-status",
+    ])
+    .unwrap();
+    assert!(config.display_config.json);
+    assert!(config.display_config.show_restore_status);
+}
+
+#[test]
+fn show_bucket_arn_with_json() {
+    // --show-bucket-arn and --json are both meaningful in bucket
+    // listing mode and should coexist.
+    let config = build_config_from_args(vec!["s3ls", "--json", "--show-bucket-arn"]).unwrap();
+    assert!(config.display_config.json);
+    assert!(config.display_config.show_bucket_arn);
+}
+
+#[test]
+fn show_owner_without_json() {
+    let config = build_config_from_args(vec!["s3ls", "s3://bucket/", "--show-owner"]).unwrap();
+    assert!(!config.display_config.json);
+    assert!(config.display_config.show_owner);
+}
+
+#[test]
+fn show_restore_status_without_json() {
+    let config =
+        build_config_from_args(vec!["s3ls", "s3://bucket/", "--show-restore-status"]).unwrap();
+    assert!(!config.display_config.json);
+    assert!(config.display_config.show_restore_status);
 }

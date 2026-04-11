@@ -21,7 +21,7 @@ impl MtimeAfterFilter {
 }
 
 impl ObjectFilter for MtimeAfterFilter {
-    fn matches(&self, entry: &ListEntry) -> bool {
+    fn matches(&self, entry: &ListEntry) -> anyhow::Result<bool> {
         match entry.last_modified() {
             Some(lm) => {
                 if *lm < self.after {
@@ -34,11 +34,11 @@ impl ObjectFilter for MtimeAfterFilter {
                         config_time = %self.after.to_rfc3339(),
                         "entry filtered."
                     );
-                    return false;
+                    return Ok(false);
                 }
-                true
+                Ok(true)
             }
-            None => true,
+            None => Ok(true),
         }
     }
 }
@@ -57,7 +57,7 @@ mod tests {
             last_modified: time,
             e_tag: "\"e\"".to_string(),
             storage_class: None,
-            checksum_algorithm: None,
+            checksum_algorithm: vec![],
             checksum_type: None,
             owner_display_name: None,
             owner_id: None,
@@ -70,14 +70,22 @@ mod tests {
     fn matches_newer_entries() {
         let now = Utc::now();
         let filter = MtimeAfterFilter::new(now);
-        assert!(filter.matches(&make_entry_at(now + Duration::hours(1))));
-        assert!(!filter.matches(&make_entry_at(now - Duration::hours(1))));
+        assert!(
+            filter
+                .matches(&make_entry_at(now + Duration::hours(1)))
+                .unwrap()
+        );
+        assert!(
+            !filter
+                .matches(&make_entry_at(now - Duration::hours(1)))
+                .unwrap()
+        );
     }
 
     #[test]
     fn exact_time_matches() {
         let now = Utc::now();
         let filter = MtimeAfterFilter::new(now);
-        assert!(filter.matches(&make_entry_at(now)));
+        assert!(filter.matches(&make_entry_at(now)).unwrap());
     }
 }

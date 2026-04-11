@@ -34,19 +34,21 @@ pub async fn list_buckets(config: &Config) -> Result<()> {
         list_general_buckets(&client, config.bucket_name_prefix.as_deref()).await?
     };
 
-    // Sort
-    entries.sort_by(|a, b| {
-        let mut cmp = std::cmp::Ordering::Equal;
-        for field in &config.sort {
-            cmp = cmp.then_with(|| match field {
-                SortField::Bucket | SortField::Key => a.name.cmp(&b.name),
-                SortField::Date => a.creation_date.cmp(&b.creation_date),
-                SortField::Region => a.region.cmp(&b.region),
-                SortField::Size => std::cmp::Ordering::Equal,
-            });
-        }
-        if config.reverse { cmp.reverse() } else { cmp }
-    });
+    // Sort (skipped when --no-sort is set)
+    if !config.no_sort {
+        entries.sort_by(|a, b| {
+            let mut cmp = std::cmp::Ordering::Equal;
+            for field in &config.sort {
+                cmp = cmp.then_with(|| match field {
+                    SortField::Bucket | SortField::Key => a.name.cmp(&b.name),
+                    SortField::Date => a.creation_date.cmp(&b.creation_date),
+                    SortField::Region => a.region.cmp(&b.region),
+                    SortField::Size => std::cmp::Ordering::Equal,
+                });
+            }
+            if config.reverse { cmp.reverse() } else { cmp }
+        });
+    }
 
     let stdout = std::io::stdout();
     let mut writer = std::io::BufWriter::new(stdout.lock());
@@ -114,15 +116,28 @@ pub async fn list_buckets(config: &Config) -> Result<()> {
             }
             writeln!(writer, "{}", serde_json::to_string(&map).unwrap())?;
         } else {
-            let mut line = format!("{date}\t{region}\t{}", entry.name);
+            // Escape control chars in S3-returned strings to prevent
+            // injection of fake rows or terminal escape sequences via
+            // maliciously-named buckets / owners. JSON output is handled
+            // safely by serde_json above.
+            let escape = |s: &str| -> String {
+                if config.display_config.raw_output {
+                    s.to_string()
+                } else {
+                    crate::aggregate::escape_control_chars(s).into_owned()
+                }
+            };
+
+            let name = escape(&entry.name);
+            let mut line = format!("{date}\t{region}\t{name}");
             if show_bucket_arn {
                 line.push_str(&format!("\t{}", entry.bucket_arn.as_deref().unwrap_or("")));
             }
             if show_owner {
                 line.push_str(&format!(
                     "\t{}\t{}",
-                    entry.owner_display_name.as_deref().unwrap_or(""),
-                    entry.owner_id.as_deref().unwrap_or("")
+                    escape(entry.owner_display_name.as_deref().unwrap_or("")),
+                    escape(entry.owner_id.as_deref().unwrap_or(""))
                 ));
             }
             writeln!(writer, "{line}")?;
@@ -199,7 +214,7 @@ async fn list_directory_buckets(client: &Client) -> Result<Vec<BucketEntry>> {
                 name: b.name().unwrap_or_default().to_string(),
                 creation_date: b.creation_date().and_then(aws_datetime_to_chrono),
                 region: b.bucket_region().map(|r| r.to_string()),
-                bucket_arn: None,
+                bucket_arn: b.bucket_arn().map(|s| s.to_string()),
                 owner_display_name: None,
                 owner_id: None,
             });
