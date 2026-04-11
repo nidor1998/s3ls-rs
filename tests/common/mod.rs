@@ -409,6 +409,27 @@ impl TestHelper {
             });
     }
 
+    /// Create a delete marker on a versioned bucket by calling DeleteObject
+    /// without a VersionId. On a versioned bucket, S3 interprets this as
+    /// "add a delete marker" (the object appears deleted to non-versioned
+    /// readers, but all prior versions remain listable via
+    /// ListObjectVersions).
+    ///
+    /// Requires: the bucket must have versioning ENABLED (create it via
+    /// `create_versioned_bucket`). On a non-versioned bucket this call
+    /// would permanently delete the object.
+    pub async fn create_delete_marker(&self, bucket: &str, key: &str) {
+        self.client
+            .delete_object()
+            .bucket(bucket)
+            .key(key)
+            .send()
+            .await
+            .unwrap_or_else(|e| {
+                panic!("Failed to create delete marker for {key} in {bucket}: {e}")
+            });
+    }
+
     /// Upload an object with content-type, metadata, AND tags all at once.
     ///
     /// NOTE: Same URL-safety caveat as `put_object_with_tags` — tag keys and
@@ -794,6 +815,78 @@ pub fn assert_json_keys_or_prefixes_eq(stdout: &str, expected: &[&str], label: &
         extra.sort();
         panic!(
             "[{label}] key/prefix set mismatch\n  missing: {missing:?}\n  extra:   {extra:?}\n  stdout:\n{stdout}"
+        );
+    }
+}
+
+/// Parse NDJSON stdout from `s3ls --all-versions --json` and assert the
+/// multiset of `(Key, is_delete_marker)` tuples equals `expected`.
+///
+/// Unlike `assert_json_keys_eq` (which compares a set of `Key` strings),
+/// this helper:
+/// 1. Extracts both `Key` and the `DeleteMarker` boolean field from each
+///    JSON line (missing `DeleteMarker` field defaults to `false`).
+/// 2. Uses multiset comparison: 3 rows of `("doc.txt", false)` is
+///    distinguishable from 2 rows of `("doc.txt", false)`.
+///
+/// Panics if:
+/// - any non-empty line fails to parse as JSON,
+/// - any JSON line is missing the `Key` field,
+/// - the multiset of `(Key, is_delete_marker)` tuples does not equal
+///   `expected` (reports missing and extra counts separately).
+pub fn assert_json_version_shapes_eq(stdout: &str, expected: &[(&str, bool)], label: &str) {
+    use std::collections::HashMap;
+
+    let mut actual: HashMap<(String, bool), usize> = HashMap::new();
+    for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
+        let v: serde_json::Value = serde_json::from_str(line)
+            .unwrap_or_else(|e| panic!("[{label}] failed to parse JSON line: {line}\nerror: {e}"));
+        let key = v
+            .get("Key")
+            .and_then(|k| k.as_str())
+            .unwrap_or_else(|| panic!("[{label}] JSON line missing `Key`: {line}"))
+            .to_string();
+        let is_delete_marker = v
+            .get("DeleteMarker")
+            .and_then(|d| d.as_bool())
+            .unwrap_or(false);
+        *actual.entry((key, is_delete_marker)).or_insert(0) += 1;
+    }
+
+    let mut expected_counts: HashMap<(String, bool), usize> = HashMap::new();
+    for (key, is_dm) in expected {
+        *expected_counts
+            .entry((key.to_string(), *is_dm))
+            .or_insert(0) += 1;
+    }
+
+    if actual != expected_counts {
+        let mut missing: Vec<((String, bool), usize)> = expected_counts
+            .iter()
+            .filter_map(|(k, c)| {
+                let a = actual.get(k).copied().unwrap_or(0);
+                if a < *c {
+                    Some((k.clone(), c - a))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        missing.sort();
+        let mut extra: Vec<((String, bool), usize)> = actual
+            .iter()
+            .filter_map(|(k, c)| {
+                let e = expected_counts.get(k).copied().unwrap_or(0);
+                if *c > e {
+                    Some((k.clone(), c - e))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        extra.sort();
+        panic!(
+            "[{label}] version shape multiset mismatch\n  missing: {missing:?}\n  extra:   {extra:?}\n  stdout:\n{stdout}"
         );
     }
 }
