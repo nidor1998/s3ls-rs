@@ -579,3 +579,140 @@ async fn e2e_display_show_restore_status() {
 
     _guard.cleanup().await;
 }
+
+/// `--show-relative-path` baseline test. At bucket root (no prefix),
+/// the flag has no observable effect — keys are the same whether
+/// rendered relative or not. This test exercises the flag's existence
+/// and ensures it doesn't crash at bucket root. The prefixed-target
+/// case is covered by `e2e_display_show_relative_path_prefixed`.
+#[tokio::test]
+async fn e2e_display_show_relative_path() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+        helper.put_object(&bucket, "file.txt", vec![0u8; 100]).await;
+
+        let target = format!("s3://{bucket}/");
+
+        // Sub-assertion 1: text with flag ON — baseline, 3-column header
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--header",
+            "--show-relative-path",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_header_columns(
+            &output.stdout,
+            &["DATE", "SIZE", "KEY"],
+            "show-relative-path: text on header (no column added)",
+        );
+        assert!(
+            output.stdout.contains("file.txt"),
+            "show-relative-path: key missing from text output"
+        );
+
+        // Sub-assertion 2: text with flag OFF
+        let output = TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--header"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_header_columns(
+            &output.stdout,
+            &["DATE", "SIZE", "KEY"],
+            "show-relative-path: text off header",
+        );
+        assert!(output.stdout.contains("file.txt"));
+
+        // Sub-assertion 3: JSON with flag — Key field is "file.txt"
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--json",
+            "--show-relative-path",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        let first_line = output
+            .stdout
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .expect("empty JSON output");
+        let v: serde_json::Value =
+            serde_json::from_str(first_line).expect("JSON line failed to parse");
+        assert_eq!(
+            v.get("Key").and_then(|k| k.as_str()),
+            Some("file.txt"),
+            "show-relative-path: Key field should be 'file.txt' at bucket root"
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// `--show-relative-path` against a prefixed target. The key
+/// `data/foo.txt` is uploaded, but the target is `s3://bucket/data/`,
+/// so the flag should render the key as `foo.txt` (relative to the
+/// prefix) rather than `data/foo.txt` (full key). Verified in both
+/// text and JSON modes since `format_key_display` at
+/// `src/aggregate.rs:394, 528` applies to both.
+#[tokio::test]
+async fn e2e_display_show_relative_path_prefixed() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+        helper
+            .put_object(&bucket, "data/foo.txt", vec![0u8; 100])
+            .await;
+
+        let target = format!("s3://{bucket}/data/");
+
+        // Sub-assertion 1: text — KEY column is "foo.txt" (not "data/foo.txt")
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--header",
+            "--show-relative-path",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        let data_line = output
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .nth(1)
+            .expect("no data row found");
+        let cols = parse_tsv_line(data_line);
+        assert_eq!(
+            cols.last().copied(),
+            Some("foo.txt"),
+            "show-relative-path-prefixed: KEY column should be 'foo.txt' relative to data/, got {:?}",
+            cols.last()
+        );
+
+        // Sub-assertion 2: JSON — Key field is "foo.txt"
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--json",
+            "--show-relative-path",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        let first_line = output
+            .stdout
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .expect("empty JSON output");
+        let v: serde_json::Value =
+            serde_json::from_str(first_line).expect("JSON line failed to parse");
+        assert_eq!(
+            v.get("Key").and_then(|k| k.as_str()),
+            Some("foo.txt"),
+            "show-relative-path-prefixed: Key should be 'foo.txt' relative to data/"
+        );
+    });
+
+    _guard.cleanup().await;
+}
