@@ -990,3 +990,126 @@ async fn e2e_display_delete_marker_row() {
 
     _guard.cleanup().await;
 }
+
+/// Verifies `--summarize` appends a summary line in text mode (with and
+/// without `--human-readable`) and a JSON summary object in JSON mode.
+/// Fixture is 3 objects × 1000 bytes each = 3000 bytes total.
+#[tokio::test]
+async fn e2e_display_summarize_objects() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+        helper.put_object(&bucket, "a.bin", vec![0u8; 1000]).await;
+        helper.put_object(&bucket, "b.bin", vec![0u8; 1000]).await;
+        helper.put_object(&bucket, "c.bin", vec![0u8; 1000]).await;
+
+        let target = format!("s3://{bucket}/");
+
+        // Sub-assertion 1: text, no human-readable
+        let output = TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--summarize"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        let summary = assert_summary_present_text(&output.stdout, "summarize: text no-human");
+        assert!(
+            summary.contains("\t3\tobjects"),
+            "summarize text: expected 3 objects in summary, got {summary:?}"
+        );
+        assert!(
+            summary.contains("\t3000\tbytes"),
+            "summarize text: expected 3000 bytes, got {summary:?}"
+        );
+
+        // Sub-assertion 2: text, human-readable
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--summarize",
+            "--human-readable",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        let summary = assert_summary_present_text(&output.stdout, "summarize: text human");
+        assert!(
+            summary.contains("\t3\tobjects"),
+            "summarize human: expected 3 objects in summary, got {summary:?}"
+        );
+        // Human-readable form should NOT contain "3000\tbytes" (that's
+        // the non-human form).
+        assert!(
+            !summary.contains("\t3000\tbytes"),
+            "summarize human: summary should not have '3000\\tbytes', got {summary:?}"
+        );
+        // And should contain some unit other than "bytes" (KiB, KB, etc.
+        // depending on byte-unit formatting).
+        assert!(
+            summary.contains("KiB") || summary.contains("KB"),
+            "summarize human: expected KiB/KB unit in summary, got {summary:?}"
+        );
+
+        // Sub-assertion 3: JSON
+        let output =
+            TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--summarize", "--json"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        let v = assert_summary_present_json(&output.stdout, "summarize: json");
+        let summary_obj = v
+            .get("Summary")
+            .expect("summarize json: missing Summary object");
+        assert_eq!(
+            summary_obj.get("TotalObjects").and_then(|n| n.as_u64()),
+            Some(3),
+            "summarize json: TotalObjects should be 3"
+        );
+        assert_eq!(
+            summary_obj.get("TotalSize").and_then(|n| n.as_u64()),
+            Some(3000),
+            "summarize json: TotalSize should be 3000"
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// Verifies `--summarize --all-versions` appends the delete-markers
+/// count to the summary line. Fixture is a versioned bucket with 2
+/// versions of doc.txt (100 + 200 bytes) and 1 delete marker.
+#[tokio::test]
+async fn e2e_display_summarize_versioned() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_versioned_bucket(&bucket).await;
+        helper.put_object(&bucket, "doc.txt", vec![0u8; 100]).await;
+        helper.put_object(&bucket, "doc.txt", vec![0u8; 200]).await;
+        helper.create_delete_marker(&bucket, "doc.txt").await;
+
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--all-versions",
+            "--summarize",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        let summary = assert_summary_present_text(&output.stdout, "summarize versioned");
+        // 2 live object versions (100 + 200 = 300 bytes)
+        assert!(
+            summary.contains("\t2\tobjects"),
+            "summarize versioned: expected 2 objects, got {summary:?}"
+        );
+        assert!(
+            summary.contains("\t300\tbytes"),
+            "summarize versioned: expected 300 bytes, got {summary:?}"
+        );
+        // 1 delete marker
+        assert!(
+            summary.contains("\t1\tdelete markers"),
+            "summarize versioned: expected 1 delete markers, got {summary:?}"
+        );
+    });
+
+    _guard.cleanup().await;
+}
