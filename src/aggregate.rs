@@ -369,8 +369,11 @@ fn cmp_mtime(a: &ListEntry, b: &ListEntry) -> std::cmp::Ordering {
     }
 }
 
+/// Entries beyond this count are sorted in parallel with rayon.
+const PARALLEL_SORT_THRESHOLD: usize = 1_000_000;
+
 pub fn sort_entries(entries: &mut [ListEntry], fields: &[SortField], reverse: bool) {
-    entries.sort_by(|a, b| {
+    let cmp_fn = |a: &ListEntry, b: &ListEntry| {
         let mut cmp = std::cmp::Ordering::Equal;
         for field in fields {
             cmp = cmp.then_with(|| match field {
@@ -381,7 +384,14 @@ pub fn sort_entries(entries: &mut [ListEntry], fields: &[SortField], reverse: bo
             });
         }
         if reverse { cmp.reverse() } else { cmp }
-    });
+    };
+
+    if entries.len() >= PARALLEL_SORT_THRESHOLD {
+        use rayon::slice::ParallelSliceMut;
+        entries.par_sort_by(cmp_fn);
+    } else {
+        entries.sort_by(cmp_fn);
+    }
 }
 
 pub fn format_entry_json(entry: &ListEntry, opts: &FormatOptions) -> String {
