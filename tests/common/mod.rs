@@ -6,6 +6,7 @@
 
 #![allow(dead_code)]
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use aws_config::BehaviorVersion;
@@ -283,5 +284,239 @@ impl TestHelper {
 
             continuation_token = next_token;
         }
+    }
+}
+
+impl TestHelper {
+    // -----------------------------------------------------------------------
+    // Object operations
+    // -----------------------------------------------------------------------
+
+    /// Upload an object with the given body bytes.
+    pub async fn put_object(&self, bucket: &str, key: &str, body: Vec<u8>) {
+        self.client
+            .put_object()
+            .bucket(bucket)
+            .key(key)
+            .body(body.into())
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("Failed to put object {key} in {bucket}: {e}"));
+    }
+
+    /// Upload an object with an explicit Content-Type.
+    pub async fn put_object_with_content_type(
+        &self,
+        bucket: &str,
+        key: &str,
+        body: Vec<u8>,
+        content_type: &str,
+    ) {
+        self.client
+            .put_object()
+            .bucket(bucket)
+            .key(key)
+            .body(body.into())
+            .content_type(content_type)
+            .send()
+            .await
+            .unwrap_or_else(|e| {
+                panic!("Failed to put object {key} with content-type {content_type}: {e}")
+            });
+    }
+
+    /// Upload an object with user-defined metadata.
+    pub async fn put_object_with_metadata(
+        &self,
+        bucket: &str,
+        key: &str,
+        body: Vec<u8>,
+        metadata: HashMap<String, String>,
+    ) {
+        let mut builder = self
+            .client
+            .put_object()
+            .bucket(bucket)
+            .key(key)
+            .body(body.into());
+
+        for (k, v) in &metadata {
+            builder = builder.metadata(k, v);
+        }
+
+        builder
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("Failed to put object {key} with metadata: {e}"));
+    }
+
+    /// Upload an object with S3 tags.
+    pub async fn put_object_with_tags(
+        &self,
+        bucket: &str,
+        key: &str,
+        body: Vec<u8>,
+        tags: HashMap<String, String>,
+    ) {
+        let tag_string: String = tags
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join("&");
+
+        self.client
+            .put_object()
+            .bucket(bucket)
+            .key(key)
+            .body(body.into())
+            .tagging(&tag_string)
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("Failed to put object {key} with tags: {e}"));
+    }
+
+    /// Upload an object with content-type, metadata, AND tags all at once.
+    pub async fn put_object_full(
+        &self,
+        bucket: &str,
+        key: &str,
+        body: Vec<u8>,
+        content_type: &str,
+        metadata: HashMap<String, String>,
+        tags: HashMap<String, String>,
+    ) {
+        let tag_string: String = tags
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join("&");
+
+        let mut builder = self
+            .client
+            .put_object()
+            .bucket(bucket)
+            .key(key)
+            .body(body.into())
+            .content_type(content_type)
+            .tagging(&tag_string);
+
+        for (k, v) in &metadata {
+            builder = builder.metadata(k, v);
+        }
+
+        builder
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("Failed to put object {key} with full properties: {e}"));
+    }
+
+    /// Upload multiple objects in parallel (up to 16 concurrent uploads).
+    pub async fn put_objects_parallel(&self, bucket: &str, objects: Vec<(String, Vec<u8>)>) {
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(16));
+        let mut set = tokio::task::JoinSet::new();
+        let client = self.client.clone();
+        let bucket = bucket.to_string();
+
+        for (key, body) in objects {
+            let client = client.clone();
+            let bucket = bucket.clone();
+            let permit = semaphore.clone().acquire_owned().await.unwrap();
+            set.spawn(async move {
+                client
+                    .put_object()
+                    .bucket(&bucket)
+                    .key(&key)
+                    .body(body.into())
+                    .send()
+                    .await
+                    .unwrap_or_else(|e| panic!("Failed to put object {key} in {bucket}: {e}"));
+                drop(permit);
+            });
+        }
+
+        while let Some(result) = set.join_next().await {
+            result.expect("Upload task panicked");
+        }
+    }
+
+    /// List remaining object keys under the given prefix.
+    pub async fn list_objects(&self, bucket: &str, prefix: &str) -> Vec<String> {
+        let mut keys = Vec::new();
+        let mut continuation_token: Option<String> = None;
+
+        loop {
+            let mut req = self.client.list_objects_v2().bucket(bucket).prefix(prefix);
+            if let Some(ref token) = continuation_token {
+                req = req.continuation_token(token);
+            }
+
+            let resp = req
+                .send()
+                .await
+                .unwrap_or_else(|e| panic!("Failed to list objects in {bucket}/{prefix}: {e}"));
+
+            for obj in resp.contents() {
+                if let Some(key) = obj.key() {
+                    keys.push(key.to_string());
+                }
+            }
+
+            if resp.is_truncated() == Some(true) {
+                continuation_token = resp.next_continuation_token().map(|s| s.to_string());
+            } else {
+                break;
+            }
+        }
+
+        keys
+    }
+
+    /// List object versions in a bucket. Returns (key, version_id) pairs.
+    /// Delete markers are returned with a "[delete-marker]" prefix on the key.
+    pub async fn list_object_versions(&self, bucket: &str) -> Vec<(String, String)> {
+        let mut result: Vec<(String, String)> = Vec::new();
+        let mut key_marker: Option<String> = None;
+        let mut version_id_marker: Option<String> = None;
+
+        loop {
+            let mut req = self.client.list_object_versions().bucket(bucket);
+            if let Some(ref km) = key_marker {
+                req = req.key_marker(km);
+            }
+            if let Some(ref vim) = version_id_marker {
+                req = req.version_id_marker(vim);
+            }
+
+            let resp = req
+                .send()
+                .await
+                .unwrap_or_else(|e| panic!("Failed to list object versions in {bucket}: {e}"));
+
+            for v in resp.versions() {
+                if let (Some(key), Some(vid)) = (v.key(), v.version_id()) {
+                    result.push((key.to_string(), vid.to_string()));
+                }
+            }
+
+            for m in resp.delete_markers() {
+                if let (Some(key), Some(vid)) = (m.key(), m.version_id()) {
+                    result.push((format!("[delete-marker]{key}"), vid.to_string()));
+                }
+            }
+
+            if resp.is_truncated() == Some(true) {
+                key_marker = resp.next_key_marker().map(|s| s.to_string());
+                version_id_marker = resp.next_version_id_marker().map(|s| s.to_string());
+            } else {
+                break;
+            }
+        }
+
+        result
+    }
+
+    /// Count objects remaining under the given prefix.
+    pub async fn count_objects(&self, bucket: &str, prefix: &str) -> usize {
+        self.list_objects(bucket, prefix).await.len()
     }
 }
