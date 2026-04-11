@@ -82,9 +82,42 @@ aws s3api list-buckets --profile s3ls-e2e-test \
   --query 'Buckets[?starts_with(Name, `s3ls-e2e-`)].Name' \
   --output text
 
-# For each leaked bucket:
+# For each leaked *unversioned* bucket:
 aws s3 rb s3://s3ls-e2e-<uuid> --force --profile s3ls-e2e-test
 ```
+
+### Versioned buckets
+
+`aws s3 rb --force` only deletes current object versions. On a versioned
+bucket it leaves behind non-current versions and delete markers, so the
+final `DeleteBucket` call fails with `BucketNotEmpty`. Some e2e tests
+create versioned buckets, so a leaked bucket may need this path instead:
+
+```bash
+BUCKET=s3ls-e2e-<uuid>
+PROFILE=s3ls-e2e-test
+
+# Delete all object versions
+aws s3api delete-objects --bucket "$BUCKET" --profile "$PROFILE" \
+  --delete "$(aws s3api list-object-versions \
+    --bucket "$BUCKET" --profile "$PROFILE" \
+    --output json \
+    --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}')"
+
+# Delete all delete markers
+aws s3api delete-objects --bucket "$BUCKET" --profile "$PROFILE" \
+  --delete "$(aws s3api list-object-versions \
+    --bucket "$BUCKET" --profile "$PROFILE" \
+    --output json \
+    --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}')"
+
+# Finally, delete the empty bucket
+aws s3api delete-bucket --bucket "$BUCKET" --profile "$PROFILE"
+```
+
+If the bucket holds more than 1000 versions + delete markers combined,
+repeat the two `delete-objects` calls until `list-object-versions` returns
+an empty result (each call deletes up to 1000 keys per request).
 
 ## CI
 
