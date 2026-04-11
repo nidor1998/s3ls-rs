@@ -158,7 +158,7 @@ pub enum S3Object {
         last_modified: DateTime<Utc>,
         e_tag: String,
         storage_class: Option<String>,
-        checksum_algorithm: Option<String>,
+        checksum_algorithm: Vec<String>,
         checksum_type: Option<String>,
         owner_display_name: Option<String>,
         owner_id: Option<String>,
@@ -173,7 +173,7 @@ pub enum S3Object {
         e_tag: String,
         is_latest: bool,
         storage_class: Option<String>,
-        checksum_algorithm: Option<String>,
+        checksum_algorithm: Vec<String>,
         checksum_type: Option<String>,
         owner_display_name: Option<String>,
         owner_id: Option<String>,
@@ -218,14 +218,14 @@ impl S3Object {
         }
     }
 
-    pub fn checksum_algorithm(&self) -> Option<&str> {
+    pub fn checksum_algorithm(&self) -> &[String] {
         match self {
             Self::NotVersioning {
                 checksum_algorithm, ..
-            } => checksum_algorithm.as_deref(),
+            } => checksum_algorithm,
             Self::Versioning {
                 checksum_algorithm, ..
-            } => checksum_algorithm.as_deref(),
+            } => checksum_algorithm,
         }
     }
 
@@ -424,7 +424,7 @@ mod tests {
             last_modified: Utc::now(),
             e_tag: "\"abc123\"".to_string(),
             storage_class: Some("STANDARD".to_string()),
-            checksum_algorithm: None,
+            checksum_algorithm: vec![],
             checksum_type: None,
             owner_display_name: None,
             owner_id: None,
@@ -449,7 +449,7 @@ mod tests {
             e_tag: "\"def456\"".to_string(),
             is_latest: false,
             storage_class: Some("GLACIER".to_string()),
-            checksum_algorithm: Some("SHA256".to_string()),
+            checksum_algorithm: vec!["SHA256".to_string()],
             checksum_type: Some("FULL_OBJECT".to_string()),
             owner_display_name: None,
             owner_id: None,
@@ -461,7 +461,7 @@ mod tests {
         assert_eq!(obj.version_id(), Some("v1"));
         assert!(!obj.is_latest());
         assert_eq!(obj.storage_class(), Some("GLACIER"));
-        assert_eq!(obj.checksum_algorithm(), Some("SHA256"));
+        assert_eq!(obj.checksum_algorithm(), &["SHA256"]);
         assert_eq!(obj.checksum_type(), Some("FULL_OBJECT"));
     }
 
@@ -473,7 +473,7 @@ mod tests {
             last_modified: Utc::now(),
             e_tag: "\"e\"".to_string(),
             storage_class: None,
-            checksum_algorithm: None,
+            checksum_algorithm: vec![],
             checksum_type: None,
             owner_display_name: None,
             owner_id: None,

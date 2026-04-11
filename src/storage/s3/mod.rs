@@ -748,10 +748,11 @@ fn convert_object(object: &aws_sdk_s3::types::Object) -> Option<ListEntry> {
     let last_modified = aws_datetime_to_chrono(object.last_modified())?;
     let e_tag = object.e_tag().unwrap_or_default().to_string();
     let storage_class = object.storage_class().map(|sc| sc.as_str().to_string());
-    let checksum_algorithm = object
+    let checksum_algorithm: Vec<String> = object
         .checksum_algorithm()
-        .first()
-        .map(|a| a.as_str().to_string());
+        .iter()
+        .map(|a| a.as_str().to_string())
+        .collect();
     let checksum_type = object.checksum_type().map(|ct| ct.as_str().to_string());
     let owner_display_name = object
         .owner()
@@ -791,10 +792,11 @@ fn convert_object_version(version: &aws_sdk_s3::types::ObjectVersion) -> Option<
     let e_tag = version.e_tag().unwrap_or_default().to_string();
     let is_latest = version.is_latest().unwrap_or(false);
     let storage_class = version.storage_class().map(|sc| sc.as_str().to_string());
-    let checksum_algorithm = version
+    let checksum_algorithm: Vec<String> = version
         .checksum_algorithm()
-        .first()
-        .map(|a| a.as_str().to_string());
+        .iter()
+        .map(|a| a.as_str().to_string())
+        .collect();
     let checksum_type = version.checksum_type().map(|ct| ct.as_str().to_string());
     let owner_display_name = version
         .owner()
@@ -989,7 +991,7 @@ mod tests {
             last_modified: chrono::Utc::now(),
             e_tag: "\"e\"".to_string(),
             storage_class: None,
-            checksum_algorithm: None,
+            checksum_algorithm: vec![],
             checksum_type: None,
             owner_display_name: None,
             owner_id: None,

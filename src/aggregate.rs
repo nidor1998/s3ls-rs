@@ -247,7 +247,7 @@ pub fn format_entry(entry: &ListEntry, opts: &FormatOptions) -> String {
                 cols.push(obj.e_tag().trim_matches('"').to_string());
             }
             if opts.show_checksum_algorithm {
-                cols.push(obj.checksum_algorithm().unwrap_or("").to_string());
+                cols.push(obj.checksum_algorithm().join(","));
             }
             if opts.show_checksum_type {
                 cols.push(obj.checksum_type().unwrap_or("").to_string());
@@ -402,10 +402,15 @@ pub fn format_entry_json(entry: &ListEntry, opts: &FormatOptions) -> String {
                 "ETag".to_string(),
                 serde_json::Value::String(obj.e_tag().to_string()),
             );
-            if let Some(algo) = obj.checksum_algorithm() {
+            if !obj.checksum_algorithm().is_empty() {
                 map.insert(
                     "ChecksumAlgorithm".to_string(),
-                    serde_json::Value::Array(vec![serde_json::Value::String(algo.to_string())]),
+                    serde_json::Value::Array(
+                        obj.checksum_algorithm()
+                            .iter()
+                            .map(|a| serde_json::Value::String(a.clone()))
+                            .collect(),
+                    ),
                 );
             }
             if let Some(ctype) = obj.checksum_type() {
@@ -612,7 +617,7 @@ mod tests {
                 .unwrap(),
             e_tag: "\"e\"".to_string(),
             storage_class: Some("STANDARD".to_string()),
-            checksum_algorithm: None,
+            checksum_algorithm: vec![],
             checksum_type: None,
             owner_display_name: None,
             owner_id: None,
@@ -779,7 +784,7 @@ mod tests {
             e_tag: "\"e\"".to_string(),
             is_latest: true,
             storage_class: Some("STANDARD".to_string()),
-            checksum_algorithm: None,
+            checksum_algorithm: vec![],
             checksum_type: None,
             owner_display_name: None,
             owner_id: None,
