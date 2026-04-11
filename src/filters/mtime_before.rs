@@ -21,7 +21,7 @@ impl MtimeBeforeFilter {
 }
 
 impl ObjectFilter for MtimeBeforeFilter {
-    fn matches(&self, entry: &ListEntry) -> bool {
+    fn matches(&self, entry: &ListEntry) -> anyhow::Result<bool> {
         match entry.last_modified() {
             Some(lm) => {
                 if self.before <= *lm {
@@ -34,11 +34,11 @@ impl ObjectFilter for MtimeBeforeFilter {
                         config_time = %self.before.to_rfc3339(),
                         "entry filtered."
                     );
-                    return false;
+                    return Ok(false);
                 }
-                true
+                Ok(true)
             }
-            None => true,
+            None => Ok(true),
         }
     }
 }
@@ -70,21 +70,29 @@ mod tests {
     fn matches_older_entries() {
         let now = Utc::now();
         let filter = MtimeBeforeFilter::new(now);
-        assert!(filter.matches(&make_entry_at(now - Duration::hours(1))));
-        assert!(!filter.matches(&make_entry_at(now + Duration::hours(1))));
+        assert!(
+            filter
+                .matches(&make_entry_at(now - Duration::hours(1)))
+                .unwrap()
+        );
+        assert!(
+            !filter
+                .matches(&make_entry_at(now + Duration::hours(1)))
+                .unwrap()
+        );
     }
 
     #[test]
     fn exact_time_does_not_match() {
         let now = Utc::now();
         let filter = MtimeBeforeFilter::new(now);
-        assert!(!filter.matches(&make_entry_at(now)));
+        assert!(!filter.matches(&make_entry_at(now)).unwrap());
     }
 
     #[test]
     fn common_prefix_passes() {
         let filter = MtimeBeforeFilter::new(Utc::now());
         let entry = ListEntry::CommonPrefix("logs/".to_string());
-        assert!(filter.matches(&entry));
+        assert!(filter.matches(&entry).unwrap());
     }
 }

@@ -44,7 +44,14 @@ impl ObjectLister {
             if self.hide_delete_markers && entry.is_delete_marker() {
                 continue;
             }
-            if self.filter_chain.matches(&entry) && self.sender.send(entry).await.is_err() {
+            let passes = match self.filter_chain.matches(&entry) {
+                Ok(p) => p,
+                Err(e) => {
+                    self.cancellation_token.cancel();
+                    return Err(e);
+                }
+            };
+            if passes && self.sender.send(entry).await.is_err() {
                 break;
             }
         }

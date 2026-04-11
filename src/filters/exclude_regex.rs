@@ -5,8 +5,9 @@
 
 use crate::filters::ObjectFilter;
 use crate::types::ListEntry;
+use anyhow::{Context, Result};
 use fancy_regex::Regex;
-use tracing::{debug, warn};
+use tracing::{debug, error};
 
 const FILTER_NAME: &str = "ExcludeRegexFilter";
 
@@ -26,19 +27,25 @@ impl ExcludeRegexFilter {
 }
 
 impl ObjectFilter for ExcludeRegexFilter {
-    fn matches(&self, entry: &ListEntry) -> bool {
-        let match_result = match self.regex.is_match(entry.key()) {
-            Ok(matched) => matched,
-            Err(e) => {
-                warn!(
+    fn matches(&self, entry: &ListEntry) -> Result<bool> {
+        let match_result = self
+            .regex
+            .is_match(entry.key())
+            .map_err(|e| {
+                error!(
                     name = FILTER_NAME,
                     key = entry.key(),
                     error = %e,
-                    "regex match failed, keeping entry to be safe."
+                    "regex match failed, stopping pipeline"
                 );
-                return true;
-            }
-        };
+                e
+            })
+            .with_context(|| {
+                format!(
+                    "{FILTER_NAME}: regex match failed for key {:?}",
+                    entry.key()
+                )
+            })?;
 
         if match_result {
             debug!(
@@ -51,7 +58,7 @@ impl ObjectFilter for ExcludeRegexFilter {
             );
         }
 
-        !match_result
+        Ok(!match_result)
     }
 }
 
@@ -80,8 +87,8 @@ mod tests {
     #[test]
     fn excludes_matching_key() {
         let filter = ExcludeRegexFilter::new(r".*\.log$").unwrap();
-        assert!(!filter.matches(&make_entry("app.log")));
-        assert!(filter.matches(&make_entry("app.txt")));
+        assert!(!filter.matches(&make_entry("app.log")).unwrap());
+        assert!(filter.matches(&make_entry("app.txt")).unwrap());
     }
 
     #[test]
@@ -95,11 +102,11 @@ mod tests {
             owner_display_name: None,
             owner_id: None,
         };
-        assert!(!filter.matches(&entry));
+        assert!(!filter.matches(&entry).unwrap());
     }
 
     #[test]
-    fn regex_error_keeps_entry() {
+    fn regex_error_returns_err() {
         use fancy_regex::RegexBuilder;
 
         // Backreference forces fancy_regex VM. With backtrack_limit(1),
@@ -112,8 +119,8 @@ mod tests {
         // Verify this actually produces an error (not Ok)
         assert!(regex.is_match("aaaaaaaaaaaaaaac").is_err());
 
-        // On error, exclude filter keeps entry (returns true) to be safe
+        // Filter should propagate the error (not silently keep or drop entry)
         let filter = ExcludeRegexFilter::from_regex(regex);
-        assert!(filter.matches(&make_entry("aaaaaaaaaaaaaaac")));
+        assert!(filter.matches(&make_entry("aaaaaaaaaaaaaaac")).is_err());
     }
 }
