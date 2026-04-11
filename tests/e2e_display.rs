@@ -1158,3 +1158,192 @@ async fn e2e_display_human_readable() {
 
     _guard.cleanup().await;
 }
+
+/// Bucket listing `--show-bucket-arn` — adds a BUCKET_ARN column in text
+/// mode and a `BucketArn` field in JSON mode. Assertions are scoped to
+/// the test bucket's unique name because the account may have other
+/// buckets.
+#[tokio::test]
+async fn e2e_display_bucket_listing_show_bucket_arn() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+
+        // Sub-assertion 1: text with flag ON — header contains BUCKET_ARN
+        let output = TestHelper::run_s3ls(&["--header", "--show-bucket-arn"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        let header_line = output
+            .stdout
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .expect("bucket listing text on: empty stdout");
+        assert!(
+            header_line.contains("BUCKET_ARN"),
+            "bucket listing show-bucket-arn text on: header missing BUCKET_ARN, got {header_line:?}"
+        );
+        // Find our bucket's row and verify the ARN cell is non-empty.
+        let bucket_row = output
+            .stdout
+            .lines()
+            .find(|l| l.contains(&bucket))
+            .unwrap_or_else(|| {
+                panic!("bucket listing text on: test bucket {bucket} not found in output")
+            });
+        let cols = parse_tsv_line(bucket_row);
+        // Header is DATE\tREGION\tBUCKET\tBUCKET_ARN[\tOWNER...], so
+        // BUCKET_ARN is column index 3.
+        assert!(
+            cols.len() >= 4 && !cols[3].is_empty(),
+            "bucket listing show-bucket-arn: expected non-empty BUCKET_ARN cell, got row {bucket_row:?}"
+        );
+
+        // Sub-assertion 2: text with flag OFF — header does NOT contain BUCKET_ARN
+        let output = TestHelper::run_s3ls(&["--header"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        let header_line = output
+            .stdout
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .expect("bucket listing text off: empty stdout");
+        assert!(
+            !header_line.contains("BUCKET_ARN"),
+            "bucket listing show-bucket-arn text off: header unexpectedly contains BUCKET_ARN, got {header_line:?}"
+        );
+
+        // Sub-assertion 3: JSON with flag ON — BucketArn field present
+        let output = TestHelper::run_s3ls(&["--json", "--show-bucket-arn"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        let bucket_line = output
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .find(|l| {
+                serde_json::from_str::<serde_json::Value>(l)
+                    .ok()
+                    .and_then(|v| v.get("Name").and_then(|n| n.as_str()).map(|s| s == bucket))
+                    .unwrap_or(false)
+            })
+            .unwrap_or_else(|| {
+                panic!("bucket listing json on: test bucket {bucket} not found in JSON output")
+            });
+        let v: serde_json::Value = serde_json::from_str(bucket_line).unwrap();
+        assert!(
+            v.get("BucketArn").is_some(),
+            "bucket listing show-bucket-arn json on: BucketArn field missing, got {v:?}"
+        );
+
+        // Sub-assertion 4: JSON without flag — BucketArn field absent
+        let output = TestHelper::run_s3ls(&["--json"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        let bucket_line = output
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .find(|l| {
+                serde_json::from_str::<serde_json::Value>(l)
+                    .ok()
+                    .and_then(|v| v.get("Name").and_then(|n| n.as_str()).map(|s| s == bucket))
+                    .unwrap_or(false)
+            })
+            .unwrap_or_else(|| {
+                panic!("bucket listing json off: test bucket {bucket} not found in JSON output")
+            });
+        let v: serde_json::Value = serde_json::from_str(bucket_line).unwrap();
+        assert!(
+            v.get("BucketArn").is_none(),
+            "bucket listing show-bucket-arn json off: BucketArn should be absent, got {:?}",
+            v.get("BucketArn")
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// Bucket listing `--show-owner` — adds OWNER_DISPLAY_NAME and OWNER_ID
+/// columns in text mode and an `Owner` object in JSON mode.
+#[tokio::test]
+async fn e2e_display_bucket_listing_show_owner() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+
+        // Sub-assertion 1: text with flag ON — header contains OWNER_ID
+        let output = TestHelper::run_s3ls(&["--header", "--show-owner"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        let header_line = output
+            .stdout
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .expect("bucket listing show-owner text on: empty stdout");
+        assert!(
+            header_line.contains("OWNER_ID"),
+            "bucket listing show-owner text on: header missing OWNER_ID, got {header_line:?}"
+        );
+
+        // Sub-assertion 2: text with flag OFF — header does NOT contain OWNER_ID
+        let output = TestHelper::run_s3ls(&["--header"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        let header_line = output
+            .stdout
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .expect("bucket listing show-owner text off: empty stdout");
+        assert!(
+            !header_line.contains("OWNER_ID"),
+            "bucket listing show-owner text off: header unexpectedly contains OWNER_ID, got {header_line:?}"
+        );
+
+        // Sub-assertion 3: JSON with flag ON — Owner field present for our bucket
+        let output = TestHelper::run_s3ls(&["--json", "--show-owner"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        let bucket_line = output
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .find(|l| {
+                serde_json::from_str::<serde_json::Value>(l)
+                    .ok()
+                    .and_then(|v| v.get("Name").and_then(|n| n.as_str()).map(|s| s == bucket))
+                    .unwrap_or(false)
+            })
+            .unwrap_or_else(|| {
+                panic!("bucket listing show-owner json on: test bucket {bucket} not found")
+            });
+        let v: serde_json::Value = serde_json::from_str(bucket_line).unwrap();
+        assert!(
+            v.get("Owner").is_some(),
+            "bucket listing show-owner json on: Owner field missing, got {v:?}"
+        );
+
+        // Sub-assertion 4: JSON without flag — Owner field absent
+        let output = TestHelper::run_s3ls(&["--json"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        let bucket_line = output
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .find(|l| {
+                serde_json::from_str::<serde_json::Value>(l)
+                    .ok()
+                    .and_then(|v| v.get("Name").and_then(|n| n.as_str()).map(|s| s == bucket))
+                    .unwrap_or(false)
+            })
+            .unwrap_or_else(|| {
+                panic!("bucket listing show-owner json off: test bucket {bucket} not found")
+            });
+        let v: serde_json::Value = serde_json::from_str(bucket_line).unwrap();
+        assert!(
+            v.get("Owner").is_none(),
+            "bucket listing show-owner json off: Owner should be absent, got {:?}",
+            v.get("Owner")
+        );
+    });
+
+    _guard.cleanup().await;
+}
