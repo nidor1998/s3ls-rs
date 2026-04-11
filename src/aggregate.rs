@@ -19,6 +19,15 @@ pub struct FormatOptions {
     pub show_restore_status: bool,
     pub all_versions: bool,
     pub prefix: Option<String>,
+    /// When false (the default), control characters and ANSI escape
+    /// sequences in S3-returned strings (keys, prefixes, owner fields)
+    /// are replaced with `\xNN` hex escapes in text-mode output. This
+    /// prevents a maliciously-named S3 object from forging phantom rows
+    /// in tab-delimited output or injecting terminal escape sequences.
+    /// Users who want byte-exact keys can pass `--raw-output` or use
+    /// `--json` (JSON output always preserves the original bytes since
+    /// serde_json escapes them safely).
+    pub raw_output: bool,
 }
 
 impl FormatOptions {
@@ -39,7 +48,50 @@ impl FormatOptions {
             show_restore_status: display_config.show_restore_status,
             all_versions,
             prefix,
+            raw_output: display_config.raw_output,
         }
+    }
+}
+
+/// Escape control characters and ESC in a string for safe text-mode
+/// output. Replaces `\x00-\x1f` and `\x7f` with `\xNN` hex escape
+/// notation. Returns `Cow::Borrowed` when no escaping is needed (the
+/// common case) so most strings incur zero allocations.
+///
+/// This is applied to any user-visible string that originated from S3
+/// (object keys, common prefixes, owner names, bucket names) so that a
+/// maliciously-named object cannot inject newlines, tabs, or ANSI
+/// escape sequences into the operator's terminal or break downstream
+/// tab-delimited parsing.
+pub(crate) fn escape_control_chars(s: &str) -> std::borrow::Cow<'_, str> {
+    // Fast path: any control byte in the UTF-8 encoding of `s` is
+    // itself a control character, because UTF-8 continuation bytes are
+    // all `>= 0x80`. So a byte scan is sufficient to detect "no
+    // escaping needed" and lets us return `Cow::Borrowed` zero-alloc.
+    if !s.bytes().any(|b| b < 0x20 || b == 0x7f) {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    // Slow path: iterate by `char` so multi-byte UTF-8 sequences
+    // survive intact. Iterating by byte and pushing each `b as char`
+    // would silently corrupt non-ASCII characters.
+    let mut out = String::with_capacity(s.len() + 8);
+    for ch in s.chars() {
+        let cp = ch as u32;
+        if cp < 0x20 || cp == 0x7f {
+            out.push_str(&format!("\\x{cp:02x}"));
+        } else {
+            out.push(ch);
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
+/// Apply `escape_control_chars` only when `raw_output` is false.
+fn maybe_escape<'a>(s: &'a str, opts: &FormatOptions) -> std::borrow::Cow<'a, str> {
+    if opts.raw_output {
+        std::borrow::Cow::Borrowed(s)
+    } else {
+        escape_control_chars(s)
     }
 }
 
@@ -299,8 +351,8 @@ pub fn format_entry(entry: &ListEntry, opts: &FormatOptions) -> String {
                 cols.push(String::new());
                 cols.push(String::new());
             }
-            // key
-            cols.push(format_key_display(entry.key(), opts));
+            // key (escape control chars in text mode to avoid injection)
+            cols.push(maybe_escape(&format_key_display(entry.key(), opts), opts).into_owned());
         }
         ListEntry::Object(obj) => {
             cols.push(format_rfc3339(obj.last_modified()));
@@ -328,8 +380,8 @@ pub fn format_entry(entry: &ListEntry, opts: &FormatOptions) -> String {
                 });
             }
             if opts.show_owner {
-                cols.push(obj.owner_display_name().unwrap_or("").to_string());
-                cols.push(obj.owner_id().unwrap_or("").to_string());
+                cols.push(maybe_escape(obj.owner_display_name().unwrap_or(""), opts).into_owned());
+                cols.push(maybe_escape(obj.owner_id().unwrap_or(""), opts).into_owned());
             }
             if opts.show_restore_status {
                 cols.push(
@@ -339,7 +391,7 @@ pub fn format_entry(entry: &ListEntry, opts: &FormatOptions) -> String {
                 );
                 cols.push(obj.restore_expiry_date().unwrap_or("").to_string());
             }
-            cols.push(format_key_display(entry.key(), opts));
+            cols.push(maybe_escape(&format_key_display(entry.key(), opts), opts).into_owned());
         }
         ListEntry::DeleteMarker {
             key,
@@ -372,15 +424,17 @@ pub fn format_entry(entry: &ListEntry, opts: &FormatOptions) -> String {
                 });
             }
             if opts.show_owner {
-                cols.push(owner_display_name.clone().unwrap_or_default());
-                cols.push(owner_id.clone().unwrap_or_default());
+                cols.push(
+                    maybe_escape(owner_display_name.as_deref().unwrap_or(""), opts).into_owned(),
+                );
+                cols.push(maybe_escape(owner_id.as_deref().unwrap_or(""), opts).into_owned());
             }
             if opts.show_restore_status {
                 // Delete markers have no restore status — leave empty.
                 cols.push(String::new());
                 cols.push(String::new());
             }
-            cols.push(format_key_display(key, opts));
+            cols.push(maybe_escape(&format_key_display(key, opts), opts).into_owned());
         }
     }
 
@@ -1070,6 +1124,196 @@ mod tests {
             line.contains("id-123"),
             "expected owner id in output, got: {line:?}"
         );
+    }
+
+    // ========================================================================
+    // Control-char escaping in text output (injection defense)
+    // ========================================================================
+
+    #[test]
+    fn escape_control_chars_passes_plain_ascii() {
+        let s = "hello/world.txt";
+        // Should return a borrowed Cow (zero-alloc) for plain input
+        assert!(matches!(
+            escape_control_chars(s),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        assert_eq!(escape_control_chars(s).as_ref(), "hello/world.txt");
+    }
+
+    #[test]
+    fn escape_control_chars_replaces_newline_and_tab() {
+        assert_eq!(escape_control_chars("a\nb").as_ref(), "a\\x0ab");
+        assert_eq!(escape_control_chars("a\tb").as_ref(), "a\\x09b");
+        assert_eq!(escape_control_chars("a\rb").as_ref(), "a\\x0db");
+    }
+
+    #[test]
+    fn escape_control_chars_replaces_ansi_escape() {
+        // ESC = 0x1b — the classic terminal injection vector
+        assert_eq!(escape_control_chars("\x1b[2Jevil").as_ref(), "\\x1b[2Jevil");
+    }
+
+    #[test]
+    fn escape_control_chars_replaces_del() {
+        assert_eq!(escape_control_chars("a\x7fb").as_ref(), "a\\x7fb");
+    }
+
+    #[test]
+    fn escape_control_chars_leaves_printable_utf8_alone() {
+        // Multi-byte UTF-8 should not be escaped (code points >= 0x80).
+        // Goes through the fast-path (Borrowed) so no iteration at all.
+        let s = "héllo-日本語.txt";
+        assert_eq!(escape_control_chars(s).as_ref(), s);
+    }
+
+    #[test]
+    fn escape_control_chars_preserves_utf8_around_control_chars() {
+        // Regression: the slow path must iterate by char, not by byte.
+        // A byte-level loop would push each continuation byte of a
+        // multi-byte UTF-8 sequence as a separate Rust `char`,
+        // producing mojibake like "æ—¥" instead of "日".
+        assert_eq!(escape_control_chars("日\n本").as_ref(), "日\\x0a本");
+        assert_eq!(escape_control_chars("résumé\t").as_ref(), "résumé\\x09");
+        // 4-byte UTF-8 (emoji) plus a control char
+        assert_eq!(escape_control_chars("🦀\x1bend").as_ref(), "🦀\\x1bend");
+    }
+
+    #[test]
+    fn format_text_escapes_malicious_key_by_default() {
+        // Regression: a key containing newline and tab must not be able
+        // to forge a phantom row in tab-delimited output.
+        let evil_key = "innocent.txt\n2024-01-01T00:00:00Z\t0\tphantom.txt";
+        let entry = ListEntry::Object(S3Object::NotVersioning {
+            key: evil_key.to_string(),
+            size: 100,
+            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            e_tag: "\"e\"".to_string(),
+            storage_class: Some("STANDARD".to_string()),
+            checksum_algorithm: vec![],
+            checksum_type: None,
+            owner_display_name: None,
+            owner_id: None,
+            is_restore_in_progress: None,
+            restore_expiry_date: None,
+        });
+        let opts = FormatOptions::default();
+        let line = format_entry(&entry, &opts);
+        // Raw \n must not appear in the output line
+        assert!(
+            !line.contains('\n'),
+            "newline should have been escaped, got: {line:?}"
+        );
+        // The escaped form should be present
+        assert!(line.contains("\\x0a"));
+    }
+
+    #[test]
+    fn format_text_preserves_malicious_key_when_raw_output() {
+        // With --raw-output, escaping is disabled — user opted in.
+        let evil_key = "evil\nkey";
+        let entry = ListEntry::Object(S3Object::NotVersioning {
+            key: evil_key.to_string(),
+            size: 100,
+            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            e_tag: "\"e\"".to_string(),
+            storage_class: Some("STANDARD".to_string()),
+            checksum_algorithm: vec![],
+            checksum_type: None,
+            owner_display_name: None,
+            owner_id: None,
+            is_restore_in_progress: None,
+            restore_expiry_date: None,
+        });
+        let opts = FormatOptions {
+            raw_output: true,
+            ..Default::default()
+        };
+        let line = format_entry(&entry, &opts);
+        assert!(line.contains("evil\nkey"));
+    }
+
+    #[test]
+    fn format_text_escapes_owner_fields() {
+        let entry = ListEntry::Object(S3Object::NotVersioning {
+            key: "file.txt".to_string(),
+            size: 100,
+            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            e_tag: "\"e\"".to_string(),
+            storage_class: Some("STANDARD".to_string()),
+            checksum_algorithm: vec![],
+            checksum_type: None,
+            owner_display_name: Some("alice\x1b[31m".to_string()),
+            owner_id: None,
+            is_restore_in_progress: None,
+            restore_expiry_date: None,
+        });
+        let opts = FormatOptions {
+            show_owner: true,
+            ..Default::default()
+        };
+        let line = format_entry(&entry, &opts);
+        assert!(!line.contains('\x1b'));
+        assert!(line.contains("\\x1b"));
+    }
+
+    #[test]
+    fn format_text_escapes_delete_marker_owner() {
+        let entry = ListEntry::DeleteMarker {
+            key: "file.txt".to_string(),
+            version_id: "v1".to_string(),
+            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            is_latest: false,
+            owner_display_name: Some("alice\nbob".to_string()),
+            owner_id: Some("id\tnext".to_string()),
+        };
+        let opts = FormatOptions {
+            all_versions: true,
+            show_owner: true,
+            ..Default::default()
+        };
+        let line = format_entry(&entry, &opts);
+        assert!(!line.contains('\n'));
+        assert!(line.contains("alice\\x0abob"));
+        assert!(line.contains("id\\x09next"));
+    }
+
+    #[test]
+    fn format_text_escapes_common_prefix() {
+        let entry = ListEntry::CommonPrefix("logs\n/evil/".to_string());
+        let opts = FormatOptions::default();
+        let line = format_entry(&entry, &opts);
+        assert!(!line.contains('\n'));
+        assert!(line.contains("logs\\x0a/evil/"));
+    }
+
+    #[test]
+    fn format_json_preserves_control_chars() {
+        // JSON output leaves control chars to serde_json, which escapes
+        // them as \u00XX. The raw bytes should never appear as literal
+        // newlines/tabs in the output either way.
+        let entry = ListEntry::Object(S3Object::NotVersioning {
+            key: "evil\nkey".to_string(),
+            size: 100,
+            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            e_tag: "\"e\"".to_string(),
+            storage_class: Some("STANDARD".to_string()),
+            checksum_algorithm: vec![],
+            checksum_type: None,
+            owner_display_name: None,
+            owner_id: None,
+            is_restore_in_progress: None,
+            restore_expiry_date: None,
+        });
+        let opts = FormatOptions::default();
+        let json = format_entry_json(&entry, &opts);
+        // serde_json escapes the literal \n in the JSON *string*; the
+        // final output line contains "\n" as two characters but no raw
+        // newline byte. Parse it back to confirm the original value is
+        // still exactly "evil\nkey".
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["Key"], "evil\nkey");
+        assert!(!json.contains('\n'));
     }
 
     #[test]

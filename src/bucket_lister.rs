@@ -116,15 +116,28 @@ pub async fn list_buckets(config: &Config) -> Result<()> {
             }
             writeln!(writer, "{}", serde_json::to_string(&map).unwrap())?;
         } else {
-            let mut line = format!("{date}\t{region}\t{}", entry.name);
+            // Escape control chars in S3-returned strings to prevent
+            // injection of fake rows or terminal escape sequences via
+            // maliciously-named buckets / owners. JSON output is handled
+            // safely by serde_json above.
+            let escape = |s: &str| -> String {
+                if config.display_config.raw_output {
+                    s.to_string()
+                } else {
+                    crate::aggregate::escape_control_chars(s).into_owned()
+                }
+            };
+
+            let name = escape(&entry.name);
+            let mut line = format!("{date}\t{region}\t{name}");
             if show_bucket_arn {
                 line.push_str(&format!("\t{}", entry.bucket_arn.as_deref().unwrap_or("")));
             }
             if show_owner {
                 line.push_str(&format!(
                     "\t{}\t{}",
-                    entry.owner_display_name.as_deref().unwrap_or(""),
-                    entry.owner_id.as_deref().unwrap_or("")
+                    escape(entry.owner_display_name.as_deref().unwrap_or("")),
+                    escape(entry.owner_id.as_deref().unwrap_or(""))
                 ));
             }
             writeln!(writer, "{line}")?;

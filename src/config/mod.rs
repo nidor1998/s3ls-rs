@@ -124,6 +124,11 @@ pub struct DisplayConfig {
     pub show_bucket_arn: bool,
     pub header: bool,
     pub json: bool,
+    /// Emit raw S3 key/prefix bytes without escaping control characters.
+    /// Defaults to false — text-mode output replaces control chars with
+    /// `\xNN` escapes to prevent injection of fake rows or terminal
+    /// escape sequences by maliciously-named objects.
+    pub raw_output: bool,
 }
 
 /// AWS S3 client configuration.

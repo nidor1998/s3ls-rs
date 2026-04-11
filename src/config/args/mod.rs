@@ -326,6 +326,23 @@ pub struct CLIArgs {
     #[arg(long, env, default_value_t = false, help_heading = "Display")]
     pub json: bool,
 
+    /// Emit raw S3 key/prefix bytes without escaping control characters.
+    ///
+    /// By default, text-mode output replaces control characters
+    /// (\x00-\x1f, \x7f) in keys, prefixes, and owner fields with
+    /// `\xNN` hex escapes. This prevents a maliciously-named S3 object
+    /// from injecting newlines, tabs, or ANSI terminal escape sequences
+    /// into the output. Use this flag to disable escaping when you
+    /// trust the bucket contents and need byte-exact keys for piping.
+    #[arg(
+        long,
+        env,
+        default_value_t = false,
+        conflicts_with = "json",
+        help_heading = "Display"
+    )]
+    pub raw_output: bool,
+
     // -----------------------------------------------------------------------
     // Tracing/Logging options (reused from s3rm-rs)
     // -----------------------------------------------------------------------
@@ -758,6 +775,7 @@ impl TryFrom<CLIArgs> for crate::config::Config {
                 show_bucket_arn: args.show_bucket_arn,
                 header: args.header,
                 json: args.json,
+                raw_output: args.raw_output,
             },
             max_parallel_listings: args.max_parallel_listings,
             max_parallel_listing_max_depth: args.max_parallel_listing_max_depth,
