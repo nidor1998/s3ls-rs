@@ -12,8 +12,8 @@ use std::sync::Arc;
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client;
 use aws_sdk_s3::types::{
-    BucketLocationConstraint, BucketVersioningStatus, CreateBucketConfiguration, Delete,
-    ObjectIdentifier, StorageClass, VersioningConfiguration,
+    BucketLocationConstraint, BucketVersioningStatus, ChecksumAlgorithm, CreateBucketConfiguration,
+    Delete, ObjectIdentifier, StorageClass, VersioningConfiguration,
 };
 use uuid::Uuid;
 
@@ -427,6 +427,36 @@ impl TestHelper {
             .await
             .unwrap_or_else(|e| {
                 panic!("Failed to create delete marker for {key} in {bucket}: {e}")
+            });
+    }
+
+    /// Upload an object with an explicit S3 ChecksumAlgorithm.
+    ///
+    /// Used by display tests that exercise `--show-checksum-algorithm` /
+    /// `--show-checksum-type` — the default PUT does not populate a
+    /// checksum field, so tests that want non-empty checksum columns
+    /// must use this helper.
+    ///
+    /// Accepts the algorithm as a string ("CRC32", "CRC32C", "SHA1",
+    /// "SHA256", "CRC64NVME"). Converts via `ChecksumAlgorithm::from(&str)`
+    /// — same pattern as `put_object_with_storage_class`.
+    pub async fn put_object_with_checksum_algorithm(
+        &self,
+        bucket: &str,
+        key: &str,
+        body: Vec<u8>,
+        algorithm: &str,
+    ) {
+        self.client
+            .put_object()
+            .bucket(bucket)
+            .key(key)
+            .body(body.into())
+            .checksum_algorithm(ChecksumAlgorithm::from(algorithm))
+            .send()
+            .await
+            .unwrap_or_else(|e| {
+                panic!("Failed to put object {key} with checksum-algorithm {algorithm}: {e}")
             });
     }
 
@@ -889,4 +919,83 @@ pub fn assert_json_version_shapes_eq(stdout: &str, expected: &[(&str, bool)], la
             "[{label}] version shape multiset mismatch\n  missing: {missing:?}\n  extra:   {extra:?}\n  stdout:\n{stdout}"
         );
     }
+}
+
+/// Split a tab-delimited line into its columns. Helper for display tests
+/// that need to assert on specific column indices.
+pub fn parse_tsv_line(line: &str) -> Vec<&str> {
+    line.split('\t').collect()
+}
+
+/// Assert the first line of `stdout` (from `s3ls --header ...` in text
+/// mode) is a tab-delimited header row with exactly the expected column
+/// names in order. Panics with the label on mismatch.
+///
+/// Panics if:
+/// - `stdout` has no non-empty lines,
+/// - the first non-empty line's columns don't match `expected` exactly.
+pub fn assert_header_columns(stdout: &str, expected: &[&str], label: &str) {
+    let header_line = stdout
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or_else(|| panic!("[{label}] stdout is empty"));
+    let actual: Vec<&str> = parse_tsv_line(header_line);
+    if actual != expected {
+        panic!(
+            "[{label}] header column mismatch\n  expected: {expected:?}\n  actual:   {actual:?}\n  header line: {header_line}"
+        );
+    }
+}
+
+/// Assert that every non-empty line of `stdout` has exactly
+/// `expected_count` tab-separated columns.
+///
+/// Lines identified as the summary (starting with `"Total:\t"`) are
+/// EXCLUDED from the count check, since the summary has a different
+/// column count than data rows.
+///
+/// The header row (if `--header` was used) has the same column count as
+/// data rows, so it naturally passes the same check and is NOT excluded.
+pub fn assert_all_data_rows_have_columns(stdout: &str, expected_count: usize, label: &str) {
+    for line in stdout.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if line.starts_with("Total:\t") {
+            continue;
+        }
+        let cols: Vec<&str> = parse_tsv_line(line);
+        if cols.len() != expected_count {
+            panic!(
+                "[{label}] row column count mismatch\n  expected: {expected_count}\n  actual:   {}\n  line: {line}",
+                cols.len()
+            );
+        }
+    }
+}
+
+/// Assert that `stdout` contains a text-mode summary line starting with
+/// `"Total:\t"` and return it. The caller can then do further substring
+/// assertions on its contents (e.g. contains the expected object count).
+pub fn assert_summary_present_text(stdout: &str, label: &str) -> String {
+    stdout
+        .lines()
+        .find(|l| l.starts_with("Total:\t"))
+        .unwrap_or_else(|| panic!("[{label}] no 'Total:' summary line found in stdout:\n{stdout}"))
+        .to_string()
+}
+
+/// Assert that `stdout` contains a JSON summary line (an NDJSON line that
+/// parses to an object with a top-level `"Summary"` key) and return the
+/// parsed `serde_json::Value`. The caller can then do further field
+/// assertions on its contents (e.g. `v["Summary"]["TotalObjects"]`).
+pub fn assert_summary_present_json(stdout: &str, label: &str) -> serde_json::Value {
+    for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line)
+            && v.get("Summary").is_some()
+        {
+            return v;
+        }
+    }
+    panic!("[{label}] no JSON 'Summary' line found in stdout:\n{stdout}");
 }
