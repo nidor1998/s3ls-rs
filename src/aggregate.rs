@@ -4,6 +4,7 @@ use anyhow::Result;
 use byte_unit::Byte;
 use std::io::Write;
 use tokio::sync::mpsc;
+use tracing::debug;
 
 #[derive(Default)]
 pub struct FormatOptions {
@@ -148,14 +149,29 @@ impl<W: Write + Send + 'static> Aggregator<W> {
             return Ok(());
         }
 
+        debug!(
+            entry_count = entries.len(),
+            parallel_sort_threshold = self.config.parallel_sort_threshold,
+            "sort_entries started"
+        );
+        let sort_started = std::time::Instant::now();
         sort_entries(
             &mut entries,
             &self.config.sort_fields,
             self.config.reverse,
             self.config.parallel_sort_threshold,
         );
+        debug!(
+            entry_count = entries.len(),
+            elapsed_ms = sort_started.elapsed().as_millis() as u64,
+            "sort_entries finished"
+        );
 
         for entry in &entries {
+            if self.config.cancellation_token.is_cancelled() {
+                self.writer.flush()?;
+                return Ok(());
+            }
             let line = if self.config.use_json {
                 format_entry_json(entry, &self.opts)
             } else {
