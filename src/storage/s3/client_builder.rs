@@ -58,6 +58,33 @@ impl ClientConfig {
         config_loader.load().await
     }
 
+    /// Build an [`EnvConfigFiles`] that honors both `--aws-config-file` and
+    /// `--aws-shared-credentials-file` when either is set. A profile can
+    /// legitimately be defined across both files (e.g. credentials in
+    /// `~/.aws/credentials`, `role_arn` / `source_profile` / `sso_*` / region
+    /// in `~/.aws/config`), so both the credentials provider and the region
+    /// provider need to see the same merged view.
+    ///
+    /// Returns `None` when neither file is specified, letting the AWS SDK
+    /// fall back to its default paths.
+    fn build_profile_files(&self) -> Option<aws_runtime::env_config::file::EnvConfigFiles> {
+        use aws_runtime::env_config::file::{EnvConfigFileKind, EnvConfigFiles};
+
+        let loc = &self.client_config_location;
+        if loc.aws_shared_credentials_file.is_none() && loc.aws_config_file.is_none() {
+            return None;
+        }
+
+        let mut builder = EnvConfigFiles::builder();
+        if let Some(ref creds_file) = loc.aws_shared_credentials_file {
+            builder = builder.with_file(EnvConfigFileKind::Credentials, creds_file);
+        }
+        if let Some(ref config_file) = loc.aws_config_file {
+            builder = builder.with_file(EnvConfigFileKind::Config, config_file);
+        }
+        Some(builder.build())
+    }
+
     /// Apply credential configuration to the config loader based on the
     /// [`S3Credentials`] variant.
     fn load_config_credential(&self, config_loader: ConfigLoader) -> ConfigLoader {
@@ -66,15 +93,7 @@ impl ClientConfig {
                 debug!(%profile_name, "using profile credentials");
                 let mut builder = aws_config::profile::ProfileFileCredentialsProvider::builder();
 
-                if let Some(ref creds_file) =
-                    self.client_config_location.aws_shared_credentials_file
-                {
-                    let profile_files = aws_runtime::env_config::file::EnvConfigFiles::builder()
-                        .with_file(
-                            aws_runtime::env_config::file::EnvConfigFileKind::Credentials,
-                            creds_file,
-                        )
-                        .build();
+                if let Some(profile_files) = self.build_profile_files() {
                     builder = builder.profile_files(profile_files);
                 }
 
@@ -106,13 +125,7 @@ impl ClientConfig {
         let mut builder = aws_config::profile::ProfileFileRegionProvider::builder();
 
         if let crate::types::S3Credentials::Profile(ref profile_name) = self.credential {
-            if let Some(ref aws_config_file) = self.client_config_location.aws_config_file {
-                let profile_files = aws_runtime::env_config::file::EnvConfigFiles::builder()
-                    .with_file(
-                        aws_runtime::env_config::file::EnvConfigFileKind::Config,
-                        aws_config_file,
-                    )
-                    .build();
+            if let Some(profile_files) = self.build_profile_files() {
                 builder = builder.profile_files(profile_files);
             }
             builder = builder.profile_name(profile_name);
@@ -247,5 +260,39 @@ mod tests {
     fn build_region_provider_default() {
         let config = default_client_config();
         let _provider = config.build_region_provider();
+    }
+
+    #[test]
+    fn build_profile_files_returns_none_when_both_files_unset() {
+        let config = default_client_config();
+        assert!(config.build_profile_files().is_none());
+    }
+
+    #[test]
+    fn build_profile_files_some_when_only_credentials_file_set() {
+        let mut config = default_client_config();
+        config.client_config_location.aws_shared_credentials_file =
+            Some("./test_data/credentials".into());
+        assert!(config.build_profile_files().is_some());
+    }
+
+    #[test]
+    fn build_profile_files_some_when_only_config_file_set() {
+        let mut config = default_client_config();
+        config.client_config_location.aws_config_file = Some("./test_data/config".into());
+        assert!(config.build_profile_files().is_some());
+    }
+
+    #[test]
+    fn build_profile_files_some_when_both_files_set() {
+        // Regression for the bug where the credential provider only saw
+        // `--aws-shared-credentials-file` and the region provider only
+        // saw `--aws-config-file`, causing profiles with role_arn or
+        // source_profile chains to fail. Now both providers see both.
+        let mut config = default_client_config();
+        config.client_config_location.aws_shared_credentials_file =
+            Some("./test_data/credentials".into());
+        config.client_config_location.aws_config_file = Some("./test_data/config".into());
+        assert!(config.build_profile_files().is_some());
     }
 }

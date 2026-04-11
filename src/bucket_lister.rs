@@ -199,7 +199,7 @@ async fn list_directory_buckets(client: &Client) -> Result<Vec<BucketEntry>> {
                 name: b.name().unwrap_or_default().to_string(),
                 creation_date: b.creation_date().and_then(aws_datetime_to_chrono),
                 region: b.bucket_region().map(|r| r.to_string()),
-                bucket_arn: None,
+                bucket_arn: b.bucket_arn().map(|s| s.to_string()),
                 owner_display_name: None,
                 owner_id: None,
             });
