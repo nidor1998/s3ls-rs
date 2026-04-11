@@ -822,3 +822,85 @@ async fn e2e_filter_combo_all_seven() {
 
     _guard.cleanup().await;
 }
+
+/// Regex × size composition: `.csv AND >= 1000 bytes`.
+///
+/// Fixture bisects cleanly: csv vs txt × small vs big, yielding exactly
+/// one survivor.
+#[tokio::test]
+async fn e2e_filter_pair_regex_and_size() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+
+        let fixture: Vec<(String, Vec<u8>)> = vec![
+            ("a.csv".to_string(), vec![0u8; 100]),
+            ("b.csv".to_string(), vec![0u8; 2000]),
+            ("a.txt".to_string(), vec![0u8; 100]),
+            ("b.txt".to_string(), vec![0u8; 2000]),
+        ];
+        helper.put_objects_parallel(&bucket, fixture).await;
+
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--json",
+            "--filter-include-regex",
+            r"\.csv$",
+            "--filter-larger-size",
+            "1000",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_json_keys_eq(&output.stdout, &["b.csv"], "pair regex+size: b.csv only");
+    });
+
+    _guard.cleanup().await;
+}
+
+/// Include-regex × exclude-regex composition: `.csv AND NOT _tmp`.
+///
+/// Proves the two regex filters compose correctly — exclude is applied
+/// to the survivors of include, not to the original set.
+#[tokio::test]
+async fn e2e_filter_pair_include_and_exclude_regex() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+
+        let fixture: Vec<(String, Vec<u8>)> = vec![
+            ("report.csv".to_string(), b"a".to_vec()),
+            ("report_tmp.csv".to_string(), b"a".to_vec()),
+            ("data.csv".to_string(), b"a".to_vec()),
+            ("notes.txt".to_string(), b"a".to_vec()),
+        ];
+        helper.put_objects_parallel(&bucket, fixture).await;
+
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--json",
+            "--filter-include-regex",
+            r"\.csv$",
+            "--filter-exclude-regex",
+            "_tmp",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_json_keys_eq(
+            &output.stdout,
+            &["report.csv", "data.csv"],
+            "pair include+exclude: .csv minus _tmp",
+        );
+    });
+
+    _guard.cleanup().await;
+}
