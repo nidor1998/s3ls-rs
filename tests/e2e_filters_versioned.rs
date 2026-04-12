@@ -479,6 +479,59 @@ async fn e2e_versioned_pagination() {
             ],
             "versioned pagination: 10 rows across 3-4 pages (max-keys=3)",
         );
+
+        // Sub-assertion: --show-restore-status under --all-versions.
+        // RestoreStatus is absent for STANDARD objects (not Glacier-
+        // restored), but the flag must be accepted and the listing must
+        // still succeed. Verifies the OptionalObjectAttributes=RestoreStatus
+        // parameter is correctly wired for the ListObjectVersions API path
+        // (src/storage/s3/mod.rs:176-179).
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--all-versions",
+            "--json",
+            "--no-sort",
+            "--show-restore-status",
+        ]);
+        assert!(
+            output.status.success(),
+            "versioned --show-restore-status failed: {}",
+            output.stderr
+        );
+        // All 10 rows should still be enumerated.
+        assert_json_version_shapes_eq(
+            &output.stdout,
+            &[
+                ("alpha.txt", false),
+                ("alpha.txt", false),
+                ("alpha.txt", false),
+                ("alpha.txt", true),
+                ("beta.txt", false),
+                ("beta.txt", false),
+                ("beta.txt", false),
+                ("gamma.txt", false),
+                ("gamma.txt", false),
+                ("gamma.txt", false),
+            ],
+            "versioned --show-restore-status: all 10 rows enumerated",
+        );
+        // RestoreStatus should be absent for all STANDARD object rows
+        // (S3 only populates it for Glacier-restored objects).
+        let has_restore = output
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .any(|l| {
+                serde_json::from_str::<serde_json::Value>(l)
+                    .ok()
+                    .and_then(|v| v.get("RestoreStatus").map(|_| true))
+                    .unwrap_or(false)
+            });
+        assert!(
+            !has_restore,
+            "versioned --show-restore-status: RestoreStatus should be absent for STANDARD objects"
+        );
     });
 
     _guard.cleanup().await;
