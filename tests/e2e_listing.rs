@@ -397,3 +397,60 @@ async fn e2e_directory_bucket_listing_error_returns_exit_code_1() {
         );
     });
 }
+
+/// Exit code 2 when an unknown flag is passed (clap argument error).
+#[tokio::test]
+async fn e2e_listing_unknown_flag_returns_exit_code_2() {
+    e2e_timeout!(async {
+        let output = TestHelper::run_s3ls(&["--this-flag-does-not-exist"]);
+        let code = output.status.code().expect("process terminated by signal");
+        assert_eq!(
+            code, 2,
+            "unknown flag should return exit code 2, got {code}\nstderr: {}",
+            output.stderr
+        );
+    });
+}
+
+/// Exit code 2 when conflicting flags are passed (--json + --raw-output).
+#[tokio::test]
+async fn e2e_listing_conflicting_flags_returns_exit_code_2() {
+    e2e_timeout!(async {
+        let output = TestHelper::run_s3ls(&["s3://bucket/", "--json", "--raw-output"]);
+        let code = output.status.code().expect("process terminated by signal");
+        assert_eq!(
+            code, 2,
+            "conflicting flags should return exit code 2, got {code}\nstderr: {}",
+            output.stderr
+        );
+    });
+}
+
+/// Exit code 2 when an invalid sort field is passed.
+#[tokio::test]
+async fn e2e_listing_invalid_sort_field_returns_exit_code_2() {
+    e2e_timeout!(async {
+        let output = TestHelper::run_s3ls(&["s3://bucket/", "--sort", "invalid"]);
+        let code = output.status.code().expect("process terminated by signal");
+        assert_eq!(
+            code, 2,
+            "invalid sort field should return exit code 2, got {code}\nstderr: {}",
+            output.stderr
+        );
+    });
+}
+
+/// Exit code 2 when --max-depth is given without --recursive
+/// (clap `requires` constraint).
+#[tokio::test]
+async fn e2e_listing_max_depth_without_recursive_returns_exit_code_2() {
+    e2e_timeout!(async {
+        let output = TestHelper::run_s3ls(&["s3://bucket/", "--max-depth", "3"]);
+        let code = output.status.code().expect("process terminated by signal");
+        assert_eq!(
+            code, 2,
+            "--max-depth without --recursive should return exit code 2, got {code}\nstderr: {}",
+            output.stderr
+        );
+    });
+}
