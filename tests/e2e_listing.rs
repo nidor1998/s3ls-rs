@@ -367,3 +367,33 @@ async fn e2e_listing_no_matching_prefix_returns_exit_code_0() {
 
     _guard.cleanup().await;
 }
+
+/// Exit code 1 when directory bucket listing fails (invalid credentials).
+///
+/// `--list-express-one-zone-buckets` uses the `ListDirectoryBuckets`
+/// API. With bogus credentials, the API call fails and s3ls should
+/// return exit code 1.
+#[tokio::test]
+async fn e2e_directory_bucket_listing_error_returns_exit_code_1() {
+    e2e_timeout!(async {
+        let output = TestHelper::run_s3ls(&[
+            "--json",
+            "--list-express-one-zone-buckets",
+            "--target-access-key",
+            "AKIAINVALIDEXAMPLE00",
+            "--target-secret-access-key",
+            "wJalrXUtnFEMI/K7MDENG/INVALIDEXAMPLEKEY00",
+        ]);
+        assert!(
+            !output.status.success(),
+            "directory bucket listing with invalid credentials should fail, but s3ls exited 0.\nstderr: {}",
+            output.stderr
+        );
+
+        let code = output.status.code().expect("process terminated by signal");
+        assert_eq!(
+            code, 1,
+            "expected exit code 1 for directory bucket listing error, got {code}"
+        );
+    });
+}
