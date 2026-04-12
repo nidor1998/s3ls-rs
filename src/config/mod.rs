@@ -36,7 +36,7 @@ pub struct Config {
     pub max_parallel_listing_max_depth: u16,
     pub object_listing_queue_size: u32,
     pub allow_parallel_listings_in_express_one_zone: bool,
-    pub rate_limit_objects: Option<u32>,
+    pub rate_limit_api: Option<u32>,
     pub parallel_sort_threshold: u32,
 
     // AWS Client
@@ -90,7 +90,7 @@ impl Default for Config {
             max_parallel_listing_max_depth: 2,
             object_listing_queue_size: 200_000,
             allow_parallel_listings_in_express_one_zone: false,
-            rate_limit_objects: None,
+            rate_limit_api: None,
             parallel_sort_threshold: 1_000_000,
             target_client_config: None,
             max_keys: 1000,
@@ -224,7 +224,7 @@ mod tests {
         assert_eq!(config.max_parallel_listing_max_depth, 2);
         assert_eq!(config.object_listing_queue_size, 200_000);
         assert!(!config.allow_parallel_listings_in_express_one_zone);
-        assert!(config.rate_limit_objects.is_none());
+        assert!(config.rate_limit_api.is_none());
         assert_eq!(config.parallel_sort_threshold, 1_000_000);
 
         // AWS Client

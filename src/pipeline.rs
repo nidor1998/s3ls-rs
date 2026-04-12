@@ -177,7 +177,7 @@ impl ListingPipeline {
             self.config.allow_parallel_listings_in_express_one_zone,
             self.config.display_config.show_owner,
             self.config.display_config.show_restore_status,
-            self.config.rate_limit_objects,
+            self.config.rate_limit_api,
         )
         .await;
 

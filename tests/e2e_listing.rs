@@ -455,9 +455,9 @@ async fn e2e_listing_max_depth_without_recursive_returns_exit_code_2() {
     });
 }
 
-/// `--rate-limit-objects` lists objects correctly in normal (ListObjectsV2) mode.
+/// `--rate-limit-api` lists objects correctly in normal (ListObjectsV2) mode.
 #[tokio::test]
-async fn e2e_listing_rate_limit_objects() {
+async fn e2e_listing_rate_limit_api() {
     let helper = TestHelper::new().await;
     let bucket = helper.generate_bucket_name();
     let _guard = helper.bucket_guard(&bucket);
@@ -469,11 +469,11 @@ async fn e2e_listing_rate_limit_objects() {
 
         let target = format!("s3://{bucket}/");
         let output =
-            TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--rate-limit-objects", "10"]);
+            TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--rate-limit-api", "10"]);
 
         assert!(
             output.status.success(),
-            "s3ls failed with --rate-limit-objects: {}",
+            "s3ls failed with --rate-limit-api: {}",
             output.stderr
         );
         assert!(
@@ -489,10 +489,10 @@ async fn e2e_listing_rate_limit_objects() {
     _guard.cleanup().await;
 }
 
-/// `--rate-limit-objects` lists objects correctly in versioning
+/// `--rate-limit-api` lists objects correctly in versioning
 /// (ListObjectVersions) mode.
 #[tokio::test]
-async fn e2e_listing_rate_limit_objects_versioned() {
+async fn e2e_listing_rate_limit_api_versioned() {
     let helper = TestHelper::new().await;
     let bucket = helper.generate_bucket_name();
     let _guard = helper.bucket_guard(&bucket);
@@ -507,13 +507,13 @@ async fn e2e_listing_rate_limit_objects_versioned() {
             target.as_str(),
             "--recursive",
             "--all-versions",
-            "--rate-limit-objects",
+            "--rate-limit-api",
             "10",
         ]);
 
         assert!(
             output.status.success(),
-            "s3ls failed with --rate-limit-objects --all-versions: {}",
+            "s3ls failed with --rate-limit-api --all-versions: {}",
             output.stderr
         );
         // Both versions should appear

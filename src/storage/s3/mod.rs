@@ -700,7 +700,7 @@ impl S3Storage {
         allow_parallel_listings_in_express_one_zone: bool,
         fetch_owner: bool,
         fetch_restore_status: bool,
-        rate_limit_objects: Option<u32>,
+        rate_limit_api: Option<u32>,
     ) -> Self {
         let client = client_config.create_client().await;
         let delimiter = if recursive {
@@ -712,7 +712,7 @@ impl S3Storage {
         let semaphore_size = max_parallel_listings.max(1) as usize;
 
         const REFILL_PER_INTERVAL_DIVIDER: usize = 10;
-        let rate_limiter = rate_limit_objects.map(|rate_limit_value| {
+        let rate_limiter = rate_limit_api.map(|rate_limit_value| {
             let refill = if (rate_limit_value as usize) <= REFILL_PER_INTERVAL_DIVIDER {
                 1
             } else {

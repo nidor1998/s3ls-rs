@@ -453,7 +453,7 @@ pub struct CLIArgs {
 
     /// Maximum S3 API requests per second for object listing operations
     #[arg(long, env, value_parser = clap::value_parser!(u32).range(10..), help_heading = "Performance")]
-    pub rate_limit_objects: Option<u32>,
+    pub rate_limit_api: Option<u32>,
 
     /// Minimum number of entries to trigger parallel sorting
     #[arg(long, env, default_value_t = DEFAULT_PARALLEL_SORT_THRESHOLD, value_parser = clap::value_parser!(u32).range(1..), help_heading = "Performance")]
@@ -802,7 +802,7 @@ impl TryFrom<CLIArgs> for crate::config::Config {
             object_listing_queue_size: args.object_listing_queue_size,
             allow_parallel_listings_in_express_one_zone: args
                 .allow_parallel_listings_in_express_one_zone,
-            rate_limit_objects: args.rate_limit_objects,
+            rate_limit_api: args.rate_limit_api,
             parallel_sort_threshold: args.parallel_sort_threshold,
             target_client_config,
             max_keys: args.max_keys,
