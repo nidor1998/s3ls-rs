@@ -645,6 +645,53 @@ async fn e2e_edge_case_request_payer() {
     _v_guard.cleanup().await;
 }
 
+/// `--show-relative-path` when the prefix exactly equals the object key
+/// (no trailing `/`). The key is displayed unchanged — the prefix
+/// stripping only applies when the prefix has a trailing `/`.
+///
+/// Uses a UTF-8 key to simultaneously exercise multi-byte character
+/// handling in the prefix-match path.
+#[tokio::test]
+async fn e2e_edge_case_prefix_equals_key_relative_path() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+
+        let key = "☃👪森鴎外あいうえお";
+        helper.put_object(&bucket, key, b"x".to_vec()).await;
+
+        // Target IS the exact key (no trailing /).
+        let target = format!("s3://{bucket}/{key}");
+
+        // With --show-relative-path: the key should be displayed
+        // unchanged (full key), NOT stripped to "".
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--json",
+            "--show-relative-path",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        let first_line = output
+            .stdout
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .expect("no JSON output");
+        let v: serde_json::Value = serde_json::from_str(first_line).expect("failed to parse JSON");
+        assert_eq!(
+            v.get("Key").and_then(|k| k.as_str()),
+            Some(key),
+            "prefix == key (no trailing /): Key should be the full key unchanged"
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
 /// `--summarize --all-versions` with delete markers: both text and JSON
 /// summary lines include the delete-marker count.
 ///
