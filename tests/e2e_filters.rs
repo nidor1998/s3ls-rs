@@ -349,15 +349,15 @@ async fn e2e_filter_larger_size() {
 /// `--filter-mtime-before`: include only objects with `last_modified < pivot`
 /// (strict `<`, verified against `src/filters/mtime_before.rs:27`).
 ///
-/// Because S3 `LastModified` is second-precision, this test reads back
-/// the actual timestamps from S3 after upload and computes both the
-/// pivot and expected sets at runtime. If all 4 objects land in the
-/// same S3-second, the "middle pivot" sub-assertion is skipped with a
-/// logged note.
+/// Uploads 3 objects sequentially with 1.5s sleeps between each to
+/// guarantee distinct S3-second timestamps: old.txt (t1), mid.txt (t2),
+/// new.txt (t3). Reads back actual timestamps from S3 and uses them as
+/// deterministic pivots for each sub-assertion.
 #[tokio::test]
 async fn e2e_filter_mtime_before() {
     use chrono::{DateTime, Utc};
-    use std::collections::BTreeSet;
+    use std::time::Duration;
+    use tokio::time::sleep;
 
     let helper = TestHelper::new().await;
     let bucket = helper.generate_bucket_name();
@@ -366,10 +366,12 @@ async fn e2e_filter_mtime_before() {
     e2e_timeout!(async {
         helper.create_bucket(&bucket).await;
 
-        let fixture: Vec<(String, Vec<u8>)> = (1..=4)
-            .map(|i| (format!("obj{i}"), vec![0u8; 100]))
-            .collect();
-        helper.put_objects_parallel(&bucket, fixture).await;
+        // Sequential uploads with sleeps guarantee distinct LastModified.
+        helper.put_object(&bucket, "old.txt", vec![0u8; 100]).await;
+        sleep(Duration::from_millis(1500)).await;
+        helper.put_object(&bucket, "mid.txt", vec![0u8; 100]).await;
+        sleep(Duration::from_millis(1500)).await;
+        helper.put_object(&bucket, "new.txt", vec![0u8; 100]).await;
 
         // Read back actual LastModified values from S3.
         let resp = helper
@@ -380,70 +382,51 @@ async fn e2e_filter_mtime_before() {
             .await
             .expect("list_objects_v2 failed");
 
-        let pairs: Vec<(String, DateTime<Utc>)> = resp
+        let mut timestamps: Vec<(String, DateTime<Utc>)> = resp
             .contents()
             .iter()
             .map(|obj| {
                 let key = obj.key().expect("object missing key").to_string();
                 let lm = obj.last_modified().expect("object missing last_modified");
-                // aws_smithy_types::DateTime -> chrono::DateTime<Utc>
-                let secs = lm.secs();
-                let nanos = lm.subsec_nanos();
-                let dt = DateTime::<Utc>::from_timestamp(secs, nanos)
+                let dt = DateTime::<Utc>::from_timestamp(lm.secs(), lm.subsec_nanos())
                     .expect("invalid timestamp from S3");
                 (key, dt)
             })
             .collect();
-        assert_eq!(
-            pairs.len(),
-            4,
-            "expected 4 uploaded objects, got {}",
-            pairs.len()
-        );
+        timestamps.sort_by_key(|(_, dt)| *dt);
+        assert_eq!(timestamps.len(), 3);
 
-        let distinct_times: BTreeSet<DateTime<Utc>> = pairs.iter().map(|(_, t)| *t).collect();
-        let distinct_times: Vec<DateTime<Utc>> = distinct_times.into_iter().collect();
+        let t1 = timestamps[0].1; // old.txt
+        let t2 = timestamps[1].1; // mid.txt
+        let t3 = timestamps[2].1; // new.txt
+
+        // Sanity: sleeps guarantee strict ordering.
+        assert!(
+            t1 < t2 && t2 < t3,
+            "timestamps not strictly ordered: t1={t1}, t2={t2}, t3={t3}"
+        );
 
         let target = format!("s3://{bucket}/");
 
-        // Helper: compute expected set for `last_modified < pivot`
-        let expected_before = |pivot: DateTime<Utc>| -> Vec<String> {
-            let mut out: Vec<String> = pairs
-                .iter()
-                .filter(|(_, t)| *t < pivot)
-                .map(|(k, _)| k.clone())
-                .collect();
-            out.sort();
-            out
-        };
+        // Sub-assertion 1: pivot = t2. strict-< means old.txt (t1 < t2) passes.
+        let pivot_str = t2.to_rfc3339();
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--json",
+            "--filter-mtime-before",
+            pivot_str.as_str(),
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_json_keys_eq(
+            &output.stdout,
+            &["old.txt"],
+            "mtime-before: middle pivot t2",
+        );
 
-        // Sub-assertion 1: middle pivot (skipped if all four in one second)
-        if distinct_times.len() >= 2 {
-            let pivot = distinct_times[distinct_times.len() / 2];
-            let expected = expected_before(pivot);
-            let expected_refs: Vec<&str> = expected.iter().map(|s| s.as_str()).collect();
-            let pivot_str = pivot.to_rfc3339();
-            let output = TestHelper::run_s3ls(&[
-                target.as_str(),
-                "--recursive",
-                "--json",
-                "--filter-mtime-before",
-                pivot_str.as_str(),
-            ]);
-            assert!(output.status.success(), "s3ls failed: {}", output.stderr);
-            assert_json_keys_eq(
-                &output.stdout,
-                &expected_refs,
-                "mtime-before: match (middle pivot)",
-            );
-        } else {
-            println!("mtime-before: skipped middle-pivot case — all 4 uploads share one S3-second");
-        }
-
-        // Sub-assertion 2: earliest pivot. Strict-< against the minimum
-        // observed time means NO object can pass.
-        let earliest = distinct_times[0];
-        let pivot_str = earliest.to_rfc3339();
+        // Sub-assertion 2: pivot = t1. strict-< against the earliest means
+        // nothing passes.
+        let pivot_str = t1.to_rfc3339();
         let output = TestHelper::run_s3ls(&[
             target.as_str(),
             "--recursive",
@@ -458,13 +441,8 @@ async fn e2e_filter_mtime_before() {
             "mtime-before: no match (earliest pivot)",
         );
 
-        // Sub-assertion 3: boundary = max observed time. All objects strictly
-        // earlier than the max are expected. If all 4 share one time, this
-        // yields the empty set.
-        let max_time = *distinct_times.last().unwrap();
-        let expected = expected_before(max_time);
-        let expected_refs: Vec<&str> = expected.iter().map(|s| s.as_str()).collect();
-        let pivot_str = max_time.to_rfc3339();
+        // Sub-assertion 3: pivot = t3. Everything strictly before t3 passes.
+        let pivot_str = t3.to_rfc3339();
         let output = TestHelper::run_s3ls(&[
             target.as_str(),
             "--recursive",
@@ -475,8 +453,8 @@ async fn e2e_filter_mtime_before() {
         assert!(output.status.success(), "s3ls failed: {}", output.stderr);
         assert_json_keys_eq(
             &output.stdout,
-            &expected_refs,
-            "mtime-before: boundary (max pivot)",
+            &["old.txt", "mid.txt"],
+            "mtime-before: boundary (max pivot t3)",
         );
     });
 
@@ -486,13 +464,13 @@ async fn e2e_filter_mtime_before() {
 /// `--filter-mtime-after`: include only objects with `last_modified >= pivot`
 /// (inclusive `>=`, verified against `src/filters/mtime_after.rs:27`).
 ///
-/// Tie-handling: same pattern as `e2e_filter_mtime_before` — the
-/// "middle pivot" case is skipped if all 4 uploads collide into one
-/// S3-second.
+/// Same sequential-upload pattern as `e2e_filter_mtime_before`: 3 objects
+/// with 1.5s sleeps guarantee distinct S3-second timestamps.
 #[tokio::test]
 async fn e2e_filter_mtime_after() {
-    use chrono::{DateTime, Duration, Utc};
-    use std::collections::BTreeSet;
+    use chrono::{DateTime, Duration as ChronoDuration, Utc};
+    use std::time::Duration;
+    use tokio::time::sleep;
 
     let helper = TestHelper::new().await;
     let bucket = helper.generate_bucket_name();
@@ -501,11 +479,14 @@ async fn e2e_filter_mtime_after() {
     e2e_timeout!(async {
         helper.create_bucket(&bucket).await;
 
-        let fixture: Vec<(String, Vec<u8>)> = (1..=4)
-            .map(|i| (format!("obj{i}"), vec![0u8; 100]))
-            .collect();
-        helper.put_objects_parallel(&bucket, fixture).await;
+        // Sequential uploads with sleeps guarantee distinct LastModified.
+        helper.put_object(&bucket, "old.txt", vec![0u8; 100]).await;
+        sleep(Duration::from_millis(1500)).await;
+        helper.put_object(&bucket, "mid.txt", vec![0u8; 100]).await;
+        sleep(Duration::from_millis(1500)).await;
+        helper.put_object(&bucket, "new.txt", vec![0u8; 100]).await;
 
+        // Read back actual LastModified values from S3.
         let resp = helper
             .client()
             .list_objects_v2()
@@ -514,67 +495,49 @@ async fn e2e_filter_mtime_after() {
             .await
             .expect("list_objects_v2 failed");
 
-        let pairs: Vec<(String, DateTime<Utc>)> = resp
+        let mut timestamps: Vec<(String, DateTime<Utc>)> = resp
             .contents()
             .iter()
             .map(|obj| {
                 let key = obj.key().expect("object missing key").to_string();
                 let lm = obj.last_modified().expect("object missing last_modified");
-                let secs = lm.secs();
-                let nanos = lm.subsec_nanos();
-                let dt = DateTime::<Utc>::from_timestamp(secs, nanos)
+                let dt = DateTime::<Utc>::from_timestamp(lm.secs(), lm.subsec_nanos())
                     .expect("invalid timestamp from S3");
                 (key, dt)
             })
             .collect();
-        assert_eq!(
-            pairs.len(),
-            4,
-            "expected 4 uploaded objects, got {}",
-            pairs.len()
-        );
+        timestamps.sort_by_key(|(_, dt)| *dt);
+        assert_eq!(timestamps.len(), 3);
 
-        let distinct_times: BTreeSet<DateTime<Utc>> = pairs.iter().map(|(_, t)| *t).collect();
-        let distinct_times: Vec<DateTime<Utc>> = distinct_times.into_iter().collect();
+        let t1 = timestamps[0].1; // old.txt
+        let t2 = timestamps[1].1; // mid.txt
+        let t3 = timestamps[2].1; // new.txt
+
+        assert!(
+            t1 < t2 && t2 < t3,
+            "timestamps not strictly ordered: t1={t1}, t2={t2}, t3={t3}"
+        );
 
         let target = format!("s3://{bucket}/");
 
-        let expected_after = |pivot: DateTime<Utc>| -> Vec<String> {
-            let mut out: Vec<String> = pairs
-                .iter()
-                .filter(|(_, t)| *t >= pivot)
-                .map(|(k, _)| k.clone())
-                .collect();
-            out.sort();
-            out
-        };
+        // Sub-assertion 1: pivot = t2. inclusive-≥ means mid.txt and new.txt pass.
+        let pivot_str = t2.to_rfc3339();
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--json",
+            "--filter-mtime-after",
+            pivot_str.as_str(),
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_json_keys_eq(
+            &output.stdout,
+            &["mid.txt", "new.txt"],
+            "mtime-after: middle pivot t2",
+        );
 
-        // Sub-assertion 1: middle pivot (skipped if all in one second)
-        if distinct_times.len() >= 2 {
-            let pivot = distinct_times[distinct_times.len() / 2];
-            let expected = expected_after(pivot);
-            let expected_refs: Vec<&str> = expected.iter().map(|s| s.as_str()).collect();
-            let pivot_str = pivot.to_rfc3339();
-            let output = TestHelper::run_s3ls(&[
-                target.as_str(),
-                "--recursive",
-                "--json",
-                "--filter-mtime-after",
-                pivot_str.as_str(),
-            ]);
-            assert!(output.status.success(), "s3ls failed: {}", output.stderr);
-            assert_json_keys_eq(
-                &output.stdout,
-                &expected_refs,
-                "mtime-after: match (middle pivot)",
-            );
-        } else {
-            println!("mtime-after: skipped middle-pivot case — all 4 uploads share one S3-second");
-        }
-
-        // Sub-assertion 2: pivot 1 second beyond the max observed time —
-        // inclusive `>=` cannot match anything.
-        let after_max = *distinct_times.last().unwrap() + Duration::seconds(1);
+        // Sub-assertion 2: pivot = t3 + 1s. Nothing at or after that.
+        let after_max = t3 + ChronoDuration::seconds(1);
         let pivot_str = after_max.to_rfc3339();
         let output = TestHelper::run_s3ls(&[
             target.as_str(),
@@ -586,18 +549,9 @@ async fn e2e_filter_mtime_after() {
         assert!(output.status.success(), "s3ls failed: {}", output.stderr);
         assert_json_keys_eq(&output.stdout, &[], "mtime-after: no match (after max)");
 
-        // Sub-assertion 3: pivot = earliest observed time — inclusive `>=`
-        // at the minimum always matches every object.
-        let earliest = distinct_times[0];
-        let expected = expected_after(earliest);
-        let expected_refs: Vec<&str> = expected.iter().map(|s| s.as_str()).collect();
-        assert_eq!(
-            expected.len(),
-            4,
-            "sanity: earliest pivot must match all 4 objects, got {}",
-            expected.len()
-        );
-        let pivot_str = earliest.to_rfc3339();
+        // Sub-assertion 3: pivot = t1. inclusive-≥ at the earliest means
+        // all 3 objects pass.
+        let pivot_str = t1.to_rfc3339();
         let output = TestHelper::run_s3ls(&[
             target.as_str(),
             "--recursive",
@@ -608,7 +562,7 @@ async fn e2e_filter_mtime_after() {
         assert!(output.status.success(), "s3ls failed: {}", output.stderr);
         assert_json_keys_eq(
             &output.stdout,
-            &expected_refs,
+            &["old.txt", "mid.txt", "new.txt"],
             "mtime-after: boundary (earliest pivot inclusive)",
         );
     });
