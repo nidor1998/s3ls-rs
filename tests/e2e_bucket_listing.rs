@@ -356,3 +356,86 @@ async fn e2e_bucket_listing_express_one_zone() {
     _guard_express.cleanup().await;
     _guard_regular.cleanup().await;
 }
+
+/// Object listing inside an Express One Zone (directory) bucket with
+/// prefix scoping. Uploads objects under `data/` and `logs/` prefixes,
+/// then lists with `s3://express-bucket/data/` to verify only the
+/// matching prefix's objects are returned.
+///
+/// Skips gracefully when:
+/// - The region has no mapped Express One Zone AZ.
+/// - S3 rejects the directory bucket creation.
+#[tokio::test]
+async fn e2e_bucket_listing_express_one_zone_object_prefix() {
+    use uuid::Uuid;
+
+    let helper = TestHelper::new().await;
+
+    let az_id = match express_one_zone_az_for_region(helper.region()) {
+        Some(az) => az,
+        None => {
+            println!(
+                "skipped: no Express One Zone AZ mapped for region {:?}",
+                helper.region()
+            );
+            return;
+        }
+    };
+
+    let id = Uuid::new_v4();
+    let bucket = format!("s3ls-e2e-{id}--{az_id}--x-s3");
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        if let Err(e) = helper.try_create_directory_bucket(&bucket, az_id).await {
+            println!("skipped: {e}");
+            return;
+        }
+
+        // Upload objects under two distinct prefixes.
+        let fixture: Vec<(String, Vec<u8>)> = vec![
+            ("data/a.txt".to_string(), b"x".to_vec()),
+            ("data/b.txt".to_string(), b"x".to_vec()),
+            ("data/sub/c.txt".to_string(), b"x".to_vec()),
+            ("logs/app.log".to_string(), b"x".to_vec()),
+            ("logs/error.log".to_string(), b"x".to_vec()),
+        ];
+        helper.put_objects_parallel(&bucket, fixture).await;
+
+        // Sub-assertion 1: full recursive listing — all 5 objects.
+        let target_full = format!("s3://{bucket}/");
+        let output =
+            TestHelper::run_s3ls(&[target_full.as_str(), "--recursive", "--json", "--no-sort"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_json_keys_eq(
+            &output.stdout,
+            &[
+                "data/a.txt",
+                "data/b.txt",
+                "data/sub/c.txt",
+                "logs/app.log",
+                "logs/error.log",
+            ],
+            "express object prefix: full listing",
+        );
+
+        // Sub-assertion 2: prefix-scoped listing — only data/ objects.
+        let target_prefix = format!("s3://{bucket}/data/");
+        let output =
+            TestHelper::run_s3ls(&[target_prefix.as_str(), "--recursive", "--json", "--no-sort"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_json_keys_eq(
+            &output.stdout,
+            &["data/a.txt", "data/b.txt", "data/sub/c.txt"],
+            "express object prefix: data/ only",
+        );
+
+        // Logs must NOT appear in the prefix-scoped listing.
+        assert!(
+            !output.stdout.contains("logs/"),
+            "express object prefix: logs/ should not appear in data/ listing"
+        );
+    });
+
+    _guard.cleanup().await;
+}
