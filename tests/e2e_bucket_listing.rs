@@ -439,3 +439,98 @@ async fn e2e_bucket_listing_express_one_zone_object_prefix() {
 
     _guard.cleanup().await;
 }
+
+/// `--list-express-one-zone-buckets --bucket-name-prefix`: filters
+/// the directory bucket listing by name prefix. Creates two directory
+/// buckets with distinct name prefixes and verifies only the matching
+/// one appears in the output.
+///
+/// Note: the `ListDirectoryBuckets` API does not support server-side
+/// prefix filtering — `src/bucket_lister.rs:29-31` applies it
+/// client-side via `buckets.retain(|e| e.name.starts_with(prefix))`.
+/// This test exercises that client-side filtering path.
+///
+/// Skips gracefully when the region doesn't support Express One Zone
+/// or bucket creation fails.
+#[tokio::test]
+async fn e2e_bucket_listing_express_one_zone_with_prefix() {
+    use uuid::Uuid;
+
+    let helper = TestHelper::new().await;
+
+    let az_id = match express_one_zone_az_for_region(helper.region()) {
+        Some(az) => az,
+        None => {
+            println!(
+                "skipped: no Express One Zone AZ mapped for region {:?}",
+                helper.region()
+            );
+            return;
+        }
+    };
+
+    let id = Uuid::new_v4();
+    // Two directory buckets with distinct name prefixes.
+    // Both must be ≤63 chars: "s3ls-e2e-{tag}-{short_id}--{az}--x-s3"
+    let short_id = &id.to_string()[..8];
+    let bucket_match = format!("s3ls-e2e-m-{short_id}--{az_id}--x-s3");
+    let bucket_other = format!("s3ls-e2e-o-{short_id}--{az_id}--x-s3");
+    let _guard_match = helper.bucket_guard(&bucket_match);
+    let _guard_other = helper.bucket_guard(&bucket_other);
+
+    e2e_timeout!(async {
+        if let Err(e) = helper
+            .try_create_directory_bucket(&bucket_match, az_id)
+            .await
+        {
+            println!("skipped: {e}");
+            return;
+        }
+        if let Err(e) = helper
+            .try_create_directory_bucket(&bucket_other, az_id)
+            .await
+        {
+            println!("skipped: {e}");
+            return;
+        }
+
+        // Filter directory buckets by the "match" prefix.
+        let prefix = format!("s3ls-e2e-m-{short_id}");
+        let output = TestHelper::run_s3ls(&[
+            "--json",
+            "--list-express-one-zone-buckets",
+            "--bucket-name-prefix",
+            prefix.as_str(),
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        // Matching bucket must appear.
+        let found_match = output
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .any(|l| {
+                serde_json::from_str::<serde_json::Value>(l)
+                    .ok()
+                    .and_then(|v| {
+                        v.get("Name")
+                            .and_then(|n| n.as_str())
+                            .map(|s| s == bucket_match)
+                    })
+                    .unwrap_or(false)
+            });
+        assert!(
+            found_match,
+            "express prefix filter: matching bucket {bucket_match} not found in output"
+        );
+
+        // Non-matching bucket must NOT appear.
+        assert!(
+            !output.stdout.contains(&bucket_other),
+            "express prefix filter: non-matching bucket {bucket_other} unexpectedly found in output"
+        );
+    });
+
+    _guard_match.cleanup().await;
+    _guard_other.cleanup().await;
+}
