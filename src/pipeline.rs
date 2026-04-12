@@ -53,7 +53,7 @@ impl ListingPipeline {
 
         let storage = self.build_storage().await?;
 
-        let lister_handle = self.spawn_lister(storage, tx, queue_size)?;
+        let lister_handle = self.spawn_lister(Arc::clone(&storage), tx, queue_size)?;
         let aggregator_handle = self.spawn_aggregator(rx)?;
 
         // Wait for aggregator to finish (completes when rx closes).
@@ -87,7 +87,10 @@ impl ListingPipeline {
         }
         lister_result?;
 
-        tracing::debug!("Listing pipeline completed");
+        tracing::debug!(
+            api_calls = storage.api_call_count(),
+            "Listing pipeline completed"
+        );
         Ok(())
     }
 

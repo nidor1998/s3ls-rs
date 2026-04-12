@@ -9,6 +9,7 @@ use tokio::sync::mpsc::Sender;
 pub trait StorageTrait: Send + Sync {
     async fn list_objects(&self, sender: &Sender<ListEntry>, max_keys: i32) -> Result<()>;
     async fn list_object_versions(&self, sender: &Sender<ListEntry>, max_keys: i32) -> Result<()>;
+    fn api_call_count(&self) -> u64;
 }
 
 #[cfg(test)]
@@ -38,6 +39,10 @@ impl StorageTrait for MockStorage {
             sender.send(entry.clone()).await.ok();
         }
         Ok(())
+    }
+
+    fn api_call_count(&self) -> u64 {
+        0
     }
 }
 

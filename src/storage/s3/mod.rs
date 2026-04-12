@@ -20,6 +20,7 @@ use crate::storage::StorageTrait;
 use crate::types::token::PipelineCancellationToken;
 use crate::types::{ListEntry, S3Object};
 use leaky_bucket::RateLimiter;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const EXPRESS_ONEZONE_STORAGE_SUFFIX: &str = "--x-s3";
 
@@ -275,6 +276,7 @@ pub(crate) struct ListingEngine<F: PageFetcher + Clone> {
     listing_worker_semaphore: Arc<tokio::sync::Semaphore>,
     max_depth: Option<u16>,
     rate_limiter: Option<Arc<RateLimiter>>,
+    api_call_counter: Arc<AtomicU64>,
 }
 
 impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
@@ -443,6 +445,7 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
                 debug!("list_sequential rate-limit wait cancelled");
                 break;
             }
+            self.api_call_counter.fetch_add(1, Ordering::Relaxed);
             let page = self
                 .fetcher
                 .fetch_page(
@@ -557,6 +560,7 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
                 if self.acquire_rate_limit().await {
                     return Ok(());
                 }
+                self.api_call_counter.fetch_add(1, Ordering::Relaxed);
                 let page = self
                     .fetcher
                     .fetch_page(
@@ -759,6 +763,7 @@ impl S3Storage {
             listing_worker_semaphore: Arc::new(tokio::sync::Semaphore::new(semaphore_size)),
             max_depth,
             rate_limiter,
+            api_call_counter: Arc::new(AtomicU64::new(0)),
         };
 
         Self { engine }
@@ -777,6 +782,10 @@ impl StorageTrait for S3Storage {
         self.engine
             .list_dispatch(ListingMode::Versions, sender, max_keys)
             .await
+    }
+
+    fn api_call_count(&self) -> u64 {
+        self.engine.api_call_counter.load(Ordering::Relaxed)
     }
 }
 
@@ -1109,6 +1118,7 @@ mod tests {
             )),
             max_depth: None,
             rate_limiter: None,
+            api_call_counter: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -1618,6 +1628,7 @@ mod tests {
             )),
             max_depth: content_max_depth,
             rate_limiter: None,
+            api_call_counter: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -1808,6 +1819,7 @@ mod tests {
             allow_parallel_listings_in_express_one_zone: false,
             listing_worker_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
             rate_limiter: None,
+            api_call_counter: Arc::new(AtomicU64::new(0)),
         };
         let entries = collect_entries(&engine, ListingMode::Objects, 1000)
             .await
@@ -1937,6 +1949,7 @@ mod tests {
             listing_worker_semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
             max_depth: None,
             rate_limiter: Some(rate_limiter),
+            api_call_counter: Arc::new(AtomicU64::new(0)),
         };
 
         let entries = collect_entries(&engine, ListingMode::Objects, 1000)
@@ -1991,5 +2004,138 @@ mod tests {
             .unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].key(), "prefix/file.txt");
+    }
+
+    #[tokio::test]
+    async fn api_call_counter_increments_per_page() {
+        // Two pages: first is truncated, second is final.
+        let fetcher = MockPageFetcher::from_pages(
+            Some("p/"),
+            None,
+            vec![
+                ListPage {
+                    objects: vec![ListEntry::Object(S3Object::NotVersioning {
+                        key: "p/a.txt".to_string(),
+                        size: 10,
+                        last_modified: chrono::Utc::now(),
+                        e_tag: "\"e\"".to_string(),
+                        storage_class: Some("STANDARD".to_string()),
+                        checksum_algorithm: vec![],
+                        checksum_type: None,
+                        owner_display_name: None,
+                        owner_id: None,
+                        is_restore_in_progress: None,
+                        restore_expiry_date: None,
+                    })],
+                    sub_prefixes: vec![],
+                    is_truncated: true,
+                    continuation_token: Some("token1".to_string()),
+                    key_marker: None,
+                    version_id_marker: None,
+                },
+                ListPage {
+                    objects: vec![ListEntry::Object(S3Object::NotVersioning {
+                        key: "p/b.txt".to_string(),
+                        size: 20,
+                        last_modified: chrono::Utc::now(),
+                        e_tag: "\"e\"".to_string(),
+                        storage_class: Some("STANDARD".to_string()),
+                        checksum_algorithm: vec![],
+                        checksum_type: None,
+                        owner_display_name: None,
+                        owner_id: None,
+                        is_restore_in_progress: None,
+                        restore_expiry_date: None,
+                    })],
+                    sub_prefixes: vec![],
+                    is_truncated: false,
+                    continuation_token: None,
+                    key_marker: None,
+                    version_id_marker: None,
+                },
+            ],
+        );
+
+        let token = create_pipeline_cancellation_token();
+        let counter = Arc::new(AtomicU64::new(0));
+        let engine = ListingEngine {
+            fetcher,
+            bucket: "bucket".to_string(),
+            prefix: Some("p/".to_string()),
+            delimiter: None,
+            cancellation_token: token,
+            max_parallel_listings: 1,
+            max_parallel_listing_max_depth: 2,
+            allow_parallel_listings_in_express_one_zone: false,
+            listing_worker_semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
+            max_depth: None,
+            rate_limiter: None,
+            api_call_counter: counter.clone(),
+        };
+
+        let entries = collect_entries(&engine, ListingMode::Objects, 1000)
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            counter.load(Ordering::Relaxed),
+            2,
+            "expected 2 API calls for 2 pages"
+        );
+    }
+
+    #[tokio::test]
+    async fn api_call_counter_single_page() {
+        let fetcher = MockPageFetcher::from_pages(
+            Some("p/"),
+            None,
+            vec![ListPage {
+                objects: vec![ListEntry::Object(S3Object::NotVersioning {
+                    key: "p/file.txt".to_string(),
+                    size: 10,
+                    last_modified: chrono::Utc::now(),
+                    e_tag: "\"e\"".to_string(),
+                    storage_class: Some("STANDARD".to_string()),
+                    checksum_algorithm: vec![],
+                    checksum_type: None,
+                    owner_display_name: None,
+                    owner_id: None,
+                    is_restore_in_progress: None,
+                    restore_expiry_date: None,
+                })],
+                sub_prefixes: vec![],
+                is_truncated: false,
+                continuation_token: None,
+                key_marker: None,
+                version_id_marker: None,
+            }],
+        );
+
+        let token = create_pipeline_cancellation_token();
+        let counter = Arc::new(AtomicU64::new(0));
+        let engine = ListingEngine {
+            fetcher,
+            bucket: "bucket".to_string(),
+            prefix: Some("p/".to_string()),
+            delimiter: None,
+            cancellation_token: token,
+            max_parallel_listings: 1,
+            max_parallel_listing_max_depth: 2,
+            allow_parallel_listings_in_express_one_zone: false,
+            listing_worker_semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
+            max_depth: None,
+            rate_limiter: None,
+            api_call_counter: counter.clone(),
+        };
+
+        let entries = collect_entries(&engine, ListingMode::Objects, 1000)
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            counter.load(Ordering::Relaxed),
+            1,
+            "expected 1 API call for single page"
+        );
     }
 }
