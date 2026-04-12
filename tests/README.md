@@ -3,6 +3,19 @@
 End-to-end tests for s3ls-rs. Gated behind `--cfg e2e_test` so they only run
 when explicitly requested and never interfere with `cargo test`.
 
+## Test suites
+
+| File | Tests | Description |
+|------|------:|-------------|
+| `e2e_listing.rs` | 13 | Listing smoke tests, exit codes (0/1/2), timeouts/retries, Express One Zone with prefix |
+| `e2e_filters.rs` | 14 | Per-filter tests (regex, size, mtime, storage-class), combinations, max-depth/no-sort smokes |
+| `e2e_filters_versioned.rs` | 9 | Versioning-specific filter tests, delete-marker handling, pagination (parallel + sequential) |
+| `e2e_display.rs` | 17 | Display flags (--show-*, --header, --summarize, --human-readable), PRE/DELETE row padding, bucket listing display |
+| `e2e_sort.rs` | 11 | Sort by key/size/date (asc/desc), multi-column tiebreak, --no-sort, versioning secondary sort, bucket listing sort |
+| `e2e_bucket_listing.rs` | 8 | Bucket listing: JSON shape, --bucket-name-prefix, combined flags, --no-sort, Express One Zone (listing + prefix filter) |
+| `e2e_large_listing.rs` | 1 | 16K-object listing completeness (full recursive, prefix, max-depth, max-parallel-listing-max-depth) |
+| `e2e_edge_cases.rs` | 12 | UTF-8 keys (2-4 byte), control chars, --raw-output, slash-suffix keys, request-payer, versioned summary with DMs |
+
 ## Prerequisites
 
 ### 1. AWS profile
@@ -25,14 +38,22 @@ The profile's principal needs the following S3 permissions:
 - `s3:PutObject`
 - `s3:GetObject`
 - `s3:ListBucket`
+- `s3:ListAllMyBuckets`
 - `s3:DeleteObject`
 - `s3:ListBucketVersions`
 - `s3:PutBucketVersioning`
-- `s3:PutBucketPolicy` *(forward-compatibility for future error-path tests)*
-- `s3:DeleteBucketPolicy` *(forward-compatibility)*
+- `s3:ListDirectoryBuckets` *(for Express One Zone tests)*
+- `s3express:CreateSession` *(for Express One Zone object listing)*
 
 No bucket pre-creation is required — the framework creates a fresh bucket of
 the form `s3ls-e2e-{uuid}` per test and cleans it up at the end.
+
+### 3. Express One Zone (optional)
+
+Some tests exercise Express One Zone (directory) buckets. These tests skip
+gracefully if the region doesn't support Express One Zone or bucket creation
+fails. No manual setup is needed — the tests handle AZ discovery and
+fallback automatically.
 
 ## Running
 
@@ -57,14 +78,35 @@ RUSTFLAGS='--cfg e2e_test' cargo test --test e2e_listing e2e_binary_smoke -- --n
 `--nocapture` is recommended so pipeline output and debug prints surface
 immediately on failure.
 
+### Trace logging
+
+Set the `E2E_TEST_LOG_LEVEL` environment variable to inject a verbosity flag
+into every s3ls invocation:
+
+```bash
+# Verbose tracing (shows S3 API calls)
+E2E_TEST_LOG_LEVEL='-vvv' RUSTFLAGS='--cfg e2e_test' \
+  cargo test --test e2e_listing -- --nocapture
+
+# Quiet (suppress warnings)
+E2E_TEST_LOG_LEVEL='-qq' RUSTFLAGS='--cfg e2e_test' \
+  cargo test --test e2e_listing -- --nocapture
+```
+
+Valid values: `-v`, `-vv`, `-vvv`, `-q`, `-qq`. Invalid values are silently
+ignored.
+
 ## Costs and caveats
 
-- Tests hit real AWS S3 and create real buckets. Expect small charges
-  (bucket ops, short-lived objects).
+- Tests hit real AWS S3 and create real buckets. Most tests cost well under
+  $0.01. The large-listing test (`e2e_large_listing.rs`) uploads ~16K objects
+  and costs ~$0.16 per run.
 - AWS eventual consistency can cause occasional flakes. Retry once; if it
   fails again, investigate.
 - Tests run against whatever region is configured in the `s3ls-e2e-test`
   profile — pick a region you control and can be billed from.
+- The large-listing test uses a 300-second timeout (not the standard 60s)
+  and takes ~40 seconds to complete.
 
 ## Cleaning leaked buckets
 
@@ -118,6 +160,22 @@ aws s3api delete-bucket --bucket "$BUCKET" --profile "$PROFILE"
 If the bucket holds more than 1000 versions + delete markers combined,
 repeat the two `delete-objects` calls until `list-object-versions` returns
 an empty result (each call deletes up to 1000 keys per request).
+
+### Directory buckets
+
+Express One Zone directory buckets (names ending with `--x-s3`) can be
+deleted directly if empty:
+
+```bash
+aws s3api delete-bucket --bucket s3ls-e2e-<uuid>--<az>--x-s3 --profile s3ls-e2e-test
+```
+
+If the bucket contains objects, delete them first:
+
+```bash
+aws s3 rm s3://s3ls-e2e-<uuid>--<az>--x-s3 --recursive --profile s3ls-e2e-test
+aws s3api delete-bucket --bucket s3ls-e2e-<uuid>--<az>--x-s3 --profile s3ls-e2e-test
+```
 
 ## CI
 
