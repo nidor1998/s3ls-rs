@@ -211,10 +211,17 @@ async fn e2e_edge_case_slash_suffix_key() {
 /// Objects with multiple checksum algorithms display correctly in both
 /// text and JSON formats.
 ///
-/// S3 (since 2024) may automatically compute CRC64NVME in addition to
-/// the user-specified algorithm. An object uploaded with CRC32 may
-/// list as `["CRC32", "CRC64NVME"]`. The text column joins them with
-/// commas per `src/aggregate.rs:367` (`obj.checksum_algorithm().join(",")`).
+/// S3 (since late 2024) automatically computes CRC64NVME in addition
+/// to any user-specified algorithm. An object uploaded with CRC32
+/// lists as `["CRC32", "CRC64NVME"]` — two algorithms.
+///
+/// JSON: `ChecksumAlgorithm` is an array with 2+ elements.
+/// Text: the `--show-checksum-algorithm` column joins them with commas
+/// (e.g., `"CRC32,CRC64NVME"`) per `src/aggregate.rs:367`.
+///
+/// If S3 does NOT add CRC64NVME (pre-2024 behavior or non-standard
+/// endpoint), the test skips the multi-algorithm assertions with a
+/// println note.
 #[tokio::test]
 async fn e2e_edge_case_multiple_checksums() {
     let helper = TestHelper::new().await;
@@ -224,14 +231,14 @@ async fn e2e_edge_case_multiple_checksums() {
     e2e_timeout!(async {
         helper.create_bucket(&bucket).await;
 
-        // Upload with explicit CRC32. S3 may add CRC64NVME automatically.
+        // Upload with explicit CRC32. S3 auto-adds CRC64NVME (since 2024).
         helper
             .put_object_with_checksum_algorithm(&bucket, "file.txt", b"hello".to_vec(), "CRC32")
             .await;
 
         let target = format!("s3://{bucket}/");
 
-        // JSON: ChecksumAlgorithm should be an array containing "CRC32".
+        // --- JSON sub-assertion ---
         let output = TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--json"]);
         assert!(output.status.success(), "s3ls failed: {}", output.stderr);
         let first_line = output
@@ -244,20 +251,35 @@ async fn e2e_edge_case_multiple_checksums() {
             .get("ChecksumAlgorithm")
             .and_then(|a| a.as_array())
             .expect("multiple checksums: ChecksumAlgorithm missing or not array");
+
+        // Must contain the user-specified algorithm.
         assert!(
             algos.iter().any(|a| a.as_str() == Some("CRC32")),
-            "multiple checksums: CRC32 not in ChecksumAlgorithm array: {algos:?}"
+            "multiple checksums json: CRC32 not in array: {algos:?}"
         );
-        // If S3 added CRC64NVME, the array has 2+ elements. Log it.
-        if algos.len() > 1 {
+
+        if algos.len() < 2 {
+            // S3 did not auto-add CRC64NVME — skip multi-algorithm checks.
             println!(
-                "  S3 returned {} checksum algorithms: {algos:?}",
+                "skipped multi-algorithm assertions: S3 returned only {} algorithm(s): {algos:?}",
                 algos.len()
+            );
+            return;
+        }
+
+        // 2+ algorithms present — verify all are strings.
+        println!(
+            "  S3 returned {} checksum algorithms: {algos:?}",
+            algos.len()
+        );
+        for a in algos {
+            assert!(
+                a.as_str().is_some_and(|s| !s.is_empty()),
+                "multiple checksums json: array element is not a non-empty string: {a:?}"
             );
         }
 
-        // Text: --show-checksum-algorithm column. If multiple algorithms
-        // present, they're comma-separated (e.g., "CRC32,CRC64NVME").
+        // --- Text sub-assertion ---
         let output = TestHelper::run_s3ls(&[
             target.as_str(),
             "--recursive",
@@ -265,7 +287,6 @@ async fn e2e_edge_case_multiple_checksums() {
             "--show-checksum-algorithm",
         ]);
         assert!(output.status.success(), "s3ls failed: {}", output.stderr);
-        // The data row's CHECKSUM_ALGORITHM column must contain "CRC32".
         let data_line = output
             .stdout
             .lines()
@@ -276,13 +297,16 @@ async fn e2e_edge_case_multiple_checksums() {
         // CHECKSUM_ALGORITHM is at index 2 (DATE=0, SIZE=1, CHECKSUM_ALGORITHM=2, KEY=3).
         assert!(
             cols[2].contains("CRC32"),
-            "multiple checksums text: CHECKSUM_ALGORITHM column should contain CRC32, got {:?}",
+            "multiple checksums text: column should contain CRC32, got {:?}",
             cols[2]
         );
-        // If comma-separated (multiple algorithms), log it.
-        if cols[2].contains(',') {
-            println!("  Text column shows multiple algorithms: {:?}", cols[2]);
-        }
+        // Multiple algorithms are comma-separated (e.g., "CRC32,CRC64NVME").
+        assert!(
+            cols[2].contains(','),
+            "multiple checksums text: expected comma-separated algorithms (2+), got {:?}",
+            cols[2]
+        );
+        println!("  Text column: {:?}", cols[2]);
     });
 
     _guard.cleanup().await;
