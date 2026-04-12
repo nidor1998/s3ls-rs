@@ -53,7 +53,7 @@ impl ListingPipeline {
 
         let storage = self.build_storage().await?;
 
-        let lister_handle = self.spawn_lister(storage, tx, queue_size)?;
+        let lister_handle = self.spawn_lister(Arc::clone(&storage), tx, queue_size)?;
         let aggregator_handle = self.spawn_aggregator(rx)?;
 
         // Wait for aggregator to finish (completes when rx closes).
@@ -87,7 +87,10 @@ impl ListingPipeline {
         }
         lister_result?;
 
-        tracing::debug!("Listing pipeline completed");
+        tracing::debug!(
+            api_calls = storage.api_call_count(),
+            "Listing pipeline completed"
+        );
         Ok(())
     }
 
@@ -108,6 +111,7 @@ impl ListingPipeline {
             queue_size,
             cancellation_token: self.cancellation_token.clone(),
             hide_delete_markers: self.config.hide_delete_markers,
+            show_objects_only: self.config.show_objects_only,
             filter_chain,
         };
 
@@ -176,6 +180,7 @@ impl ListingPipeline {
             self.config.allow_parallel_listings_in_express_one_zone,
             self.config.display_config.show_owner,
             self.config.display_config.show_restore_status,
+            self.config.rate_limit_api,
         )
         .await;
 

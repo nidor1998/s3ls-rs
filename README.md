@@ -1,19 +1,17 @@
 # s3ls
 
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![codecov](https://codecov.io/gh/nidor1998/s3ls-rs/graph/badge.svg)](https://codecov.io/gh/nidor1998/s3ls-rs)
+
 ## Fast Amazon S3 object listing tool
 
 List S3 objects and buckets using parallel API calls. Built in Rust.
 
-**1,100,000 objects listed in 2.4 seconds** — ~456,000 objects/sec throughput through massively parallel S3 API calls.
+### Demo
 
-```
-$ time s3ls --no-sort --max-parallel-listings 64 -r s3://s3ls-rs-test | wc -l
-1100000
+This demo shows listing approximately 360,000 objects per second, listing 1,100,000 objects in 3 seconds.
 
-real    0m2.341s
-```
-
-With default sorting enabled, the same listing completes in ~2.9 seconds (~379,000 objects/sec).
+![demo](media/demo.webp)
 
 > *Benchmark: EC2 instance in the same region as the bucket. Results may vary depending on network conditions, bucket prefix distribution, and S3 endpoint proximity.*
 
@@ -43,6 +41,7 @@ With default sorting enabled, the same listing completes in ~2.9 seconds (~379,0
     * [Pre-built binaries](#pre-built-binaries)
     * [Build from source](#build-from-source)
 - [Usage](#usage)
+    * [Trailing slash matters](#trailing-slash-matters)
     * [List objects](#list-objects)
     * [List objects recursively](#list-objects-recursively)
     * [Filter by regex](#filter-by-regex)
@@ -86,7 +85,6 @@ With default sorting enabled, the same listing completes in ~2.9 seconds (~379,0
 - [Shell completions](#shell-completions)
 - [About testing](#about-testing)
 - [Fully AI-generated (human-verified) software](#fully-ai-generated-human-verified-software)
-- [AI Evaluation Notice](#ai-evaluation-notice)
 - [License](#license)
 
 </details>
@@ -101,35 +99,34 @@ s3ls takes a fundamentally different approach by discovering virtual directories
 
 ### How it works
 
-s3ls uses a three-stage streaming pipeline connected by bounded async channels:
+s3ls uses a two-stage streaming pipeline connected by a bounded async channel:
 
 ```
-S3 API → [Lister] → channel → [Filter Chain] → channel → [Aggregator] → stdout
-              ↑                                                 ↓
-    parallel prefix discovery                          sort (or stream) + format
+S3 API → [Lister + Filter Chain] → channel → [Aggregator] → stdout
+                   ↑                                ↓
+         parallel prefix discovery          sort (or stream) + format
 ```
 
-1. **Lister** — Sends concurrent S3 API calls using parallel prefix discovery. Uses the S3 delimiter feature to discover "virtual directories" (common prefixes) at the top levels of the hierarchy, then lists each prefix independently and concurrently, with up to 32 parallel operations by default. A semaphore prevents overwhelming S3 while maximizing throughput.
-2. **Filter Chain** — Applies regex, time range, size range, and storage class filters inline as entries arrive. Objects that don't match are discarded immediately without being forwarded.
-3. **Aggregator** — In default mode, buffers all entries, sorts them, and writes the formatted output. In streaming mode (`--no-sort`), writes each entry directly to stdout as it arrives with no buffering.
+1. **Lister + Filter Chain** — Sends concurrent S3 API calls using parallel prefix discovery. Uses the S3 delimiter feature to discover "virtual directories" (common prefixes) at the top levels of the hierarchy, then lists each prefix independently and concurrently, with up to 64 parallel operations by default. A semaphore prevents overwhelming S3 while maximizing throughput. Filters (regex, time range, size range, storage class) are applied inline as entries arrive — objects that don't match are discarded immediately without being forwarded to the aggregator.
+2. **Aggregator** — In default mode, buffers all entries, sorts them, and writes the formatted output. In streaming mode (`--no-sort`), writes each entry directly to stdout as it arrives with no buffering.
 
 ### Why it's fast
 
-The speed comes from the parallel listing architecture, not from the choice of programming language. The bottleneck when listing S3 objects is network round-trip latency — each `ListObjectsV2` call takes milliseconds to return, and with 1,000 objects per page, listing 200,000 objects sequentially requires 200 round-trips waiting one after another. s3ls eliminates this wait by discovering virtual directories and listing each one concurrently.
+The speed comes from the parallel listing architecture, not from the choice of programming language (Rust). The bottleneck when listing S3 objects is network round-trip latency — each `ListObjectsV2` call takes milliseconds to return, and with 1,000 objects per page, listing 200,000 objects sequentially requires 200 round-trips waiting one after another. s3ls eliminates this wait by discovering virtual directories and listing each one concurrently.
 
 Rust contributes low per-object overhead (no garbage collector pauses, small struct sizes, zero-cost abstractions for the async runtime), but this is a secondary factor. The primary speedup is architectural.
 
 ### Why it's flexible
 
-The pipeline stages are decoupled through channels and trait abstractions. Filters are composed as a chain. The aggregator handles both tab-delimited text and JSON formatting through the same interface. Adding a new filter, sort field, or output column does not require changes to the lister or pipeline coordination — each concern is isolated.
+The pipeline stages are decoupled through a channel and trait abstractions. Filters are composed as a chain within the lister. The aggregator handles both tab-delimited text and JSON formatting through the same interface. Adding a new filter, sort field, or output column does not require changes to the pipeline coordination — each concern is isolated.
 
 ## Features
 
 ### High performance
 
-s3ls lists approximately 379,000 objects per second through parallel S3 API calls (1.1M objects in 2.9 seconds on an EC2 instance).
+s3ls lists approximately 360,000 objects per second through parallel S3 API calls (1.1M objects in 3 seconds on an EC2 instance).
 
-- Up to 32 concurrent listing operations by default (configurable up to 65,535)
+- Up to 64 concurrent listing operations by default (configurable up to 65,535)
 - Parallel prefix discovery at configurable depth
 - Parallel sorting for large result sets (threshold: 1,000,000 objects)
 - Tested with buckets containing over 1 million objects
@@ -216,7 +213,7 @@ If you still need sorted output for very large buckets, you can stream to a file
 ```bash
 # Stream to a file, then sort by the 3rd column (key) using the OS sort command
 s3ls --recursive --no-sort s3://huge-bucket/ > listing.tsv
-sort -t$'\t' -k3 listing.tsv > listing_sorted.tsv
+sort -t'\t' -k3 listing.tsv > listing_sorted.tsv
 ```
 
 The OS `sort` command automatically spills to disk when the data exceeds available memory, so this approach works for any bucket size.
@@ -253,6 +250,18 @@ s3ls works with any S3-compatible storage service:
 - S3 Transfer Acceleration via `--target-accelerate`
 - Requester-pays via `--target-request-payer`
 - HTTP/HTTPS proxy via standard environment variables (`HTTPS_PROXY`, `HTTP_PROXY`)
+
+s3ls is performance-tuned for Amazon S3, which supports high request rates. S3-compatible storage services may have lower rate limits. If you encounter throttling errors, use `--rate-limit-api` to cap the number of S3 API requests per second, or reduce concurrency with `--max-parallel-listings`:
+
+```bash
+# MinIO with rate limiting
+s3ls --recursive \
+     --target-endpoint-url http://localhost:9000 \
+     --target-force-path-style \
+     --rate-limit-api 50 \
+     --max-parallel-listings 4 \
+     s3://my-bucket/
+```
 
 ## Requirements
 
@@ -295,6 +304,24 @@ cargo install --git https://github.com/nidor1998/s3ls-rs.git
 ```
 
 ## Usage
+
+### Trailing slash matters
+
+S3 is object storage, not a file system. There are no directories — only keys (strings) and prefixes (string matching). The prefix you specify is passed to the S3 API as a literal string match, and the presence or absence of a trailing slash changes which objects are returned.
+
+```bash
+# Without trailing slash: prefix = "data"
+# Matches keys starting with "data" — including data/, data-backup/, database.txt
+$ s3ls s3://my-bucket/data
+
+# With trailing slash: prefix = "data/"
+# Matches only keys starting with "data/" — the typical intended behavior
+$ s3ls s3://my-bucket/data/
+```
+
+If you specify a prefix that does not exist, S3 simply returns an empty result and s3ls exits with code 0 (success). There is no "not found" error — in object storage, a prefix is not a resource that exists or doesn't exist, it is just a filter applied to key names.
+
+This is not a quirk of s3ls — it is how the S3 `ListObjectsV2` API works. When in doubt, include the trailing slash to scope the listing to a specific "directory."
 
 ### List objects
 
@@ -501,7 +528,7 @@ s3ls --target-region us-west-2 s3://my-bucket/
 s3ls uses a two-phase architecture for recursive listing:
 
 1. **Discovery phase** — Sends `ListObjectsV2` requests with a delimiter to discover common prefixes (virtual directories) at the top levels of the hierarchy, up to `--max-parallel-listing-max-depth` (default: 2).
-2. **Listing phase** — Each discovered prefix is listed independently and concurrently. A semaphore limits the number of concurrent listing operations to `--max-parallel-listings` (default: 32).
+2. **Listing phase** — Each discovered prefix is listed independently and concurrently. A semaphore limits the number of concurrent listing operations to `--max-parallel-listings` (default: 64).
 
 Non-recursive listing always uses a single sequential listing operation.
 
@@ -577,7 +604,17 @@ s3ls --recursive --filter-include-regex '\.csv$' s3://my-bucket/data/2025/
 
 #### Estimating API requests with -v
 
-Use `-vv` (debug logging) to see each API call as it happens. Use `-vvv` (trace logging) for per-page details including continuation tokens and the number of objects and prefixes returned per page.
+Use `-vv` (debug logging) to see the total number of API calls at completion:
+
+```
+DEBUG Listing pipeline completed api_calls=3312
+```
+
+Use `-vvv` (trace logging) to see the actual S3 API calls with their parameters:
+
+```
+TRACE ListObjectsV2 request bucket=s3ls-rs-test prefix=Some("test_data_09/dir_89/") delimiter=Some("/") max_keys=1000 continuation_token=None
+```
 
 #### When to consider S3 Inventory instead
 
@@ -624,7 +661,7 @@ If sorted output is needed for a bucket too large to sort in memory, stream to a
 
 ```bash
 s3ls --recursive --no-sort s3://huge-bucket/ > listing.tsv
-sort -t$'\t' -k3 listing.tsv > listing_sorted.tsv
+sort -t'\t' -k3 listing.tsv > listing_sorted.tsv
 ```
 
 The OS `sort` command automatically spills to disk when the data exceeds available memory.
@@ -694,9 +731,9 @@ s3ls requires the following IAM permissions:
 
 ### --max-parallel-listings
 
-Number of concurrent S3 API listing operations. Default: 32. Range: 1-65535.
+Number of concurrent S3 API listing operations. Default: 64. Range: 1-65535.
 
-Higher values increase throughput but also increase the number of concurrent S3 API calls. The default of 32 works well for most buckets. For buckets with very deep hierarchies, consider increasing this value.
+Higher values increase throughput but also increase the number of concurrent S3 API calls. The default of 64 works well for most buckets. For buckets with very deep hierarchies, consider increasing this value.
 
 ```bash
 s3ls --recursive --max-parallel-listings 64 s3://my-bucket/
@@ -842,8 +879,10 @@ Display:
       --show-is-latest           Show IS_LATEST column (requires --all-versions) [env: SHOW_IS_LATEST=]
       --show-owner               Show OWNER_DISPLAY_NAME and OWNER_ID columns [env: SHOW_OWNER=]
       --show-restore-status      Show IS_RESTORE_IN_PROGRESS and RESTORE_EXPIRY_DATE columns [env: SHOW_RESTORE_STATUS=]
+      --show-local-time          Display timestamps in local time instead of UTC [env: SHOW_LOCAL_TIME=]
       --header                   Add a header row to each column [env: HEADER=]
       --json                     Output as NDJSON (one JSON object per line) [env: JSON=]
+      --show-objects-only        Show only objects, hiding common prefixes (directory markers) from output [env: SHOW_OBJECTS_ONLY=]
       --raw-output               Emit raw S3 key/prefix bytes without escaping control characters [env: RAW_OUTPUT=]
 
 Tracing/Logging:
@@ -880,13 +919,15 @@ AWS Configuration:
 
 Performance:
       --max-parallel-listings <MAX_PARALLEL_LISTINGS>
-          Number of concurrent listing operations (1-65535) [env: MAX_PARALLEL_LISTINGS=] [default: 32]
+          Number of concurrent listing operations (1-65535) [env: MAX_PARALLEL_LISTINGS=] [default: 64]
       --max-parallel-listing-max-depth <MAX_PARALLEL_LISTING_MAX_DEPTH>
           Maximum depth for parallel listing operations [env: MAX_PARALLEL_LISTING_MAX_DEPTH=] [default: 2]
       --object-listing-queue-size <OBJECT_LISTING_QUEUE_SIZE>
           Internal queue size for object listing [env: OBJECT_LISTING_QUEUE_SIZE=] [default: 200000]
       --allow-parallel-listings-in-express-one-zone
           Allow parallel listings in Express One Zone storage [env: ALLOW_PARALLEL_LISTINGS_IN_EXPRESS_ONE_ZONE=]
+      --rate-limit-api <RATE_LIMIT_API>
+          Maximum S3 API requests per second for object listing operations [env: RATE_LIMIT_API=]
       --parallel-sort-threshold <PARALLEL_SORT_THRESHOLD>
           Minimum number of entries to trigger parallel sorting [env: PARALLEL_SORT_THRESHOLD=] [default: 1000000]
 
@@ -994,10 +1035,6 @@ S3-compatible storage is not tested when a new version is released. Since there 
 No human wrote a single line of source code in this project. Every line of source code, every test, all documentation, CI/CD configuration, and this README were generated by AI using [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) (Anthropic).
 
 Human engineers authored the requirements, design specifications, and s3sync reference architecture. They thoroughly reviewed and verified the design, all source code, and all tests. All features of the initial build binary have been manually tested and verified by humans. All E2E test scenarios have been thoroughly verified by humans against live AWS S3. The development followed a spec-driven process: requirements and design documents were written first, and the AI generated code to match those specifications under continuous human oversight.
-
-## AI Evaluation Notice
-
-The content of this README, including all text, code examples, tables, and comparisons, is 100% generated by AI software ([Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview), Anthropic). Human engineers reviewed and verified the content for accuracy.
 
 ## License
 

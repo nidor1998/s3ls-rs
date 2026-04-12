@@ -15,6 +15,7 @@ pub struct ObjectLister {
     pub queue_size: usize,
     pub cancellation_token: PipelineCancellationToken,
     pub hide_delete_markers: bool,
+    pub show_objects_only: bool,
     pub filter_chain: FilterChain,
 }
 
@@ -46,6 +47,9 @@ impl ObjectLister {
                 break;
             }
             if self.hide_delete_markers && entry.is_delete_marker() {
+                continue;
+            }
+            if self.show_objects_only && matches!(entry, ListEntry::CommonPrefix(_)) {
                 continue;
             }
             match self.filter_chain.matches(&entry) {
@@ -136,6 +140,7 @@ mod tests {
             queue_size: 10,
             cancellation_token: create_pipeline_cancellation_token(),
             hide_delete_markers: false,
+            show_objects_only: false,
             filter_chain: FilterChain::new(vec![]),
         };
 
@@ -199,6 +204,7 @@ mod tests {
             queue_size: 1, // tiny — storage will fill it fast
             cancellation_token: token,
             hide_delete_markers: false,
+            show_objects_only: false,
             filter_chain: FilterChain::new(vec![]),
         };
 
@@ -227,6 +233,7 @@ mod tests {
             queue_size: 10,
             cancellation_token: create_pipeline_cancellation_token(),
             hide_delete_markers: false,
+            show_objects_only: false,
             filter_chain: FilterChain::new(vec![]),
         };
 
@@ -240,6 +247,65 @@ mod tests {
         // MockStorage sends the same entries for both methods,
         // but this verifies the all_versions path is taken
         assert_eq!(received.len(), 2);
+        assert_eq!(received[0].key(), "file1.txt");
+        assert_eq!(received[1].key(), "logs/");
+    }
+
+    #[tokio::test]
+    async fn show_objects_only_filters_common_prefixes() {
+        let entries = sample_entries(); // contains file1.txt + CommonPrefix("logs/")
+        let mock = Arc::new(MockStorage::new(entries));
+        let (tx, mut rx) = mpsc::channel(10);
+
+        let lister = ObjectLister {
+            storage: mock,
+            sender: tx,
+            all_versions: false,
+            max_keys: 1000,
+            queue_size: 10,
+            cancellation_token: create_pipeline_cancellation_token(),
+            hide_delete_markers: false,
+            show_objects_only: true,
+            filter_chain: FilterChain::new(vec![]),
+        };
+
+        lister.list_target().await.unwrap();
+
+        let mut received = Vec::new();
+        while let Ok(entry) = rx.try_recv() {
+            received.push(entry);
+        }
+
+        assert_eq!(received.len(), 1, "CommonPrefix should be filtered out");
+        assert_eq!(received[0].key(), "file1.txt");
+    }
+
+    #[tokio::test]
+    async fn show_objects_only_false_keeps_common_prefixes() {
+        let entries = sample_entries();
+        let mock = Arc::new(MockStorage::new(entries));
+        let (tx, mut rx) = mpsc::channel(10);
+
+        let lister = ObjectLister {
+            storage: mock,
+            sender: tx,
+            all_versions: false,
+            max_keys: 1000,
+            queue_size: 10,
+            cancellation_token: create_pipeline_cancellation_token(),
+            hide_delete_markers: false,
+            show_objects_only: false,
+            filter_chain: FilterChain::new(vec![]),
+        };
+
+        lister.list_target().await.unwrap();
+
+        let mut received = Vec::new();
+        while let Ok(entry) = rx.try_recv() {
+            received.push(entry);
+        }
+
+        assert_eq!(received.len(), 2, "Both entries should pass through");
         assert_eq!(received[0].key(), "file1.txt");
         assert_eq!(received[1].key(), "logs/");
     }

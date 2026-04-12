@@ -195,7 +195,7 @@ When `--no-sort` is set, entries are streamed directly to stdout as they arrive 
 
 | Flag | Description | Env | Default |
 |------|-------------|-----|---------|
-| `--max-parallel-listings <N>` | Concurrent listing operations | `MAX_PARALLEL_LISTINGS` | 32 |
+| `--max-parallel-listings <N>` | Concurrent listing operations | `MAX_PARALLEL_LISTINGS` | 64 |
 | `--max-parallel-listing-max-depth <N>` | Max depth for parallel listing | `MAX_PARALLEL_LISTING_MAX_DEPTH` | 2 |
 | `--object-listing-queue-size <N>` | Internal queue size | `OBJECT_LISTING_QUEUE_SIZE` | 200,000 |
 | `--allow-parallel-listings-in-express-one-zone` | Allow parallel in Express One Zone | `ALLOW_PARALLEL_LISTINGS_IN_EXPRESS_ONE_ZONE` | false |

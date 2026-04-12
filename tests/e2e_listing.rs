@@ -454,3 +454,184 @@ async fn e2e_listing_max_depth_without_recursive_returns_exit_code_2() {
         );
     });
 }
+
+/// `--rate-limit-api` lists objects correctly in normal (ListObjectsV2) mode.
+#[tokio::test]
+async fn e2e_listing_rate_limit_api() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+        helper.put_object(&bucket, "a.txt", b"aaa".to_vec()).await;
+        helper.put_object(&bucket, "b.txt", b"bbb".to_vec()).await;
+
+        let target = format!("s3://{bucket}/");
+        let output =
+            TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--rate-limit-api", "10"]);
+
+        assert!(
+            output.status.success(),
+            "s3ls failed with --rate-limit-api: {}",
+            output.stderr
+        );
+        assert!(
+            output.stdout.contains("a.txt"),
+            "a.txt missing from rate-limited output"
+        );
+        assert!(
+            output.stdout.contains("b.txt"),
+            "b.txt missing from rate-limited output"
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// `--rate-limit-api` lists objects correctly in versioning
+/// (ListObjectVersions) mode.
+#[tokio::test]
+async fn e2e_listing_rate_limit_api_versioned() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_versioned_bucket(&bucket).await;
+        helper.put_object(&bucket, "v.txt", b"v1".to_vec()).await;
+        helper.put_object(&bucket, "v.txt", b"v2".to_vec()).await;
+
+        let target = format!("s3://{bucket}/");
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--all-versions",
+            "--rate-limit-api",
+            "10",
+        ]);
+
+        assert!(
+            output.status.success(),
+            "s3ls failed with --rate-limit-api --all-versions: {}",
+            output.stderr
+        );
+        // Both versions should appear
+        let v_lines: Vec<&str> = output
+            .stdout
+            .lines()
+            .filter(|l| l.contains("v.txt"))
+            .collect();
+        assert_eq!(
+            v_lines.len(),
+            2,
+            "expected 2 versions of v.txt, got {}: {:?}",
+            v_lines.len(),
+            v_lines
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// Edge case: enumerate 1,000 objects without a prefix, paginated via
+/// `--max-keys 10` (100 pages). Verifies that pagination works correctly
+/// across many pages when the bucket has no prefix hierarchy.
+#[tokio::test]
+async fn e2e_listing_1000_objects_no_prefix_small_page() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+
+        let objects: Vec<(String, Vec<u8>)> = (0..1000)
+            .map(|i| (format!("{i:04}.txt"), vec![0u8; 10]))
+            .collect();
+        helper.put_objects_parallel_n(&bucket, objects, 64).await;
+
+        let target = format!("s3://{bucket}");
+        let output = TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--max-keys", "10"]);
+
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        let data_lines: Vec<&str> = output
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+        assert_eq!(
+            data_lines.len(),
+            1000,
+            "expected 1000 objects, got {}",
+            data_lines.len()
+        );
+
+        // Verify first and last objects are present (sorted by key)
+        assert!(
+            data_lines[0].contains("0000.txt"),
+            "first object should be 0000.txt"
+        );
+        assert!(
+            data_lines[999].contains("0999.txt"),
+            "last object should be 0999.txt"
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// Edge case: enumerate 1,000 objects in a versioned bucket without a prefix,
+/// paginated via `--max-keys 10`. Verifies that ListObjectVersions pagination
+/// works correctly across many pages.
+#[tokio::test]
+async fn e2e_listing_1000_objects_no_prefix_small_page_versioned() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_versioned_bucket(&bucket).await;
+
+        let objects: Vec<(String, Vec<u8>)> = (0..1000)
+            .map(|i| (format!("{i:04}.txt"), vec![0u8; 10]))
+            .collect();
+        helper.put_objects_parallel_n(&bucket, objects, 64).await;
+
+        let target = format!("s3://{bucket}");
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--all-versions",
+            "--max-keys",
+            "10",
+        ]);
+
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        let data_lines: Vec<&str> = output
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+        assert_eq!(
+            data_lines.len(),
+            1000,
+            "expected 1000 versioned objects, got {}",
+            data_lines.len()
+        );
+
+        // Verify first and last objects are present (sorted by key)
+        assert!(
+            data_lines[0].contains("0000.txt"),
+            "first object should be 0000.txt"
+        );
+        assert!(
+            data_lines[999].contains("0999.txt"),
+            "last object should be 0999.txt"
+        );
+    });
+
+    _guard.cleanup().await;
+}

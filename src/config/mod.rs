@@ -15,6 +15,7 @@ pub struct Config {
     pub recursive: bool,
     pub all_versions: bool,
     pub hide_delete_markers: bool,
+    pub show_objects_only: bool,
     pub max_depth: Option<u16>,
     pub bucket_name_prefix: Option<String>,
     pub list_express_one_zone_buckets: bool,
@@ -35,6 +36,7 @@ pub struct Config {
     pub max_parallel_listing_max_depth: u16,
     pub object_listing_queue_size: u32,
     pub allow_parallel_listings_in_express_one_zone: bool,
+    pub rate_limit_api: Option<u32>,
     pub parallel_sort_threshold: u32,
 
     // AWS Client
@@ -75,6 +77,7 @@ impl Default for Config {
             recursive: false,
             all_versions: false,
             hide_delete_markers: false,
+            show_objects_only: false,
             max_depth: None,
             bucket_name_prefix: None,
             list_express_one_zone_buckets: false,
@@ -83,10 +86,11 @@ impl Default for Config {
             reverse: false,
             no_sort: false,
             display_config: DisplayConfig::default(),
-            max_parallel_listings: 32,
+            max_parallel_listings: 64,
             max_parallel_listing_max_depth: 2,
             object_listing_queue_size: 200_000,
             allow_parallel_listings_in_express_one_zone: false,
+            rate_limit_api: None,
             parallel_sort_threshold: 1_000_000,
             target_client_config: None,
             max_keys: 1000,
@@ -122,6 +126,7 @@ pub struct DisplayConfig {
     pub show_owner: bool,
     pub show_restore_status: bool,
     pub show_bucket_arn: bool,
+    pub show_local_time: bool,
     pub header: bool,
     pub json: bool,
     /// Emit raw S3 key/prefix bytes without escaping control characters.
@@ -189,6 +194,7 @@ mod tests {
         assert!(!config.recursive);
         assert!(!config.all_versions);
         assert!(!config.hide_delete_markers);
+        assert!(!config.show_objects_only);
         assert!(config.max_depth.is_none());
         assert!(config.bucket_name_prefix.is_none());
         assert!(!config.list_express_one_zone_buckets);
@@ -210,15 +216,17 @@ mod tests {
         assert!(!config.display_config.show_owner);
         assert!(!config.display_config.show_restore_status);
         assert!(!config.display_config.show_bucket_arn);
+        assert!(!config.display_config.show_local_time);
         assert!(!config.display_config.header);
         assert!(!config.display_config.json);
         assert!(!config.display_config.raw_output);
 
         // Performance
-        assert_eq!(config.max_parallel_listings, 32);
+        assert_eq!(config.max_parallel_listings, 64);
         assert_eq!(config.max_parallel_listing_max_depth, 2);
         assert_eq!(config.object_listing_queue_size, 200_000);
         assert!(!config.allow_parallel_listings_in_express_one_zone);
+        assert!(config.rate_limit_api.is_none());
         assert_eq!(config.parallel_sort_threshold, 1_000_000);
 
         // AWS Client

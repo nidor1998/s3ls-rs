@@ -20,7 +20,7 @@ mod tests;
 // Default constants
 // ---------------------------------------------------------------------------
 
-const DEFAULT_MAX_PARALLEL_LISTINGS: u16 = 32;
+const DEFAULT_MAX_PARALLEL_LISTINGS: u16 = 64;
 const DEFAULT_PARALLEL_LISTING_MAX_DEPTH: u16 = 2;
 const DEFAULT_OBJECT_LISTING_QUEUE_SIZE: u32 = 200000;
 const DEFAULT_PARALLEL_SORT_THRESHOLD: u32 = 1_000_000;
@@ -323,6 +323,10 @@ pub struct CLIArgs {
     #[arg(long, env, default_value_t = false, help_heading = "Bucket Listing")]
     pub show_bucket_arn: bool,
 
+    /// Display timestamps in local time instead of UTC
+    #[arg(long, env, default_value_t = false, help_heading = "Display")]
+    pub show_local_time: bool,
+
     /// Add a header row to each column
     #[arg(
         long,
@@ -336,6 +340,10 @@ pub struct CLIArgs {
     /// Output as NDJSON (one JSON object per line)
     #[arg(long, env, default_value_t = false, help_heading = "Display")]
     pub json: bool,
+
+    /// Show only objects, hiding common prefixes (directory markers) from output
+    #[arg(long, env, default_value_t = false, help_heading = "Display")]
+    pub show_objects_only: bool,
 
     /// Emit raw S3 key/prefix bytes without escaping control characters.
     ///
@@ -446,6 +454,10 @@ pub struct CLIArgs {
     /// Allow parallel listings in Express One Zone storage
     #[arg(long, env, default_value_t = false, help_heading = "Performance")]
     pub allow_parallel_listings_in_express_one_zone: bool,
+
+    /// Maximum S3 API requests per second for object listing operations
+    #[arg(long, env, value_parser = clap::value_parser!(u32).range(10..), help_heading = "Performance")]
+    pub rate_limit_api: Option<u32>,
 
     /// Minimum number of entries to trigger parallel sorting
     #[arg(long, env, default_value_t = DEFAULT_PARALLEL_SORT_THRESHOLD, value_parser = clap::value_parser!(u32).range(1..), help_heading = "Performance")]
@@ -694,6 +706,9 @@ impl TryFrom<CLIArgs> for crate::config::Config {
             if args.show_restore_status {
                 return Err("--show-restore-status is not valid for bucket listing".to_string());
             }
+            if args.show_objects_only {
+                return Err("--show-objects-only is not valid for bucket listing".to_string());
+            }
         }
 
         // Reject bucket-only options in object listing mode.
@@ -765,6 +780,7 @@ impl TryFrom<CLIArgs> for crate::config::Config {
             recursive: args.recursive,
             all_versions: args.all_versions,
             hide_delete_markers: args.hide_delete_markers,
+            show_objects_only: args.show_objects_only,
             max_depth: args.max_depth,
             bucket_name_prefix: args.bucket_name_prefix,
             list_express_one_zone_buckets: args.list_express_one_zone_buckets,
@@ -784,6 +800,7 @@ impl TryFrom<CLIArgs> for crate::config::Config {
                 show_owner: args.show_owner,
                 show_restore_status: args.show_restore_status,
                 show_bucket_arn: args.show_bucket_arn,
+                show_local_time: args.show_local_time,
                 header: args.header,
                 json: args.json,
                 raw_output: args.raw_output,
@@ -793,6 +810,7 @@ impl TryFrom<CLIArgs> for crate::config::Config {
             object_listing_queue_size: args.object_listing_queue_size,
             allow_parallel_listings_in_express_one_zone: args
                 .allow_parallel_listings_in_express_one_zone,
+            rate_limit_api: args.rate_limit_api,
             parallel_sort_threshold: args.parallel_sort_threshold,
             target_client_config,
             max_keys: args.max_keys,

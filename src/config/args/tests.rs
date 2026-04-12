@@ -593,6 +593,17 @@ fn bucket_listing_rejects_show_restore_status() {
     );
 }
 
+#[test]
+fn bucket_listing_rejects_show_objects_only() {
+    let result = build_config_from_args(args(&["--show-objects-only"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--show-objects-only is not valid for bucket listing")
+    );
+}
+
 // ===========================================================================
 // 4b-3. Bucket-only options rejected in object listing mode
 // ===========================================================================
@@ -708,6 +719,30 @@ fn display_show_checksum_algorithm() {
 fn display_show_checksum_type() {
     let cli = parse_from_args(args(&["s3://bucket", "--show-checksum-type"])).unwrap();
     assert!(cli.show_checksum_type);
+}
+
+#[test]
+fn display_show_objects_only() {
+    let cli = parse_from_args(args(&["s3://bucket", "--show-objects-only"])).unwrap();
+    assert!(cli.show_objects_only);
+}
+
+#[test]
+fn display_show_objects_only_default_false() {
+    let cli = parse_from_args(args(&["s3://bucket"])).unwrap();
+    assert!(!cli.show_objects_only);
+}
+
+#[test]
+fn display_show_local_time() {
+    let cli = parse_from_args(args(&["s3://bucket", "--show-local-time"])).unwrap();
+    assert!(cli.show_local_time);
+}
+
+#[test]
+fn display_show_local_time_default_false() {
+    let cli = parse_from_args(args(&["s3://bucket"])).unwrap();
+    assert!(!cli.show_local_time);
 }
 
 #[test]
@@ -872,8 +907,32 @@ fn aws_disable_stalled_stream_protection() {
 
 #[test]
 fn perf_max_parallel_listings() {
-    let cli = parse_from_args(args(&["s3://bucket", "--max-parallel-listings", "32"])).unwrap();
-    assert_eq!(cli.max_parallel_listings, 32);
+    let cli = parse_from_args(args(&["s3://bucket", "--max-parallel-listings", "64"])).unwrap();
+    assert_eq!(cli.max_parallel_listings, 64);
+}
+
+#[test]
+fn perf_rate_limit_api() {
+    let cli = parse_from_args(args(&["s3://bucket", "--rate-limit-api", "100"])).unwrap();
+    assert_eq!(cli.rate_limit_api, Some(100));
+}
+
+#[test]
+fn perf_rate_limit_api_default_none() {
+    let cli = parse_from_args(args(&["s3://bucket"])).unwrap();
+    assert!(cli.rate_limit_api.is_none());
+}
+
+#[test]
+fn perf_rate_limit_api_rejects_below_10() {
+    let result = parse_from_args(args(&["s3://bucket", "--rate-limit-api", "9"]));
+    assert!(result.is_err());
+}
+
+#[test]
+fn perf_rate_limit_api_accepts_10() {
+    let cli = parse_from_args(args(&["s3://bucket", "--rate-limit-api", "10"])).unwrap();
+    assert_eq!(cli.rate_limit_api, Some(10));
 }
 
 #[test]
@@ -1113,7 +1172,7 @@ fn verify_all_defaults() {
     assert!(!cli.disable_stalled_stream_protection);
 
     // Performance
-    assert_eq!(cli.max_parallel_listings, 32);
+    assert_eq!(cli.max_parallel_listings, 64);
     assert_eq!(cli.max_parallel_listing_max_depth, 2);
     assert_eq!(cli.object_listing_queue_size, 200000);
     assert!(!cli.allow_parallel_listings_in_express_one_zone);
