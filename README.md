@@ -608,7 +608,17 @@ s3ls --recursive --filter-include-regex '\.csv$' s3://my-bucket/data/2025/
 
 #### Estimating API requests with -v
 
-Use `-vv` (debug logging) to see each API call as it happens. Use `-vvv` (trace logging) for per-page details including continuation tokens and the number of objects and prefixes returned per page.
+Use `-vv` (debug logging) to see the total number of API calls at completion:
+
+```
+DEBUG Listing pipeline completed api_calls=3312
+```
+
+Use `-vvv` (trace logging) to see the actual S3 API calls with their parameters:
+
+```
+TRACE ListObjectsV2 request bucket=s3ls-rs-test prefix=Some("test_data_09/dir_89/") delimiter=Some("/") max_keys=1000 continuation_token=None
+```
 
 #### When to consider S3 Inventory instead
 
