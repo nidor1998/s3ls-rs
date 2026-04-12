@@ -536,3 +536,69 @@ async fn e2e_versioned_pagination() {
 
     _guard.cleanup().await;
 }
+
+/// Versioned listing pagination WITHOUT parallel listing.
+///
+/// Forces sequential (non-parallel) listing via `--max-parallel-listings 1`
+/// combined with `--max-keys 3` to trigger pagination. This exercises the
+/// sequential `ListObjectVersions` pagination path — the counterpart to
+/// `e2e_versioned_pagination` which uses the default parallel listing.
+#[tokio::test]
+async fn e2e_versioned_pagination_sequential() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_versioned_bucket(&bucket).await;
+
+        // 2 keys × 4 versions each = 8 object version rows.
+        for i in 1..=4 {
+            helper
+                .put_object(&bucket, "one.txt", format!("one-v{i}").into_bytes())
+                .await;
+            helper
+                .put_object(&bucket, "two.txt", format!("two-v{i}").into_bytes())
+                .await;
+        }
+
+        // Add a delete marker — 9th row.
+        helper.create_delete_marker(&bucket, "one.txt").await;
+
+        let target = format!("s3://{bucket}/");
+
+        // --max-parallel-listings 1 forces sequential listing.
+        // --max-keys 3 forces 3 pages for 9 rows.
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--all-versions",
+            "--json",
+            "--no-sort",
+            "--max-parallel-listings",
+            "1",
+            "--max-keys",
+            "3",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        // Expect: 8 object versions + 1 delete marker = 9 rows.
+        assert_json_version_shapes_eq(
+            &output.stdout,
+            &[
+                ("one.txt", false),
+                ("one.txt", false),
+                ("one.txt", false),
+                ("one.txt", false),
+                ("one.txt", true), // delete marker
+                ("two.txt", false),
+                ("two.txt", false),
+                ("two.txt", false),
+                ("two.txt", false),
+            ],
+            "versioned sequential pagination: 9 rows across 3 pages (max-keys=3, max-parallel=1)",
+        );
+    });
+
+    _guard.cleanup().await;
+}
