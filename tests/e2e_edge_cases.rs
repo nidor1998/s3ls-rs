@@ -393,3 +393,120 @@ async fn e2e_edge_case_utf8_regex_filters() {
 
     _guard.cleanup().await;
 }
+
+/// Listing with a prefix that contains a control character.
+///
+/// S3 allows any byte sequence as a key prefix. Objects under a prefix
+/// like `"data\ttab/"` (literal tab in the prefix path) should be
+/// enumerable by passing the same literal prefix to s3ls. In JSON mode
+/// the key appears with the control character JSON-escaped (`\t`).
+#[tokio::test]
+async fn e2e_edge_case_control_char_prefix_listing() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+
+        // Keys with a literal tab (0x09) in the prefix component.
+        let prefix_with_tab = "data\ttab/";
+        let key_under_tab = format!("{prefix_with_tab}file.txt");
+        let key_sibling = "data-normal/file.txt".to_string();
+
+        helper
+            .put_object(&bucket, &key_under_tab, b"x".to_vec())
+            .await;
+        helper
+            .put_object(&bucket, &key_sibling, b"x".to_vec())
+            .await;
+
+        // List with the control-char prefix — only the tab-prefixed
+        // object should appear.
+        let target = format!("s3://{bucket}/{prefix_with_tab}");
+        let output = TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--json"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        assert_json_keys_eq(
+            &output.stdout,
+            &[&key_under_tab],
+            "control prefix: only tab-prefixed object",
+        );
+
+        // Sibling must NOT appear.
+        assert!(
+            !output.stdout.contains("data-normal"),
+            "control prefix: sibling 'data-normal/' should not appear in output"
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// `--filter-include-regex` and `--filter-exclude-regex` work correctly
+/// with patterns that match control characters in keys.
+///
+/// S3 keys can contain literal control bytes (tab, newline, etc.).
+/// The `fancy-regex` crate matches against the raw key string, so a
+/// regex like `\t` (which regex interprets as the tab character)
+/// should match keys containing a literal tab byte.
+#[tokio::test]
+async fn e2e_edge_case_control_char_regex_filters() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+
+        // Keys: two with literal tab in the path, two without.
+        let key_tab_a = "data\ttab/a.txt".to_string();
+        let key_tab_b = "data\ttab/b.csv".to_string();
+        let key_clean_a = "data-clean/a.txt".to_string();
+        let key_clean_b = "data-clean/b.csv".to_string();
+
+        let fixture: Vec<(String, Vec<u8>)> = vec![
+            (key_tab_a.clone(), b"x".to_vec()),
+            (key_tab_b.clone(), b"x".to_vec()),
+            (key_clean_a.clone(), b"x".to_vec()),
+            (key_clean_b.clone(), b"x".to_vec()),
+        ];
+        helper.put_objects_parallel(&bucket, fixture).await;
+
+        let target = format!("s3://{bucket}/");
+
+        // Sub-assertion 1: include-regex matching the tab character.
+        // Regex `\t` matches the literal tab byte (0x09) in the key.
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--json",
+            "--filter-include-regex",
+            r"\t",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_json_keys_eq(
+            &output.stdout,
+            &[&key_tab_a, &key_tab_b],
+            "control include-regex: \\t matches tab keys",
+        );
+
+        // Sub-assertion 2: exclude-regex removing keys with tab.
+        // Keeps only the clean keys.
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--json",
+            "--filter-exclude-regex",
+            r"\t",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_json_keys_eq(
+            &output.stdout,
+            &[&key_clean_a, &key_clean_b],
+            "control exclude-regex: \\t excludes tab keys",
+        );
+    });
+
+    _guard.cleanup().await;
+}
