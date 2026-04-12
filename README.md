@@ -24,7 +24,6 @@ real    1.38s
     * [Why s3ls?](#why-s3ls)
     * [How it works](#how-it-works)
     * [Why it's fast](#why-its-fast)
-    * [Why it uses little memory](#why-it-uses-little-memory)
     * [Why it's flexible](#why-its-flexible)
 - [Features](#features)
     * [High performance](#high-performance)
@@ -117,12 +116,6 @@ S3 API → [Lister] → channel → [Filter Chain] → channel → [Aggregator] 
 The speed comes from the parallel listing architecture, not from the choice of programming language. The bottleneck when listing S3 objects is network round-trip latency — each `ListObjectsV2` call takes milliseconds to return, and with 1,000 objects per page, listing 200,000 objects sequentially requires 200 round-trips waiting one after another. s3ls eliminates this wait by discovering virtual directories and listing each one concurrently.
 
 Rust contributes low per-object overhead (no garbage collector pauses, small struct sizes, zero-cost abstractions for the async runtime), but this is a secondary factor. The primary speedup is architectural.
-
-### Why it uses little memory
-
-In streaming mode (`--no-sort`), the aggregator writes each entry to stdout immediately upon receiving it. No entry buffer is allocated. The bounded channel (default capacity: 200,000 entries) provides backpressure — if the aggregator can't write fast enough, the lister pauses. Memory usage stays constant regardless of object count.
-
-In default (sorted) mode, all entries are buffered in memory before sorting. Memory grows linearly with object count (~327 bytes per regular object, ~359 bytes per versioned object).
 
 ### Why it's flexible
 
