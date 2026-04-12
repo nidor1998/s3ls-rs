@@ -157,3 +157,67 @@ async fn e2e_listing_express_one_zone_with_prefix() {
 
     _guard.cleanup().await;
 }
+
+/// Verifies that basic object listing works when all timeout and retry
+/// options are explicitly specified on the command line.
+///
+/// This test passes every timeout/retry/stalled-stream flag with
+/// reasonable production-like values — proving the flags are accepted,
+/// wired through to the AWS SDK client, and don't break normal listing
+/// operations.
+///
+/// Flags exercised:
+///   --aws-max-attempts 3
+///   --initial-backoff-milliseconds 500
+///   --operation-timeout-milliseconds 30000
+///   --operation-attempt-timeout-milliseconds 10000
+///   --connect-timeout-milliseconds 5000
+///   --read-timeout-milliseconds 5000
+///   --disable-stalled-stream-protection
+#[tokio::test]
+async fn e2e_listing_with_explicit_timeouts_and_retries() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+
+        helper.put_object(&bucket, "a.txt", b"aaa".to_vec()).await;
+        helper.put_object(&bucket, "b.txt", b"bb".to_vec()).await;
+        helper.put_object(&bucket, "c.txt", b"c".to_vec()).await;
+
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--json",
+            // Retry options
+            "--aws-max-attempts",
+            "3",
+            "--initial-backoff-milliseconds",
+            "500",
+            // Timeout options
+            "--operation-timeout-milliseconds",
+            "30000",
+            "--operation-attempt-timeout-milliseconds",
+            "10000",
+            "--connect-timeout-milliseconds",
+            "5000",
+            "--read-timeout-milliseconds",
+            "5000",
+            // Stalled stream protection
+            "--disable-stalled-stream-protection",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        assert_json_keys_eq(
+            &output.stdout,
+            &["a.txt", "b.txt", "c.txt"],
+            "listing with explicit timeouts and retries",
+        );
+    });
+
+    _guard.cleanup().await;
+}
