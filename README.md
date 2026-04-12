@@ -196,7 +196,16 @@ s3ls exposes S3 object metadata that other listing tools do not surface:
 
 ### Low memory usage
 
-By default, s3ls buffers all results in memory for sorting. Each object consumes approximately 327 bytes (regular) or 359 bytes (versioned) of memory, so 1 million objects require roughly 312 MiB or 342 MiB respectively.
+By default, s3ls buffers all results in memory for sorting. Measured memory usage (RSS) on EC2 with `--max-parallel-listings 64`:
+
+| Objects | Peak RSS | Per-object |
+|--------:|---------:|-----------:|
+| 0 (baseline) | ~15 MB | — |
+| 100,000 | ~97 MB | ~860 bytes |
+| 900,000 | ~543 MB | ~615 bytes |
+| 1,100,000 | ~785 MB | ~734 bytes |
+
+The per-object cost includes the `ListEntry` struct, heap-allocated strings (key, ETag), and allocator overhead. The ~15 MB baseline covers the async runtime, AWS SDK, TLS context, and connection pool.
 
 The `--no-sort` streaming mode writes results directly as they arrive from S3, with near-zero memory usage regardless of object count. If you still need sorted output for very large buckets, you can stream to a file and sort externally:
 
