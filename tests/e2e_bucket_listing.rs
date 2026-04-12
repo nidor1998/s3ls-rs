@@ -277,8 +277,12 @@ async fn e2e_bucket_listing_no_sort() {
 /// regular bucket, then lists only Express One Zone buckets. The
 /// directory bucket must appear; the regular bucket must not.
 ///
-/// Skips gracefully in regions where Express One Zone is not mapped
-/// (prints a note and returns without assertions).
+/// Skips gracefully when:
+/// - The region has no mapped Express One Zone AZ
+///   (`express_one_zone_az_for_region` returns `None`).
+/// - S3 rejects the directory bucket creation (wrong AZ, unsupported
+///   region, missing permissions, etc.) — `try_create_directory_bucket`
+///   returns `Err`.
 #[tokio::test]
 async fn e2e_bucket_listing_express_one_zone() {
     use uuid::Uuid;
@@ -304,7 +308,16 @@ async fn e2e_bucket_listing_express_one_zone() {
     let _guard_regular = helper.bucket_guard(&bucket_regular);
 
     e2e_timeout!(async {
-        helper.create_directory_bucket(&bucket_express, az_id).await;
+        // Try to create the directory bucket. Skip if S3 rejects it
+        // (wrong AZ, unsupported region, missing permissions, etc.).
+        if let Err(e) = helper
+            .try_create_directory_bucket(&bucket_express, az_id)
+            .await
+        {
+            println!("skipped: {e}");
+            return;
+        }
+
         helper.create_bucket(&bucket_regular).await;
 
         let output = TestHelper::run_s3ls(&["--json", "--list-express-one-zone-buckets"]);

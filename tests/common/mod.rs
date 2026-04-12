@@ -137,17 +137,23 @@ impl TestHelper {
             .unwrap_or_else(|e| panic!("Failed to enable versioning on {bucket}: {e}"));
     }
 
-    /// Create an Express One Zone (directory) bucket.
+    /// Try to create an Express One Zone (directory) bucket.
+    ///
+    /// Returns `Ok(())` on success, `Err(message)` if S3 rejects the
+    /// request (wrong AZ, unsupported region, missing permissions, etc.).
+    /// The caller can skip the test gracefully on error rather than
+    /// panicking — Express One Zone availability varies by region and
+    /// account configuration.
     ///
     /// `bucket` must end with `--{az_id}--x-s3` (e.g.,
     /// `s3ls-e2e-express-abc123--use1-az4--x-s3`).
     /// `az_id` must be a valid availability zone ID that supports
     /// Express One Zone (e.g., `"use1-az4"`).
-    ///
-    /// Used by `e2e_bucket_listing_express_one_zone`. The helper uses
-    /// `BucketType::Directory` + `DataRedundancy::SingleAvailabilityZone` +
-    /// `LocationType::AvailabilityZone`.
-    pub async fn create_directory_bucket(&self, bucket: &str, az_id: &str) {
+    pub async fn try_create_directory_bucket(
+        &self,
+        bucket: &str,
+        az_id: &str,
+    ) -> Result<(), String> {
         use aws_sdk_s3::types::{
             BucketInfo, BucketType, DataRedundancy, LocationInfo, LocationType,
         };
@@ -173,7 +179,8 @@ impl TestHelper {
             .create_bucket_configuration(config)
             .send()
             .await
-            .unwrap_or_else(|e| panic!("Failed to create directory bucket {bucket}: {e}"));
+            .map(|_| ())
+            .map_err(|e| format!("Failed to create directory bucket {bucket}: {e}"))
     }
 
     /// Delete all objects (including versions and delete markers) and then delete the bucket.
