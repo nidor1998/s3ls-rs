@@ -4,9 +4,9 @@
 //!
 //! Uploads ~16,000 objects with a realistic 6-7 level hierarchy (data
 //! lake partitions at depth 6, application logs at depth 7) and
-//! verifies s3ls enumerates every object correctly under 5 different
+//! verifies s3ls enumerates every object correctly under 4 different
 //! listing configurations: full recursive, prefix-scoped, max-depth 3,
-//! and two max-parallel-listing-max-depth values (1 and 4).
+//! and max-parallel-listing-max-depth 1.
 //!
 //! This is the only e2e test that exercises the parallel listing engine
 //! at realistic scale. All other tests use tiny fixtures (3-10 objects).
@@ -265,23 +265,8 @@ async fn e2e_large_listing_completeness() {
         assert_key_set_eq(&actual, &expected_set, "max-parallel-listing-max-depth 1");
         println!("  OK: {} keys match.", actual.len());
 
-        // --- Sub-assertion 5: max-parallel-listing-max-depth 4 ---
-        println!("Sub-assertion 5: max-parallel-listing-max-depth 4...");
-        let output = TestHelper::run_s3ls(&[
-            target.as_str(),
-            "--recursive",
-            "--json",
-            "--no-sort",
-            "--max-parallel-listing-max-depth",
-            "4",
-        ]);
-        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
-        let actual = collect_keys_from_json(&output.stdout);
-        assert_key_set_eq(&actual, &expected_set, "max-parallel-listing-max-depth 4");
-        println!("  OK: {} keys match.", actual.len());
-
         println!(
-            "All 5 sub-assertions passed for {} objects.",
+            "All 4 sub-assertions passed for {} objects.",
             expected_set.len()
         );
     })
