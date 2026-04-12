@@ -711,6 +711,18 @@ fn display_show_checksum_type() {
 }
 
 #[test]
+fn display_show_objects_only() {
+    let cli = parse_from_args(args(&["s3://bucket", "--show-objects-only"])).unwrap();
+    assert!(cli.show_objects_only);
+}
+
+#[test]
+fn display_show_objects_only_default_false() {
+    let cli = parse_from_args(args(&["s3://bucket"])).unwrap();
+    assert!(!cli.show_objects_only);
+}
+
+#[test]
 fn display_json() {
     let cli = parse_from_args(args(&["s3://bucket", "--json"])).unwrap();
     assert!(cli.json);

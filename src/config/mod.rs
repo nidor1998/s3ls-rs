@@ -15,6 +15,7 @@ pub struct Config {
     pub recursive: bool,
     pub all_versions: bool,
     pub hide_delete_markers: bool,
+    pub show_objects_only: bool,
     pub max_depth: Option<u16>,
     pub bucket_name_prefix: Option<String>,
     pub list_express_one_zone_buckets: bool,
@@ -75,6 +76,7 @@ impl Default for Config {
             recursive: false,
             all_versions: false,
             hide_delete_markers: false,
+            show_objects_only: false,
             max_depth: None,
             bucket_name_prefix: None,
             list_express_one_zone_buckets: false,
@@ -189,6 +191,7 @@ mod tests {
         assert!(!config.recursive);
         assert!(!config.all_versions);
         assert!(!config.hide_delete_markers);
+        assert!(!config.show_objects_only);
         assert!(config.max_depth.is_none());
         assert!(config.bucket_name_prefix.is_none());
         assert!(!config.list_express_one_zone_buckets);

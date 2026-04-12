@@ -337,6 +337,10 @@ pub struct CLIArgs {
     #[arg(long, env, default_value_t = false, help_heading = "Display")]
     pub json: bool,
 
+    /// Show only objects, hiding common prefixes (directory markers) from output
+    #[arg(long, env, default_value_t = false, help_heading = "Display")]
+    pub show_objects_only: bool,
+
     /// Emit raw S3 key/prefix bytes without escaping control characters.
     ///
     /// By default, text-mode output replaces control characters
@@ -765,6 +769,7 @@ impl TryFrom<CLIArgs> for crate::config::Config {
             recursive: args.recursive,
             all_versions: args.all_versions,
             hide_delete_markers: args.hide_delete_markers,
+            show_objects_only: args.show_objects_only,
             max_depth: args.max_depth,
             bucket_name_prefix: args.bucket_name_prefix,
             list_express_one_zone_buckets: args.list_express_one_zone_buckets,

@@ -1347,3 +1347,77 @@ async fn e2e_display_bucket_listing_show_owner() {
 
     _guard.cleanup().await;
 }
+
+/// `--show-objects-only` hides CommonPrefix (PRE) rows from both text and
+/// JSON output. By default (without the flag), prefixes appear normally.
+#[tokio::test]
+async fn e2e_display_show_objects_only() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+        // Create objects under a sub-prefix so a non-recursive listing
+        // produces both a CommonPrefix ("subdir/") and a top-level object.
+        helper.put_object(&bucket, "top.txt", vec![0u8; 50]).await;
+        helper
+            .put_object(&bucket, "subdir/nested.txt", vec![0u8; 50])
+            .await;
+
+        let target = format!("s3://{bucket}/");
+
+        // Sub-assertion 1: text WITHOUT --show-objects-only shows PRE
+        let output = TestHelper::run_s3ls(&[target.as_str()]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert!(
+            output.stdout.contains("PRE"),
+            "show-objects-only off: PRE should be present in text output"
+        );
+        assert!(
+            output.stdout.contains("top.txt"),
+            "show-objects-only off: top.txt should be present"
+        );
+
+        // Sub-assertion 2: text WITH --show-objects-only hides PRE
+        let output = TestHelper::run_s3ls(&[target.as_str(), "--show-objects-only"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert!(
+            !output.stdout.contains("PRE"),
+            "show-objects-only on: PRE should NOT be in text output, got:\n{}",
+            output.stdout
+        );
+        assert!(
+            !output.stdout.contains("subdir/"),
+            "show-objects-only on: subdir/ prefix should NOT appear, got:\n{}",
+            output.stdout
+        );
+        assert!(
+            output.stdout.contains("top.txt"),
+            "show-objects-only on: top.txt should still be present"
+        );
+
+        // Sub-assertion 3: JSON WITHOUT --show-objects-only shows Prefix
+        let output = TestHelper::run_s3ls(&[target.as_str(), "--json"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert!(
+            output.stdout.contains("\"Prefix\""),
+            "show-objects-only off json: Prefix field should be present"
+        );
+
+        // Sub-assertion 4: JSON WITH --show-objects-only hides Prefix
+        let output = TestHelper::run_s3ls(&[target.as_str(), "--json", "--show-objects-only"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert!(
+            !output.stdout.contains("\"Prefix\""),
+            "show-objects-only on json: Prefix field should NOT appear, got:\n{}",
+            output.stdout
+        );
+        assert!(
+            output.stdout.contains("top.txt"),
+            "show-objects-only on json: top.txt should still be present"
+        );
+    });
+
+    _guard.cleanup().await;
+}

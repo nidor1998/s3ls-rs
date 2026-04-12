@@ -108,6 +108,7 @@ impl ListingPipeline {
             queue_size,
             cancellation_token: self.cancellation_token.clone(),
             hide_delete_markers: self.config.hide_delete_markers,
+            show_objects_only: self.config.show_objects_only,
             filter_chain,
         };
 
