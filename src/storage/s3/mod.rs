@@ -19,6 +19,7 @@ use crate::config::ClientConfig;
 use crate::storage::StorageTrait;
 use crate::types::token::PipelineCancellationToken;
 use crate::types::{ListEntry, S3Object};
+use leaky_bucket::RateLimiter;
 
 const EXPRESS_ONEZONE_STORAGE_SUFFIX: &str = "--x-s3";
 
@@ -273,12 +274,20 @@ pub(crate) struct ListingEngine<F: PageFetcher + Clone> {
     allow_parallel_listings_in_express_one_zone: bool,
     listing_worker_semaphore: Arc<tokio::sync::Semaphore>,
     max_depth: Option<u16>,
+    rate_limiter: Option<Arc<RateLimiter>>,
 }
 
 impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
     /// Returns true if the bucket is an Express One Zone bucket.
     fn is_express_onezone_storage(&self) -> bool {
         self.bucket.ends_with(EXPRESS_ONEZONE_STORAGE_SUFFIX)
+    }
+
+    /// Acquire a rate limiter token before making an S3 API call.
+    async fn acquire_rate_limit(&self) {
+        if let Some(ref rate_limiter) = self.rate_limiter {
+            rate_limiter.acquire_one().await;
+        }
     }
 
     /// Send a batch of entries to the channel, returning `true` if sending
@@ -424,6 +433,7 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
                 break;
             }
 
+            self.acquire_rate_limit().await;
             let page = self
                 .fetcher
                 .fetch_page(
@@ -535,6 +545,7 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
                     return Ok(());
                 }
 
+                self.acquire_rate_limit().await;
                 let page = self
                     .fetcher
                     .fetch_page(
@@ -689,6 +700,7 @@ impl S3Storage {
         allow_parallel_listings_in_express_one_zone: bool,
         fetch_owner: bool,
         fetch_restore_status: bool,
+        rate_limit_objects: Option<u32>,
     ) -> Self {
         let client = client_config.create_client().await;
         let delimiter = if recursive {
@@ -698,6 +710,23 @@ impl S3Storage {
         };
 
         let semaphore_size = max_parallel_listings.max(1) as usize;
+
+        const REFILL_PER_INTERVAL_DIVIDER: usize = 10;
+        let rate_limiter = rate_limit_objects.map(|rate_limit_value| {
+            let refill = if (rate_limit_value as usize) <= REFILL_PER_INTERVAL_DIVIDER {
+                1
+            } else {
+                rate_limit_value as usize / REFILL_PER_INTERVAL_DIVIDER
+            };
+            Arc::new(
+                RateLimiter::builder()
+                    .max(rate_limit_value as usize)
+                    .initial(rate_limit_value as usize)
+                    .refill(refill)
+                    .fair(true)
+                    .build(),
+            )
+        });
 
         let fetcher = S3PageFetcher {
             client,
@@ -718,6 +747,7 @@ impl S3Storage {
             allow_parallel_listings_in_express_one_zone,
             listing_worker_semaphore: Arc::new(tokio::sync::Semaphore::new(semaphore_size)),
             max_depth,
+            rate_limiter,
         };
 
         Self { engine }
@@ -1067,6 +1097,7 @@ mod tests {
                 max_parallel.max(1) as usize
             )),
             max_depth: None,
+            rate_limiter: None,
         }
     }
 
@@ -1575,6 +1606,7 @@ mod tests {
                 max_parallel.max(1) as usize
             )),
             max_depth: content_max_depth,
+            rate_limiter: None,
         }
     }
 
@@ -1764,6 +1796,7 @@ mod tests {
             max_depth: Some(2),
             allow_parallel_listings_in_express_one_zone: false,
             listing_worker_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
+            rate_limiter: None,
         };
         let entries = collect_entries(&engine, ListingMode::Objects, 1000)
             .await
@@ -1823,5 +1856,129 @@ mod tests {
         assert_eq!(engine.key_depth("file.txt"), Some(1));
         assert_eq!(engine.key_depth("a/file.txt"), Some(2));
         assert_eq!(engine.key_depth("sub/"), Some(1)); // directory marker at top
+    }
+
+    // -----------------------------------------------------------------------
+    // Rate limiter tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rate_limiter_still_lists_objects() {
+        // Verify that rate-limited listing still returns all objects correctly.
+        let fetcher = MockPageFetcher::from_pages(
+            Some("prefix/"),
+            None,
+            vec![ListPage {
+                objects: vec![
+                    ListEntry::Object(S3Object::NotVersioning {
+                        key: "prefix/a.txt".to_string(),
+                        size: 10,
+                        last_modified: chrono::Utc::now(),
+                        e_tag: "\"e\"".to_string(),
+                        storage_class: Some("STANDARD".to_string()),
+                        checksum_algorithm: vec![],
+                        checksum_type: None,
+                        owner_display_name: None,
+                        owner_id: None,
+                        is_restore_in_progress: None,
+                        restore_expiry_date: None,
+                    }),
+                    ListEntry::Object(S3Object::NotVersioning {
+                        key: "prefix/b.txt".to_string(),
+                        size: 20,
+                        last_modified: chrono::Utc::now(),
+                        e_tag: "\"e\"".to_string(),
+                        storage_class: Some("STANDARD".to_string()),
+                        checksum_algorithm: vec![],
+                        checksum_type: None,
+                        owner_display_name: None,
+                        owner_id: None,
+                        is_restore_in_progress: None,
+                        restore_expiry_date: None,
+                    }),
+                ],
+                sub_prefixes: vec![],
+                is_truncated: false,
+                continuation_token: None,
+                key_marker: None,
+                version_id_marker: None,
+            }],
+        );
+
+        let token = create_pipeline_cancellation_token();
+        let rate_limiter = Arc::new(
+            RateLimiter::builder()
+                .max(100)
+                .initial(100)
+                .refill(10)
+                .fair(true)
+                .build(),
+        );
+        let engine = ListingEngine {
+            fetcher,
+            bucket: "bucket".to_string(),
+            prefix: Some("prefix/".to_string()),
+            delimiter: None,
+            cancellation_token: token,
+            max_parallel_listings: 1,
+            max_parallel_listing_max_depth: 2,
+            allow_parallel_listings_in_express_one_zone: false,
+            listing_worker_semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
+            max_depth: None,
+            rate_limiter: Some(rate_limiter),
+        };
+
+        let entries = collect_entries(&engine, ListingMode::Objects, 1000)
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].key(), "prefix/a.txt");
+        assert_eq!(entries[1].key(), "prefix/b.txt");
+    }
+
+    #[tokio::test]
+    async fn no_rate_limiter_lists_objects() {
+        // Verify that listing without rate limiter (None) works identically.
+        let fetcher = MockPageFetcher::from_pages(
+            Some("prefix/"),
+            None,
+            vec![ListPage {
+                objects: vec![ListEntry::Object(S3Object::NotVersioning {
+                    key: "prefix/file.txt".to_string(),
+                    size: 10,
+                    last_modified: chrono::Utc::now(),
+                    e_tag: "\"e\"".to_string(),
+                    storage_class: Some("STANDARD".to_string()),
+                    checksum_algorithm: vec![],
+                    checksum_type: None,
+                    owner_display_name: None,
+                    owner_id: None,
+                    is_restore_in_progress: None,
+                    restore_expiry_date: None,
+                })],
+                sub_prefixes: vec![],
+                is_truncated: false,
+                continuation_token: None,
+                key_marker: None,
+                version_id_marker: None,
+            }],
+        );
+
+        let engine = make_engine_with_token(
+            fetcher,
+            "bucket",
+            Some("prefix/"),
+            None,
+            1,
+            2,
+            false,
+            create_pipeline_cancellation_token(),
+        );
+
+        let entries = collect_entries(&engine, ListingMode::Objects, 1000)
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].key(), "prefix/file.txt");
     }
 }

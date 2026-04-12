@@ -889,6 +889,30 @@ fn perf_max_parallel_listings() {
 }
 
 #[test]
+fn perf_rate_limit_objects() {
+    let cli = parse_from_args(args(&["s3://bucket", "--rate-limit-objects", "100"])).unwrap();
+    assert_eq!(cli.rate_limit_objects, Some(100));
+}
+
+#[test]
+fn perf_rate_limit_objects_default_none() {
+    let cli = parse_from_args(args(&["s3://bucket"])).unwrap();
+    assert!(cli.rate_limit_objects.is_none());
+}
+
+#[test]
+fn perf_rate_limit_objects_rejects_below_10() {
+    let result = parse_from_args(args(&["s3://bucket", "--rate-limit-objects", "9"]));
+    assert!(result.is_err());
+}
+
+#[test]
+fn perf_rate_limit_objects_accepts_10() {
+    let cli = parse_from_args(args(&["s3://bucket", "--rate-limit-objects", "10"])).unwrap();
+    assert_eq!(cli.rate_limit_objects, Some(10));
+}
+
+#[test]
 fn perf_max_parallel_listing_max_depth() {
     let cli = parse_from_args(args(&[
         "s3://bucket",

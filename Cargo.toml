@@ -45,6 +45,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json", "lo
 # Build info (git commit, rustc version, target triple) — captured at
 # build time and shown in the --version output.
 shadow-rs = { version = "1.7.1", optional = true }
+leaky-bucket = "1.1.2"
 
 [build-dependencies]
 shadow-rs = { version = "1.7.1", optional = true }

@@ -454,3 +454,82 @@ async fn e2e_listing_max_depth_without_recursive_returns_exit_code_2() {
         );
     });
 }
+
+/// `--rate-limit-objects` lists objects correctly in normal (ListObjectsV2) mode.
+#[tokio::test]
+async fn e2e_listing_rate_limit_objects() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+        helper.put_object(&bucket, "a.txt", b"aaa".to_vec()).await;
+        helper.put_object(&bucket, "b.txt", b"bbb".to_vec()).await;
+
+        let target = format!("s3://{bucket}/");
+        let output =
+            TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--rate-limit-objects", "10"]);
+
+        assert!(
+            output.status.success(),
+            "s3ls failed with --rate-limit-objects: {}",
+            output.stderr
+        );
+        assert!(
+            output.stdout.contains("a.txt"),
+            "a.txt missing from rate-limited output"
+        );
+        assert!(
+            output.stdout.contains("b.txt"),
+            "b.txt missing from rate-limited output"
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// `--rate-limit-objects` lists objects correctly in versioning
+/// (ListObjectVersions) mode.
+#[tokio::test]
+async fn e2e_listing_rate_limit_objects_versioned() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_versioned_bucket(&bucket).await;
+        helper.put_object(&bucket, "v.txt", b"v1".to_vec()).await;
+        helper.put_object(&bucket, "v.txt", b"v2".to_vec()).await;
+
+        let target = format!("s3://{bucket}/");
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--all-versions",
+            "--rate-limit-objects",
+            "10",
+        ]);
+
+        assert!(
+            output.status.success(),
+            "s3ls failed with --rate-limit-objects --all-versions: {}",
+            output.stderr
+        );
+        // Both versions should appear
+        let v_lines: Vec<&str> = output
+            .stdout
+            .lines()
+            .filter(|l| l.contains("v.txt"))
+            .collect();
+        assert_eq!(
+            v_lines.len(),
+            2,
+            "expected 2 versions of v.txt, got {}: {:?}",
+            v_lines.len(),
+            v_lines
+        );
+    });
+
+    _guard.cleanup().await;
+}
