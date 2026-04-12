@@ -1,0 +1,604 @@
+#![cfg(e2e_test)]
+
+//! Versioned-bucket filter end-to-end tests.
+//!
+//! Covers filter behaviors that are specific to versioned S3 buckets —
+//! interactions that `tests/e2e_filters.rs` explicitly defers:
+//!
+//! 1. Regex filters apply to delete-marker keys.
+//! 2. Size and storage-class filters let delete markers pass through
+//!    unconditionally.
+//! 3. Mtime filters evaluate delete markers by their own timestamps.
+//! 4. `--hide-delete-markers` strips delete markers regardless of filters.
+//! 5. Filters evaluate each version of a key independently.
+//!
+//! Each test creates a fresh versioned bucket via `create_versioned_bucket`,
+//! builds a minimal inline fixture, runs `s3ls --all-versions --json` with
+//! a single filter flag, and asserts the resulting NDJSON via
+//! `assert_json_version_shapes_eq` (a multiset of `(Key, is_delete_marker)`
+//! tuples).
+//!
+//! Design: `docs/superpowers/specs/2026-04-11-versioned-filter-e2e-tests-design.md`
+
+mod common;
+
+use common::*;
+
+/// Proves `--filter-include-regex` is applied to delete-marker keys: a
+/// delete marker whose key matches the regex is kept; a delete marker
+/// whose key doesn't match is dropped. Two versions of `keep.csv` plus
+/// two delete markers exercise both multi-version handling and the
+/// regex-against-DM-key contract simultaneously.
+#[tokio::test]
+async fn e2e_versioned_include_regex_drops_delete_marker() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_versioned_bucket(&bucket).await;
+
+        // Two versions of keep.csv
+        helper.put_object(&bucket, "keep.csv", vec![0u8; 100]).await;
+        helper.put_object(&bucket, "keep.csv", vec![0u8; 200]).await;
+
+        // One version of drop.txt
+        helper.put_object(&bucket, "drop.txt", vec![0u8; 100]).await;
+
+        // Delete markers on both keys
+        helper.create_delete_marker(&bucket, "drop.txt").await;
+        helper.create_delete_marker(&bucket, "keep.csv").await;
+
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--all-versions",
+            "--json",
+            "--filter-include-regex",
+            r"\.csv$",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        // Expected: 2 keep.csv object rows + 1 keep.csv DM row.
+        // drop.txt v1 fails the regex; drop.txt DM fails the regex.
+        assert_json_version_shapes_eq(
+            &output.stdout,
+            &[("keep.csv", false), ("keep.csv", false), ("keep.csv", true)],
+            "versioned include-regex: DM filtered by key",
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// Proves `--filter-exclude-regex` is applied to delete-marker keys: a
+/// delete marker whose key matches the exclude regex is dropped.
+/// Inverse of `e2e_versioned_include_regex_drops_delete_marker`.
+#[tokio::test]
+async fn e2e_versioned_exclude_regex_drops_delete_marker() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_versioned_bucket(&bucket).await;
+
+        // Two versions of keep.bin
+        helper.put_object(&bucket, "keep.bin", vec![0u8; 100]).await;
+        helper.put_object(&bucket, "keep.bin", vec![0u8; 200]).await;
+
+        // One version of skip_me.bin
+        helper
+            .put_object(&bucket, "skip_me.bin", vec![0u8; 100])
+            .await;
+
+        // Delete markers on both keys
+        helper.create_delete_marker(&bucket, "skip_me.bin").await;
+        helper.create_delete_marker(&bucket, "keep.bin").await;
+
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--all-versions",
+            "--json",
+            "--filter-exclude-regex",
+            "^skip_",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        // Expected: 2 keep.bin object rows + 1 keep.bin DM row.
+        // skip_me.bin v1 fails the exclude regex; skip_me.bin DM fails
+        // the exclude regex.
+        assert_json_version_shapes_eq(
+            &output.stdout,
+            &[("keep.bin", false), ("keep.bin", false), ("keep.bin", true)],
+            "versioned exclude-regex: DM filtered by key",
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// Locks in "delete markers always pass size filters" — verified against
+/// `src/filters/smaller_size.rs:25` and `larger_size.rs:25`, both of which
+/// unconditionally return `Ok(true)` for `ListEntry::DeleteMarker` before
+/// any size comparison.
+///
+/// Does NOT use `--hide-delete-markers` because the test's entire point is
+/// to observe a delete marker surviving the filter; the hide flag would
+/// strip the DM before the filter chain runs (`src/lister.rs:48` applies
+/// it before `filter_chain.matches` at line 51).
+#[tokio::test]
+async fn e2e_versioned_size_filter_passes_delete_markers() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_versioned_bucket(&bucket).await;
+
+        // Two versions of big.bin, both passing --filter-larger-size 1000.
+        helper.put_object(&bucket, "big.bin", vec![0u8; 5000]).await;
+        helper.put_object(&bucket, "big.bin", vec![0u8; 7000]).await;
+
+        // One version of small.bin (100 bytes, fails size filter).
+        helper
+            .put_object(&bucket, "small.bin", vec![0u8; 100])
+            .await;
+
+        // DM on small.bin — has no size, must pass the filter anyway.
+        helper.create_delete_marker(&bucket, "small.bin").await;
+
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--all-versions",
+            "--json",
+            "--filter-larger-size",
+            "1000",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        // Expected: 2 big.bin versions + 1 small.bin DM.
+        // small.bin v1 (100 bytes) fails --filter-larger-size 1000.
+        assert_json_version_shapes_eq(
+            &output.stdout,
+            &[("big.bin", false), ("big.bin", false), ("small.bin", true)],
+            "versioned size filter: DM passes through",
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// Locks in "delete markers always pass storage-class filter" — verified
+/// against `src/filters/storage_class.rs:47`
+/// (`ListEntry::DeleteMarker { .. } => Ok(true)`).
+#[tokio::test]
+async fn e2e_versioned_storage_class_passes_delete_markers() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_versioned_bucket(&bucket).await;
+
+        // ia.bin: explicit STANDARD_IA class (fails --storage-class STANDARD).
+        helper
+            .put_object_with_storage_class(&bucket, "ia.bin", vec![0u8; 100], "STANDARD_IA")
+            .await;
+        // DM on ia.bin — has no storage class, must pass the filter anyway.
+        helper.create_delete_marker(&bucket, "ia.bin").await;
+
+        // std.bin: default STANDARD class (S3 reports as None, filter treats
+        // as STANDARD per src/filters/storage_class.rs:33).
+        helper.put_object(&bucket, "std.bin", vec![0u8; 100]).await;
+
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--all-versions",
+            "--json",
+            "--storage-class",
+            "STANDARD",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        // Expected: 1 std.bin object row + 1 ia.bin DM row.
+        // ia.bin v1 (STANDARD_IA) fails the filter.
+        assert_json_version_shapes_eq(
+            &output.stdout,
+            &[("std.bin", false), ("ia.bin", true)],
+            "versioned storage-class: DM passes through",
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// Locks in "mtime filters DO apply to delete-marker timestamps" —
+/// verified against `src/filters/mtime_before.rs:27` and
+/// `mtime_after.rs:27`, which both use `entry.last_modified()` uniformly
+/// for both objects and delete markers.
+///
+/// Two-batch fixture with a 1.5s sleep between batches:
+///   Batch 1: put_object("old.bin") — v1, BEFORE pivot
+///   sleep 1.5s
+///   Batch 2: put_object("new.bin") + create_delete_marker("old.bin")
+///
+/// Pivot = old.bin v1's LastModified + 1s. The 1.5s sleep guarantees
+/// batch 2 items are at least 1 second later.
+///
+/// Expected under `--filter-mtime-after <pivot>`:
+///   - new.bin v1 passes (batch 2, after pivot)
+///   - old.bin v1 fails (batch 1, before pivot)
+///   - old.bin DM passes (created in batch 2 — DM mtime is its own
+///     creation time, not the original object's)
+#[tokio::test]
+async fn e2e_versioned_mtime_filter_applies_to_delete_markers() {
+    use chrono::{DateTime, Duration as ChronoDuration, Utc};
+    use std::time::Duration;
+    use tokio::time::sleep;
+
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_versioned_bucket(&bucket).await;
+
+        // Batch 1: old.bin v1 (BEFORE pivot)
+        helper.put_object(&bucket, "old.bin", vec![0u8; 100]).await;
+
+        sleep(Duration::from_millis(1500)).await;
+
+        // Batch 2: new.bin v1 + DM on old.bin (BOTH AFTER pivot)
+        helper.put_object(&bucket, "new.bin", vec![0u8; 100]).await;
+        helper.create_delete_marker(&bucket, "old.bin").await;
+
+        // Read back old.bin v1's LastModified. Use old_lm + 1s as the
+        // pivot — the 1.5s sleep guarantees batch 2 items land at least
+        // 1 second later.
+        let resp = helper
+            .client()
+            .list_object_versions()
+            .bucket(&bucket)
+            .send()
+            .await
+            .expect("list_object_versions failed");
+
+        let old_lm = resp
+            .versions()
+            .iter()
+            .find(|v| v.key() == Some("old.bin"))
+            .and_then(|v| v.last_modified())
+            .map(|lm| {
+                DateTime::<Utc>::from_timestamp(lm.secs(), lm.subsec_nanos())
+                    .expect("invalid timestamp from S3")
+            })
+            .expect("old.bin v1 not found in listing");
+
+        let pivot = old_lm + ChronoDuration::seconds(1);
+        let mtime_after = pivot.to_rfc3339();
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--all-versions",
+            "--json",
+            "--filter-mtime-after",
+            mtime_after.as_str(),
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        // Expected: new.bin v1 + old.bin DM. old.bin v1 fails mtime-after.
+        assert_json_version_shapes_eq(
+            &output.stdout,
+            &[("new.bin", false), ("old.bin", true)],
+            "versioned mtime-after: DM filtered by own timestamp",
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// Locks in `--hide-delete-markers` behavior. Runs s3ls twice against
+/// the same bucket: once WITH the flag (expect 2 rows) and once
+/// WITHOUT (expect 3 rows). The difference of exactly one delete
+/// marker row proves the flag strips DMs as documented.
+///
+/// `--hide-delete-markers` is applied at `src/lister.rs:48`, BEFORE
+/// the filter chain runs at line 51. This test doesn't combine the
+/// flag with any filter; it asserts the flag's effect in isolation.
+#[tokio::test]
+async fn e2e_versioned_hide_delete_markers() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_versioned_bucket(&bucket).await;
+
+        // Two versions of doc.txt plus a delete marker as the "latest".
+        helper.put_object(&bucket, "doc.txt", vec![0u8; 100]).await;
+        helper.put_object(&bucket, "doc.txt", vec![0u8; 200]).await;
+        helper.create_delete_marker(&bucket, "doc.txt").await;
+
+        let target = format!("s3://{bucket}/");
+
+        // Run 1: with --hide-delete-markers. Expect 2 object rows, no DM.
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--all-versions",
+            "--hide-delete-markers",
+            "--json",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_json_version_shapes_eq(
+            &output.stdout,
+            &[("doc.txt", false), ("doc.txt", false)],
+            "hide-delete-markers: DM stripped",
+        );
+
+        // Run 2: without --hide-delete-markers. Expect 2 object rows + 1 DM.
+        let output =
+            TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--all-versions", "--json"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_json_version_shapes_eq(
+            &output.stdout,
+            &[("doc.txt", false), ("doc.txt", false), ("doc.txt", true)],
+            "hide-delete-markers: baseline includes DM",
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// Locks in "size filters evaluate each version's own size" — the same
+/// key appears with 3 different sizes across versions, and only the
+/// middle version (v2, 5000 bytes) survives `--filter-larger-size 1000`.
+///
+/// This is the one test in the suite where the same key appears multiple
+/// times in the fixture but NOT all versions survive. It proves filters
+/// see each version's metadata independently rather than treating all
+/// versions of a key as a unit.
+#[tokio::test]
+async fn e2e_versioned_size_filter_per_version() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_versioned_bucket(&bucket).await;
+
+        // Three versions of growing.bin: small, large, small again.
+        helper
+            .put_object(&bucket, "growing.bin", vec![0u8; 100])
+            .await;
+        helper
+            .put_object(&bucket, "growing.bin", vec![0u8; 5000])
+            .await;
+        helper
+            .put_object(&bucket, "growing.bin", vec![0u8; 200])
+            .await;
+
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--all-versions",
+            "--json",
+            "--filter-larger-size",
+            "1000",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        // Expected: ONLY v2 (5000 bytes) survives. v1 (100) and v3 (200)
+        // fail the size filter on their own sizes.
+        assert_json_version_shapes_eq(
+            &output.stdout,
+            &[("growing.bin", false)],
+            "versioned size filter: only v2 survives per-version check",
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// Versioned listing with pagination: uploads enough versions to span
+/// multiple `ListObjectVersions` pages and verifies all versions are
+/// enumerated. Uses `--max-keys 3` to force pagination with a small
+/// fixture (3 keys × 3 versions = 9 version rows → 3 pages).
+///
+/// Also creates a delete marker to verify DMs are correctly enumerated
+/// across page boundaries.
+#[tokio::test]
+async fn e2e_versioned_pagination() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_versioned_bucket(&bucket).await;
+
+        // 3 keys × 3 versions each = 9 object version rows.
+        for i in 1..=3 {
+            helper
+                .put_object(&bucket, "alpha.txt", format!("alpha-v{i}").into_bytes())
+                .await;
+            helper
+                .put_object(&bucket, "beta.txt", format!("beta-v{i}").into_bytes())
+                .await;
+            helper
+                .put_object(&bucket, "gamma.txt", format!("gamma-v{i}").into_bytes())
+                .await;
+        }
+
+        // Add a delete marker on alpha.txt — 10th row total.
+        helper.create_delete_marker(&bucket, "alpha.txt").await;
+
+        let target = format!("s3://{bucket}/");
+
+        // --max-keys 3 forces 3-4 pages for 10 rows.
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--all-versions",
+            "--json",
+            "--no-sort",
+            "--max-keys",
+            "3",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        // Expect: 9 object versions + 1 delete marker = 10 rows.
+        assert_json_version_shapes_eq(
+            &output.stdout,
+            &[
+                ("alpha.txt", false),
+                ("alpha.txt", false),
+                ("alpha.txt", false),
+                ("alpha.txt", true), // delete marker
+                ("beta.txt", false),
+                ("beta.txt", false),
+                ("beta.txt", false),
+                ("gamma.txt", false),
+                ("gamma.txt", false),
+                ("gamma.txt", false),
+            ],
+            "versioned pagination: 10 rows across 3-4 pages (max-keys=3)",
+        );
+
+        // Sub-assertion: --show-restore-status under --all-versions.
+        // RestoreStatus is absent for STANDARD objects (not Glacier-
+        // restored), but the flag must be accepted and the listing must
+        // still succeed. Verifies the OptionalObjectAttributes=RestoreStatus
+        // parameter is correctly wired for the ListObjectVersions API path
+        // (src/storage/s3/mod.rs:176-179).
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--all-versions",
+            "--json",
+            "--no-sort",
+            "--show-restore-status",
+        ]);
+        assert!(
+            output.status.success(),
+            "versioned --show-restore-status failed: {}",
+            output.stderr
+        );
+        // All 10 rows should still be enumerated.
+        assert_json_version_shapes_eq(
+            &output.stdout,
+            &[
+                ("alpha.txt", false),
+                ("alpha.txt", false),
+                ("alpha.txt", false),
+                ("alpha.txt", true),
+                ("beta.txt", false),
+                ("beta.txt", false),
+                ("beta.txt", false),
+                ("gamma.txt", false),
+                ("gamma.txt", false),
+                ("gamma.txt", false),
+            ],
+            "versioned --show-restore-status: all 10 rows enumerated",
+        );
+        // RestoreStatus should be absent for all STANDARD object rows
+        // (S3 only populates it for Glacier-restored objects).
+        let has_restore = output
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .any(|l| {
+                serde_json::from_str::<serde_json::Value>(l)
+                    .ok()
+                    .and_then(|v| v.get("RestoreStatus").map(|_| true))
+                    .unwrap_or(false)
+            });
+        assert!(
+            !has_restore,
+            "versioned --show-restore-status: RestoreStatus should be absent for STANDARD objects"
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// Versioned listing pagination WITHOUT parallel listing.
+///
+/// Forces sequential (non-parallel) listing via `--max-parallel-listings 1`
+/// combined with `--max-keys 3` to trigger pagination. This exercises the
+/// sequential `ListObjectVersions` pagination path — the counterpart to
+/// `e2e_versioned_pagination` which uses the default parallel listing.
+#[tokio::test]
+async fn e2e_versioned_pagination_sequential() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_versioned_bucket(&bucket).await;
+
+        // 2 keys × 4 versions each = 8 object version rows.
+        for i in 1..=4 {
+            helper
+                .put_object(&bucket, "one.txt", format!("one-v{i}").into_bytes())
+                .await;
+            helper
+                .put_object(&bucket, "two.txt", format!("two-v{i}").into_bytes())
+                .await;
+        }
+
+        // Add a delete marker — 9th row.
+        helper.create_delete_marker(&bucket, "one.txt").await;
+
+        let target = format!("s3://{bucket}/");
+
+        // --max-parallel-listings 1 forces sequential listing.
+        // --max-keys 3 forces 3 pages for 9 rows.
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--all-versions",
+            "--json",
+            "--no-sort",
+            "--max-parallel-listings",
+            "1",
+            "--max-keys",
+            "3",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        // Expect: 8 object versions + 1 delete marker = 9 rows.
+        assert_json_version_shapes_eq(
+            &output.stdout,
+            &[
+                ("one.txt", false),
+                ("one.txt", false),
+                ("one.txt", false),
+                ("one.txt", false),
+                ("one.txt", true), // delete marker
+                ("two.txt", false),
+                ("two.txt", false),
+                ("two.txt", false),
+                ("two.txt", false),
+            ],
+            "versioned sequential pagination: 9 rows across 3 pages (max-keys=3, max-parallel=1)",
+        );
+    });
+
+    _guard.cleanup().await;
+}
