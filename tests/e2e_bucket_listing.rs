@@ -176,3 +176,168 @@ async fn e2e_bucket_listing_prefix_no_match() {
 
     _guard.cleanup().await;
 }
+
+/// `--show-bucket-arn --show-owner` together: verify ALL fields are
+/// present. The display suite tests each flag individually; this test
+/// verifies they compose correctly without interference.
+#[tokio::test]
+async fn e2e_bucket_listing_combined_flags() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+
+        let output = TestHelper::run_s3ls(&["--json", "--show-bucket-arn", "--show-owner"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        let bucket_line = output
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .find(|l| {
+                serde_json::from_str::<serde_json::Value>(l)
+                    .ok()
+                    .and_then(|v| v.get("Name").and_then(|n| n.as_str()).map(|s| s == bucket))
+                    .unwrap_or(false)
+            })
+            .unwrap_or_else(|| panic!("combined flags: test bucket {bucket} not found in output"));
+
+        let v: serde_json::Value =
+            serde_json::from_str(bucket_line).expect("failed to parse bucket line");
+
+        // Mandatory fields
+        assert!(v.get("Name").is_some(), "combined flags: Name missing");
+        assert!(
+            v.get("CreationDate").is_some(),
+            "combined flags: CreationDate missing"
+        );
+        assert!(
+            v.get("BucketRegion").is_some(),
+            "combined flags: BucketRegion missing"
+        );
+
+        // Both optional fields must be present
+        assert!(
+            v.get("BucketArn")
+                .and_then(|a| a.as_str())
+                .is_some_and(|s| !s.is_empty()),
+            "combined flags: BucketArn missing or empty, got {v:?}"
+        );
+        let owner = v.get("Owner").expect("combined flags: Owner missing");
+        assert!(
+            owner
+                .get("ID")
+                .and_then(|id| id.as_str())
+                .is_some_and(|s| !s.is_empty()),
+            "combined flags: Owner.ID missing or empty, got {owner:?}"
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// `--no-sort`: both test buckets appear in the output (set check,
+/// order not asserted).
+#[tokio::test]
+async fn e2e_bucket_listing_no_sort() {
+    use uuid::Uuid;
+
+    let helper = TestHelper::new().await;
+    let bucket_a = format!("s3ls-e2e-a-{}", Uuid::new_v4());
+    let bucket_z = format!("s3ls-e2e-z-{}", Uuid::new_v4());
+    let _guard_a = helper.bucket_guard(&bucket_a);
+    let _guard_z = helper.bucket_guard(&bucket_z);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket_a).await;
+        helper.create_bucket(&bucket_z).await;
+
+        let output = TestHelper::run_s3ls(&["--json", "--no-sort"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        // Both buckets must appear somewhere in the output.
+        assert!(
+            output.stdout.contains(&bucket_a),
+            "no-sort: bucket {bucket_a} not found in output"
+        );
+        assert!(
+            output.stdout.contains(&bucket_z),
+            "no-sort: bucket {bucket_z} not found in output"
+        );
+        // Order is intentionally NOT asserted.
+    });
+
+    _guard_a.cleanup().await;
+    _guard_z.cleanup().await;
+}
+
+/// `--list-express-one-zone-buckets`: creates a directory bucket and a
+/// regular bucket, then lists only Express One Zone buckets. The
+/// directory bucket must appear; the regular bucket must not.
+///
+/// Skips gracefully in regions where Express One Zone is not mapped
+/// (prints a note and returns without assertions).
+#[tokio::test]
+async fn e2e_bucket_listing_express_one_zone() {
+    use uuid::Uuid;
+
+    let helper = TestHelper::new().await;
+
+    // Look up AZ for this region. Skip if unmapped.
+    let az_id = match express_one_zone_az_for_region(helper.region()) {
+        Some(az) => az,
+        None => {
+            println!(
+                "skipped: no Express One Zone AZ mapped for region {:?}",
+                helper.region()
+            );
+            return;
+        }
+    };
+
+    let id = Uuid::new_v4();
+    let bucket_express = format!("s3ls-e2e-express-{id}--{az_id}--x-s3");
+    let bucket_regular = format!("s3ls-e2e-regular-{id}");
+    let _guard_express = helper.bucket_guard(&bucket_express);
+    let _guard_regular = helper.bucket_guard(&bucket_regular);
+
+    e2e_timeout!(async {
+        helper.create_directory_bucket(&bucket_express, az_id).await;
+        helper.create_bucket(&bucket_regular).await;
+
+        let output = TestHelper::run_s3ls(&["--json", "--list-express-one-zone-buckets"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        // Directory bucket must appear.
+        let found_express = output
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .any(|l| {
+                serde_json::from_str::<serde_json::Value>(l)
+                    .ok()
+                    .and_then(|v| {
+                        v.get("Name")
+                            .and_then(|n| n.as_str())
+                            .map(|s| s == bucket_express)
+                    })
+                    .unwrap_or(false)
+            });
+        assert!(
+            found_express,
+            "express one zone: directory bucket {bucket_express} not found in output"
+        );
+
+        // Regular bucket must NOT appear.
+        let found_regular = output.stdout.contains(&bucket_regular);
+        assert!(
+            !found_regular,
+            "express one zone: regular bucket {bucket_regular} unexpectedly found in output"
+        );
+    });
+
+    _guard_express.cleanup().await;
+    _guard_regular.cleanup().await;
+}
