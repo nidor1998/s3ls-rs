@@ -1578,3 +1578,134 @@ fn list_express_one_zone_buckets_with_sort_date() {
     assert!(config.list_express_one_zone_buckets);
     assert_eq!(config.sort, vec![SortField::Date]);
 }
+
+// ===========================================================================
+// Custom config and credentials file paths
+// ===========================================================================
+
+#[test]
+fn config_custom_aws_config_file() {
+    let config = build_config_from_args(args(&[
+        "s3://bucket",
+        "--aws-config-file",
+        "/custom/path/config",
+    ]))
+    .unwrap();
+
+    let client_config = config.target_client_config.as_ref().unwrap();
+    assert_eq!(
+        client_config
+            .client_config_location
+            .aws_config_file
+            .as_ref()
+            .map(|p| p.to_str().unwrap()),
+        Some("/custom/path/config"),
+    );
+}
+
+#[test]
+fn config_custom_aws_credentials_file() {
+    let config = build_config_from_args(args(&[
+        "s3://bucket",
+        "--aws-shared-credentials-file",
+        "/custom/path/credentials",
+    ]))
+    .unwrap();
+
+    let client_config = config.target_client_config.as_ref().unwrap();
+    assert_eq!(
+        client_config
+            .client_config_location
+            .aws_shared_credentials_file
+            .as_ref()
+            .map(|p| p.to_str().unwrap()),
+        Some("/custom/path/credentials"),
+    );
+}
+
+#[test]
+fn config_both_custom_files() {
+    let config = build_config_from_args(args(&[
+        "s3://bucket",
+        "--aws-config-file",
+        "/etc/aws/config",
+        "--aws-shared-credentials-file",
+        "/etc/aws/credentials",
+    ]))
+    .unwrap();
+
+    let client_config = config.target_client_config.as_ref().unwrap();
+    assert_eq!(
+        client_config
+            .client_config_location
+            .aws_config_file
+            .as_ref()
+            .map(|p| p.to_str().unwrap()),
+        Some("/etc/aws/config"),
+    );
+    assert_eq!(
+        client_config
+            .client_config_location
+            .aws_shared_credentials_file
+            .as_ref()
+            .map(|p| p.to_str().unwrap()),
+        Some("/etc/aws/credentials"),
+    );
+}
+
+#[test]
+fn config_custom_files_default_is_none() {
+    let config = build_config_from_args(args(&["s3://bucket"])).unwrap();
+
+    let client_config = config.target_client_config.as_ref().unwrap();
+    assert!(
+        client_config
+            .client_config_location
+            .aws_config_file
+            .is_none(),
+    );
+    assert!(
+        client_config
+            .client_config_location
+            .aws_shared_credentials_file
+            .is_none(),
+    );
+}
+
+#[test]
+fn config_custom_files_with_profile() {
+    let config = build_config_from_args(args(&[
+        "s3://bucket",
+        "--target-profile",
+        "production",
+        "--aws-config-file",
+        "/custom/config",
+        "--aws-shared-credentials-file",
+        "/custom/credentials",
+    ]))
+    .unwrap();
+
+    let client_config = config.target_client_config.as_ref().unwrap();
+    // Both file paths should be set alongside the profile.
+    assert_eq!(
+        client_config
+            .client_config_location
+            .aws_config_file
+            .as_ref()
+            .map(|p| p.to_str().unwrap()),
+        Some("/custom/config"),
+    );
+    assert_eq!(
+        client_config
+            .client_config_location
+            .aws_shared_credentials_file
+            .as_ref()
+            .map(|p| p.to_str().unwrap()),
+        Some("/custom/credentials"),
+    );
+    // Profile should also be set.
+    match &client_config.credential {
+        crate::types::S3Credentials::Profile(p) => assert_eq!(p, "production"),
+        other => panic!("expected Profile credential, got {other:?}"),
+    }
+}
