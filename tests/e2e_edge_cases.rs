@@ -264,3 +264,132 @@ async fn e2e_edge_case_raw_output() {
 
     _guard.cleanup().await;
 }
+
+/// Listing with a UTF-8 prefix: `s3ls s3://bucket/日本語/` should
+/// enumerate only objects under the `日本語/` prefix, not objects in
+/// sibling prefixes. Verifies that multi-byte UTF-8 prefix handling
+/// works end-to-end in both the S3 API call and s3ls output.
+#[tokio::test]
+async fn e2e_edge_case_utf8_prefix_listing() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+
+        let fixture: Vec<(String, Vec<u8>)> = vec![
+            ("日本語/ファイル1.txt".to_string(), b"x".to_vec()),
+            ("日本語/サブ/ファイル2.txt".to_string(), b"x".to_vec()),
+            ("中文/数据.json".to_string(), b"x".to_vec()),
+            ("ascii/plain.txt".to_string(), b"x".to_vec()),
+        ];
+        helper.put_objects_parallel(&bucket, fixture).await;
+
+        // List with UTF-8 prefix — only 日本語/ objects should appear.
+        let target = format!("s3://{bucket}/日本語/");
+        let output = TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--json"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        assert_json_keys_eq(
+            &output.stdout,
+            &["日本語/ファイル1.txt", "日本語/サブ/ファイル2.txt"],
+            "utf8 prefix: only 日本語/ objects",
+        );
+
+        // Verify sibling prefixes did NOT leak into the result.
+        assert!(
+            !output.stdout.contains("中文"),
+            "utf8 prefix: 中文/ should not appear in output"
+        );
+        assert!(
+            !output.stdout.contains("ascii"),
+            "utf8 prefix: ascii/ should not appear in output"
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// `--filter-include-regex` and `--filter-exclude-regex` work correctly
+/// with UTF-8 patterns. The `fancy-regex` crate used by s3ls supports
+/// Unicode, so patterns like `\.txt$` and `日本語` should match
+/// multi-byte keys correctly.
+#[tokio::test]
+async fn e2e_edge_case_utf8_regex_filters() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+
+        let fixture: Vec<(String, Vec<u8>)> = vec![
+            ("日本語/レポート.csv".to_string(), b"x".to_vec()),
+            ("日本語/データ.txt".to_string(), b"x".to_vec()),
+            ("中文/报告.csv".to_string(), b"x".to_vec()),
+            ("中文/数据.txt".to_string(), b"x".to_vec()),
+            ("english/report.csv".to_string(), b"x".to_vec()),
+            ("english/data.txt".to_string(), b"x".to_vec()),
+        ];
+        helper.put_objects_parallel(&bucket, fixture).await;
+
+        let target = format!("s3://{bucket}/");
+
+        // Sub-assertion 1: include-regex with a UTF-8 pattern.
+        // Match only keys containing "日本語".
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--json",
+            "--filter-include-regex",
+            "日本語",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_json_keys_eq(
+            &output.stdout,
+            &["日本語/レポート.csv", "日本語/データ.txt"],
+            "utf8 include-regex: 日本語 pattern",
+        );
+
+        // Sub-assertion 2: exclude-regex with a UTF-8 pattern.
+        // Exclude keys containing "中文" — keeps 日本語/ and english/.
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--json",
+            "--filter-exclude-regex",
+            "中文",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_json_keys_eq(
+            &output.stdout,
+            &[
+                "日本語/レポート.csv",
+                "日本語/データ.txt",
+                "english/report.csv",
+                "english/data.txt",
+            ],
+            "utf8 exclude-regex: exclude 中文",
+        );
+
+        // Sub-assertion 3: include-regex with .csv$ on UTF-8 keys.
+        // Proves the regex engine handles the boundary between UTF-8
+        // characters and ASCII extensions correctly.
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--json",
+            "--filter-include-regex",
+            r"\.csv$",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_json_keys_eq(
+            &output.stdout,
+            &["日本語/レポート.csv", "中文/报告.csv", "english/report.csv"],
+            "utf8 include-regex: .csv$ across UTF-8 keys",
+        );
+    });
+
+    _guard.cleanup().await;
+}
