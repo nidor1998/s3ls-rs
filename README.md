@@ -4,16 +4,18 @@
 
 List S3 objects and buckets using parallel API calls. Built in Rust.
 
-**1,100,000 objects listed in 2.9 seconds** — ~379,000 objects/sec throughput through massively parallel S3 API calls.
+**1,100,000 objects listed in 2.4 seconds** — ~456,000 objects/sec throughput through massively parallel S3 API calls.
 
 ```
-$ time s3ls --max-parallel-listings 64 -r s3://s3ls-rs-test | wc -l
+$ time s3ls --no-sort --max-parallel-listings 64 -r s3://s3ls-rs-test | wc -l
 1100000
 
-real    0m2.905s
+real    0m2.341s
 ```
 
-> *Benchmark: EC2 instance in the same region as the bucket. Median of 5 runs (2.874s–2.952s). Results may vary depending on network conditions, bucket prefix distribution, and S3 endpoint proximity.*
+With default sorting enabled, the same listing completes in ~2.9 seconds (~379,000 objects/sec).
+
+> *Benchmark: EC2 instance in the same region as the bucket. Results may vary depending on network conditions, bucket prefix distribution, and S3 endpoint proximity.*
 
 ## Table of contents
 
