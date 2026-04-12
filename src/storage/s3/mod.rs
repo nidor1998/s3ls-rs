@@ -284,9 +284,15 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
     }
 
     /// Acquire a rate limiter token before making an S3 API call.
-    async fn acquire_rate_limit(&self) {
+    /// Returns `true` if cancelled while waiting.
+    async fn acquire_rate_limit(&self) -> bool {
         if let Some(ref rate_limiter) = self.rate_limiter {
-            rate_limiter.acquire_one().await;
+            tokio::select! {
+                _ = rate_limiter.acquire_one() => false,
+                _ = self.cancellation_token.cancelled() => true,
+            }
+        } else {
+            false
         }
     }
 
@@ -433,7 +439,10 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
                 break;
             }
 
-            self.acquire_rate_limit().await;
+            if self.acquire_rate_limit().await {
+                debug!("list_sequential rate-limit wait cancelled");
+                break;
+            }
             let page = self
                 .fetcher
                 .fetch_page(
@@ -545,7 +554,9 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
                     return Ok(());
                 }
 
-                self.acquire_rate_limit().await;
+                if self.acquire_rate_limit().await {
+                    return Ok(());
+                }
                 let page = self
                     .fetcher
                     .fetch_page(
