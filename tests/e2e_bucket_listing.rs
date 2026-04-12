@@ -302,7 +302,9 @@ async fn e2e_bucket_listing_express_one_zone() {
     };
 
     let id = Uuid::new_v4();
-    let bucket_express = format!("s3ls-e2e-express-{id}--{az_id}--x-s3");
+    // Directory bucket name must be ≤63 chars. "s3ls-e2e-" (9) + uuid (36)
+    // + "--" + az_id (up to 9) + "--x-s3" (6) = up to 63.
+    let bucket_express = format!("s3ls-e2e-{id}--{az_id}--x-s3");
     let bucket_regular = format!("s3ls-e2e-regular-{id}");
     let _guard_express = helper.bucket_guard(&bucket_express);
     let _guard_regular = helper.bucket_guard(&bucket_regular);
