@@ -87,7 +87,6 @@ With default sorting enabled, the same listing completes in ~2.9 seconds (~379,0
 - [Shell completions](#shell-completions)
 - [About testing](#about-testing)
 - [Fully AI-generated (human-verified) software](#fully-ai-generated-human-verified-software)
-- [AI Evaluation Notice](#ai-evaluation-notice)
 - [License](#license)
 
 </details>
@@ -102,27 +101,26 @@ s3ls takes a fundamentally different approach by discovering virtual directories
 
 ### How it works
 
-s3ls uses a three-stage streaming pipeline connected by bounded async channels:
+s3ls uses a two-stage streaming pipeline connected by a bounded async channel:
 
 ```
-S3 API → [Lister] → channel → [Filter Chain] → channel → [Aggregator] → stdout
-              ↑                                                 ↓
-    parallel prefix discovery                          sort (or stream) + format
+S3 API → [Lister + Filter Chain] → channel → [Aggregator] → stdout
+                   ↑                                ↓
+         parallel prefix discovery          sort (or stream) + format
 ```
 
-1. **Lister** — Sends concurrent S3 API calls using parallel prefix discovery. Uses the S3 delimiter feature to discover "virtual directories" (common prefixes) at the top levels of the hierarchy, then lists each prefix independently and concurrently, with up to 64 parallel operations by default. A semaphore prevents overwhelming S3 while maximizing throughput.
-2. **Filter Chain** — Applies regex, time range, size range, and storage class filters inline as entries arrive. Objects that don't match are discarded immediately without being forwarded.
-3. **Aggregator** — In default mode, buffers all entries, sorts them, and writes the formatted output. In streaming mode (`--no-sort`), writes each entry directly to stdout as it arrives with no buffering.
+1. **Lister + Filter Chain** — Sends concurrent S3 API calls using parallel prefix discovery. Uses the S3 delimiter feature to discover "virtual directories" (common prefixes) at the top levels of the hierarchy, then lists each prefix independently and concurrently, with up to 64 parallel operations by default. A semaphore prevents overwhelming S3 while maximizing throughput. Filters (regex, time range, size range, storage class) are applied inline as entries arrive — objects that don't match are discarded immediately without being forwarded to the aggregator.
+2. **Aggregator** — In default mode, buffers all entries, sorts them, and writes the formatted output. In streaming mode (`--no-sort`), writes each entry directly to stdout as it arrives with no buffering.
 
 ### Why it's fast
 
-The speed comes from the parallel listing architecture, not from the choice of programming language. The bottleneck when listing S3 objects is network round-trip latency — each `ListObjectsV2` call takes milliseconds to return, and with 1,000 objects per page, listing 200,000 objects sequentially requires 200 round-trips waiting one after another. s3ls eliminates this wait by discovering virtual directories and listing each one concurrently.
+The speed comes from the parallel listing architecture, not from the choice of programming language (Rust). The bottleneck when listing S3 objects is network round-trip latency — each `ListObjectsV2` call takes milliseconds to return, and with 1,000 objects per page, listing 200,000 objects sequentially requires 200 round-trips waiting one after another. s3ls eliminates this wait by discovering virtual directories and listing each one concurrently.
 
 Rust contributes low per-object overhead (no garbage collector pauses, small struct sizes, zero-cost abstractions for the async runtime), but this is a secondary factor. The primary speedup is architectural.
 
 ### Why it's flexible
 
-The pipeline stages are decoupled through channels and trait abstractions. Filters are composed as a chain. The aggregator handles both tab-delimited text and JSON formatting through the same interface. Adding a new filter, sort field, or output column does not require changes to the lister or pipeline coordination — each concern is isolated.
+The pipeline stages are decoupled through a channel and trait abstractions. Filters are composed as a chain within the lister. The aggregator handles both tab-delimited text and JSON formatting through the same interface. Adding a new filter, sort field, or output column does not require changes to the pipeline coordination — each concern is isolated.
 
 ## Features
 
@@ -217,7 +215,7 @@ If you still need sorted output for very large buckets, you can stream to a file
 ```bash
 # Stream to a file, then sort by the 3rd column (key) using the OS sort command
 s3ls --recursive --no-sort s3://huge-bucket/ > listing.tsv
-sort -t$'\t' -k3 listing.tsv > listing_sorted.tsv
+sort -t'\t' -k3 listing.tsv > listing_sorted.tsv
 ```
 
 The OS `sort` command automatically spills to disk when the data exceeds available memory, so this approach works for any bucket size.
@@ -665,7 +663,7 @@ If sorted output is needed for a bucket too large to sort in memory, stream to a
 
 ```bash
 s3ls --recursive --no-sort s3://huge-bucket/ > listing.tsv
-sort -t$'\t' -k3 listing.tsv > listing_sorted.tsv
+sort -t'\t' -k3 listing.tsv > listing_sorted.tsv
 ```
 
 The OS `sort` command automatically spills to disk when the data exceeds available memory.
@@ -1039,10 +1037,6 @@ S3-compatible storage is not tested when a new version is released. Since there 
 No human wrote a single line of source code in this project. Every line of source code, every test, all documentation, CI/CD configuration, and this README were generated by AI using [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) (Anthropic).
 
 Human engineers authored the requirements, design specifications, and s3sync reference architecture. They thoroughly reviewed and verified the design, all source code, and all tests. All features of the initial build binary have been manually tested and verified by humans. All E2E test scenarios have been thoroughly verified by humans against live AWS S3. The development followed a spec-driven process: requirements and design documents were written first, and the AI generated code to match those specifications under continuous human oversight.
-
-## AI Evaluation Notice
-
-The content of this README, including all text, code examples, tables, and comparisons, is 100% generated by AI software ([Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview), Anthropic). Human engineers reviewed and verified the content for accuracy.
 
 ## License
 
