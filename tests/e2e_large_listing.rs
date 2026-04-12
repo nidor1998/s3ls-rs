@@ -226,20 +226,18 @@ async fn e2e_large_listing_completeness() {
             "max-depth 3: objects at depth <= 3",
         );
 
-        // Prefix entries at depth 3 boundary: data/tenant-{01..05}/ (5)
-        // + logs/app/2024/, logs/app/2025/ (2) = 7.
-        let expected_depth3_prefixes: HashSet<String> = [
-            "data/tenant-01/",
-            "data/tenant-02/",
-            "data/tenant-03/",
-            "data/tenant-04/",
-            "data/tenant-05/",
-            "logs/app/2024/",
-            "logs/app/2025/",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+        // Prefix entries at the depth-3 boundary:
+        // data/tenant-{01..05}/{2024,2025}/ = 5 × 2 = 10 entries
+        // + logs/app/{2024,2025}/ = 2 entries
+        // Total: 12 prefixes.
+        let mut expected_depth3_prefixes: HashSet<String> = HashSet::new();
+        for tenant in 1..=5 {
+            for year in [2024, 2025] {
+                expected_depth3_prefixes.insert(format!("data/tenant-{tenant:02}/{year}/"));
+            }
+        }
+        expected_depth3_prefixes.insert("logs/app/2024/".to_string());
+        expected_depth3_prefixes.insert("logs/app/2025/".to_string());
         assert_eq!(
             depth3_prefixes, expected_depth3_prefixes,
             "max-depth 3: prefix entries mismatch\n  \
