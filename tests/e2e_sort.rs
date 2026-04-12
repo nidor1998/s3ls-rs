@@ -259,3 +259,173 @@ async fn e2e_sort_date_desc() {
 
     _guard.cleanup().await;
 }
+
+/// `--sort size,key`: multi-column sort where two objects tie on size
+/// (5000 bytes each) and the secondary key sort disambiguates.
+///
+/// `a.csv` must appear before `b.csv` in the result even though `b.csv`
+/// was uploaded first — both have size 5000, so the primary sort ties
+/// them, and the secondary `key` sort produces alphabetical order.
+#[tokio::test]
+async fn e2e_sort_size_key_tiebreak() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+
+        let fixture: Vec<(String, Vec<u8>)> = vec![
+            ("z.txt".to_string(), vec![0u8; 100]),
+            ("b.csv".to_string(), vec![0u8; 5000]),
+            ("a.csv".to_string(), vec![0u8; 5000]),
+            ("m.txt".to_string(), vec![0u8; 10000]),
+        ];
+        helper.put_objects_parallel(&bucket, fixture).await;
+
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--json",
+            "--sort",
+            "size,key",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_json_keys_order_eq(
+            &output.stdout,
+            &["z.txt", "a.csv", "b.csv", "m.txt"],
+            "sort size,key tiebreak",
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// `--no-sort`: results stream in arbitrary order. This test asserts
+/// only set equality (all expected keys are present), NOT ordering.
+///
+/// `--no-sort` has `conflicts_with_all = ["sort", "reverse"]` at
+/// `src/config/args/mod.rs:234`, so it cannot be combined with
+/// `--sort` or `--reverse` — clap rejects it at parse time.
+///
+/// Order is intentionally not asserted per commit 3e6c4fb
+/// ("clarify --no-sort produces arbitrary order").
+#[tokio::test]
+async fn e2e_sort_no_sort() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+
+        let fixture: Vec<(String, Vec<u8>)> = vec![
+            ("a.txt".to_string(), vec![0u8; 100]),
+            ("b.txt".to_string(), vec![0u8; 100]),
+            ("c.txt".to_string(), vec![0u8; 100]),
+        ];
+        helper.put_objects_parallel(&bucket, fixture).await;
+
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--json", "--no-sort"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        // Set equality only — order is intentionally not asserted.
+        assert_json_keys_eq(
+            &output.stdout,
+            &["a.txt", "b.txt", "c.txt"],
+            "no-sort: set equality",
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// `--all-versions --sort key`: auto-appends `date` as secondary sort
+/// (per `src/config/args/mod.rs:759-761`). Two keys with 2 versions
+/// each, uploaded sequentially with 1.5s sleeps. The result must show
+/// key ascending (apple before banana) and within each key, date
+/// ascending (v1 before v2).
+#[tokio::test]
+async fn e2e_sort_versioned_secondary_date() {
+    use std::time::Duration;
+    use tokio::time::sleep;
+
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_versioned_bucket(&bucket).await;
+
+        // apple v1 → apple v2 → banana v1 → banana v2
+        // Each upload separated by 1.5s to guarantee distinct LastModified.
+        helper
+            .put_object(&bucket, "apple.txt", vec![0u8; 100])
+            .await;
+        sleep(Duration::from_millis(1500)).await;
+        helper
+            .put_object(&bucket, "apple.txt", vec![0u8; 200])
+            .await;
+        sleep(Duration::from_millis(1500)).await;
+        helper
+            .put_object(&bucket, "banana.txt", vec![0u8; 100])
+            .await;
+        sleep(Duration::from_millis(1500)).await;
+        helper
+            .put_object(&bucket, "banana.txt", vec![0u8; 200])
+            .await;
+
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--all-versions",
+            "--json",
+            "--sort",
+            "key",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        // Assertion 1: key sequence is apple, apple, banana, banana.
+        assert_json_keys_order_eq(
+            &output.stdout,
+            &["apple.txt", "apple.txt", "banana.txt", "banana.txt"],
+            "versioned secondary date: key order",
+        );
+
+        // Assertion 2: within each Key group, LastModified is
+        // non-decreasing. This proves the auto-appended `date`
+        // secondary sort is actually applied.
+        let rows: Vec<(String, String)> = output
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .filter_map(|line| {
+                let v: serde_json::Value = serde_json::from_str(line).ok()?;
+                let key = v.get("Key")?.as_str()?.to_string();
+                let lm = v.get("LastModified")?.as_str()?.to_string();
+                Some((key, lm))
+            })
+            .collect();
+
+        let mut prev_key: Option<&str> = None;
+        let mut prev_lm: Option<&str> = None;
+        for (k, lm) in &rows {
+            if Some(k.as_str()) == prev_key {
+                assert!(
+                    lm.as_str() >= prev_lm.unwrap(),
+                    "versioned secondary sort: within key {k:?}, LastModified not monotonic: {:?} -> {lm:?}",
+                    prev_lm.unwrap()
+                );
+            }
+            prev_key = Some(k.as_str());
+            prev_lm = Some(lm.as_str());
+        }
+    });
+
+    _guard.cleanup().await;
+}
