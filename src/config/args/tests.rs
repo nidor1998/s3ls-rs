@@ -1466,3 +1466,246 @@ fn show_restore_status_without_json() {
     assert!(!config.display_config.json);
     assert!(config.display_config.show_restore_status);
 }
+
+// ===========================================================================
+// Client construction with access tokens
+// ===========================================================================
+
+#[test]
+fn config_client_constructed_with_access_keys() {
+    let config = build_config_from_args(args(&[
+        "s3://bucket",
+        "--target-access-key",
+        "AKIAIOSFODNN7EXAMPLE",
+        "--target-secret-access-key",
+        "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        "--target-session-token",
+        "FwoGZXIvYXdzEBYaDExampleSessionToken",
+    ]))
+    .unwrap();
+
+    let client_config = config
+        .target_client_config
+        .as_ref()
+        .expect("target_client_config should be present when access keys are provided");
+
+    match &client_config.credential {
+        crate::types::S3Credentials::Credentials { access_keys } => {
+            assert_eq!(access_keys.access_key, "AKIAIOSFODNN7EXAMPLE");
+            assert_eq!(
+                access_keys.secret_access_key,
+                "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+            );
+            assert_eq!(
+                access_keys.session_token.as_deref(),
+                Some("FwoGZXIvYXdzEBYaDExampleSessionToken")
+            );
+        }
+        other => panic!("expected S3Credentials::Credentials, got {:?}", other),
+    }
+}
+
+// ===========================================================================
+// --max-depth rejected in bucket listing mode
+// ===========================================================================
+
+#[test]
+fn bucket_listing_rejects_max_depth_with_message() {
+    // --max-depth requires --recursive (clap constraint), so we must
+    // pass both. The Config::try_from validation rejects --recursive
+    // in bucket listing mode (no target) first, then --max-depth.
+    let result = build_config_from_args(args(&["--recursive", "--max-depth", "3"]));
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("not valid for bucket listing"),
+        "expected 'not valid for bucket listing' error, got: {err}"
+    );
+}
+
+// ===========================================================================
+// --list-express-one-zone-buckets
+// ===========================================================================
+
+#[test]
+fn list_express_one_zone_buckets_accepted_in_bucket_listing() {
+    let config = build_config_from_args(args(&["--list-express-one-zone-buckets"])).unwrap();
+    assert!(config.list_express_one_zone_buckets);
+}
+
+#[test]
+fn list_express_one_zone_buckets_default_is_false() {
+    let config = build_config_from_args(args(&[])).unwrap();
+    assert!(!config.list_express_one_zone_buckets);
+}
+
+#[test]
+fn list_express_one_zone_buckets_with_show_bucket_arn() {
+    let config = build_config_from_args(args(&[
+        "--list-express-one-zone-buckets",
+        "--show-bucket-arn",
+    ]))
+    .unwrap();
+    assert!(config.list_express_one_zone_buckets);
+    assert!(config.display_config.show_bucket_arn);
+}
+
+#[test]
+fn list_express_one_zone_buckets_with_bucket_name_prefix() {
+    let config = build_config_from_args(args(&[
+        "--list-express-one-zone-buckets",
+        "--bucket-name-prefix",
+        "my-express-",
+    ]))
+    .unwrap();
+    assert!(config.list_express_one_zone_buckets);
+    assert_eq!(config.bucket_name_prefix.as_deref(), Some("my-express-"));
+}
+
+#[test]
+fn list_express_one_zone_buckets_with_json() {
+    let config =
+        build_config_from_args(args(&["--list-express-one-zone-buckets", "--json"])).unwrap();
+    assert!(config.list_express_one_zone_buckets);
+    assert!(config.display_config.json);
+}
+
+#[test]
+fn list_express_one_zone_buckets_with_sort_date() {
+    let config =
+        build_config_from_args(args(&["--list-express-one-zone-buckets", "--sort", "date"]))
+            .unwrap();
+    assert!(config.list_express_one_zone_buckets);
+    assert_eq!(config.sort, vec![SortField::Date]);
+}
+
+// ===========================================================================
+// Custom config and credentials file paths
+// ===========================================================================
+
+#[test]
+fn config_custom_aws_config_file() {
+    let config = build_config_from_args(args(&[
+        "s3://bucket",
+        "--aws-config-file",
+        "/custom/path/config",
+    ]))
+    .unwrap();
+
+    let client_config = config.target_client_config.as_ref().unwrap();
+    assert_eq!(
+        client_config
+            .client_config_location
+            .aws_config_file
+            .as_ref()
+            .map(|p| p.to_str().unwrap()),
+        Some("/custom/path/config"),
+    );
+}
+
+#[test]
+fn config_custom_aws_credentials_file() {
+    let config = build_config_from_args(args(&[
+        "s3://bucket",
+        "--aws-shared-credentials-file",
+        "/custom/path/credentials",
+    ]))
+    .unwrap();
+
+    let client_config = config.target_client_config.as_ref().unwrap();
+    assert_eq!(
+        client_config
+            .client_config_location
+            .aws_shared_credentials_file
+            .as_ref()
+            .map(|p| p.to_str().unwrap()),
+        Some("/custom/path/credentials"),
+    );
+}
+
+#[test]
+fn config_both_custom_files() {
+    let config = build_config_from_args(args(&[
+        "s3://bucket",
+        "--aws-config-file",
+        "/etc/aws/config",
+        "--aws-shared-credentials-file",
+        "/etc/aws/credentials",
+    ]))
+    .unwrap();
+
+    let client_config = config.target_client_config.as_ref().unwrap();
+    assert_eq!(
+        client_config
+            .client_config_location
+            .aws_config_file
+            .as_ref()
+            .map(|p| p.to_str().unwrap()),
+        Some("/etc/aws/config"),
+    );
+    assert_eq!(
+        client_config
+            .client_config_location
+            .aws_shared_credentials_file
+            .as_ref()
+            .map(|p| p.to_str().unwrap()),
+        Some("/etc/aws/credentials"),
+    );
+}
+
+#[test]
+fn config_custom_files_default_is_none() {
+    let config = build_config_from_args(args(&["s3://bucket"])).unwrap();
+
+    let client_config = config.target_client_config.as_ref().unwrap();
+    assert!(
+        client_config
+            .client_config_location
+            .aws_config_file
+            .is_none(),
+    );
+    assert!(
+        client_config
+            .client_config_location
+            .aws_shared_credentials_file
+            .is_none(),
+    );
+}
+
+#[test]
+fn config_custom_files_with_profile() {
+    let config = build_config_from_args(args(&[
+        "s3://bucket",
+        "--target-profile",
+        "production",
+        "--aws-config-file",
+        "/custom/config",
+        "--aws-shared-credentials-file",
+        "/custom/credentials",
+    ]))
+    .unwrap();
+
+    let client_config = config.target_client_config.as_ref().unwrap();
+    // Both file paths should be set alongside the profile.
+    assert_eq!(
+        client_config
+            .client_config_location
+            .aws_config_file
+            .as_ref()
+            .map(|p| p.to_str().unwrap()),
+        Some("/custom/config"),
+    );
+    assert_eq!(
+        client_config
+            .client_config_location
+            .aws_shared_credentials_file
+            .as_ref()
+            .map(|p| p.to_str().unwrap()),
+        Some("/custom/credentials"),
+    );
+    // Profile should also be set.
+    match &client_config.credential {
+        crate::types::S3Credentials::Profile(p) => assert_eq!(p, "production"),
+        other => panic!("expected Profile credential, got {other:?}"),
+    }
+}

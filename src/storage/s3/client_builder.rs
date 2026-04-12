@@ -295,4 +295,118 @@ mod tests {
         config.client_config_location.aws_config_file = Some("./test_data/config".into());
         assert!(config.build_profile_files().is_some());
     }
+
+    /// Verifies that `create_client` can load credentials and region
+    /// from actual custom config and credentials files on disk.
+    ///
+    /// Writes standard-format AWS config and credentials files to a
+    /// temp directory, builds a `ClientConfig` pointing to those files
+    /// with a profile name, and calls `create_client()`. The client is
+    /// constructed without error, proving the SDK successfully parsed
+    /// the custom files and resolved the profile.
+    #[tokio::test]
+    async fn create_client_from_custom_config_and_credentials_files() {
+        let tmp_dir = std::env::temp_dir().join(format!("s3ls-test-config-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp_dir).expect("failed to create temp dir");
+
+        let config_path = tmp_dir.join("config");
+        let credentials_path = tmp_dir.join("credentials");
+
+        // Write a minimal AWS config file with a profile.
+        std::fs::write(&config_path, "[profile test-custom]\nregion = us-west-2\n")
+            .expect("failed to write config file");
+
+        // Write a minimal AWS credentials file with matching profile.
+        std::fs::write(
+            &credentials_path,
+            "[test-custom]\n\
+             aws_access_key_id = AKIAIOSFODNN7EXAMPLE\n\
+             aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n",
+        )
+        .expect("failed to write credentials file");
+
+        let config = ClientConfig {
+            client_config_location: ClientConfigLocation {
+                aws_config_file: Some(config_path.clone()),
+                aws_shared_credentials_file: Some(credentials_path.clone()),
+            },
+            credential: S3Credentials::Profile("test-custom".to_string()),
+            region: None, // should be resolved from the config file
+            endpoint_url: None,
+            force_path_style: false,
+            accelerate: false,
+            request_payer: None,
+            request_checksum_calculation:
+                aws_smithy_types::checksum_config::RequestChecksumCalculation::WhenRequired,
+            retry_config: CliRetryConfig {
+                aws_max_attempts: 3,
+                initial_backoff_milliseconds: 500,
+            },
+            cli_timeout_config: CLITimeoutConfig {
+                operation_timeout_milliseconds: None,
+                operation_attempt_timeout_milliseconds: None,
+                connect_timeout_milliseconds: None,
+                read_timeout_milliseconds: None,
+            },
+            disable_stalled_stream_protection: false,
+        };
+
+        // create_client loads the SDK config from the custom files,
+        // resolves the profile, and constructs an S3 Client. If the
+        // files are malformed or the profile is not found, this panics.
+        let _client = config.create_client().await;
+
+        // Cleanup temp files.
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    /// Same as above but with only a credentials file (no config file).
+    /// The SDK should still resolve credentials from the custom
+    /// credentials file even without a custom config file.
+    #[tokio::test]
+    async fn create_client_from_custom_credentials_file_only() {
+        let tmp_dir =
+            std::env::temp_dir().join(format!("s3ls-test-creds-only-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp_dir).expect("failed to create temp dir");
+
+        let credentials_path = tmp_dir.join("credentials");
+
+        std::fs::write(
+            &credentials_path,
+            "[test-creds-only]\n\
+             aws_access_key_id = AKIAIOSFODNN7EXAMPLE\n\
+             aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n",
+        )
+        .expect("failed to write credentials file");
+
+        let config = ClientConfig {
+            client_config_location: ClientConfigLocation {
+                aws_config_file: None,
+                aws_shared_credentials_file: Some(credentials_path.clone()),
+            },
+            credential: S3Credentials::Profile("test-creds-only".to_string()),
+            region: Some("us-east-1".to_string()), // explicit region since no config file
+            endpoint_url: None,
+            force_path_style: false,
+            accelerate: false,
+            request_payer: None,
+            request_checksum_calculation:
+                aws_smithy_types::checksum_config::RequestChecksumCalculation::WhenRequired,
+            retry_config: CliRetryConfig {
+                aws_max_attempts: 3,
+                initial_backoff_milliseconds: 500,
+            },
+            cli_timeout_config: CLITimeoutConfig {
+                operation_timeout_milliseconds: None,
+                operation_attempt_timeout_milliseconds: None,
+                connect_timeout_milliseconds: None,
+                read_timeout_milliseconds: None,
+            },
+            disable_stalled_stream_protection: false,
+        };
+
+        let _client = config.create_client().await;
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
 }

@@ -12,8 +12,8 @@ use std::sync::Arc;
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client;
 use aws_sdk_s3::types::{
-    BucketLocationConstraint, BucketVersioningStatus, CreateBucketConfiguration, Delete,
-    ObjectIdentifier, VersioningConfiguration,
+    BucketLocationConstraint, BucketVersioningStatus, ChecksumAlgorithm, CreateBucketConfiguration,
+    Delete, ObjectIdentifier, StorageClass, VersioningConfiguration,
 };
 use uuid::Uuid;
 
@@ -135,6 +135,52 @@ impl TestHelper {
             .send()
             .await
             .unwrap_or_else(|e| panic!("Failed to enable versioning on {bucket}: {e}"));
+    }
+
+    /// Try to create an Express One Zone (directory) bucket.
+    ///
+    /// Returns `Ok(())` on success, `Err(message)` if S3 rejects the
+    /// request (wrong AZ, unsupported region, missing permissions, etc.).
+    /// The caller can skip the test gracefully on error rather than
+    /// panicking — Express One Zone availability varies by region and
+    /// account configuration.
+    ///
+    /// `bucket` must end with `--{az_id}--x-s3` (e.g.,
+    /// `s3ls-e2e-express-abc123--use1-az4--x-s3`).
+    /// `az_id` must be a valid availability zone ID that supports
+    /// Express One Zone (e.g., `"use1-az4"`).
+    pub async fn try_create_directory_bucket(
+        &self,
+        bucket: &str,
+        az_id: &str,
+    ) -> Result<(), String> {
+        use aws_sdk_s3::types::{
+            BucketInfo, BucketType, DataRedundancy, LocationInfo, LocationType,
+        };
+
+        let location = LocationInfo::builder()
+            .r#type(LocationType::AvailabilityZone)
+            .name(az_id)
+            .build();
+
+        let bucket_info = BucketInfo::builder()
+            .data_redundancy(DataRedundancy::SingleAvailabilityZone)
+            .r#type(BucketType::Directory)
+            .build();
+
+        let config = CreateBucketConfiguration::builder()
+            .location(location)
+            .bucket(bucket_info)
+            .build();
+
+        self.client
+            .create_bucket()
+            .bucket(bucket)
+            .create_bucket_configuration(config)
+            .send()
+            .await
+            .map(|_| ())
+            .map_err(|e| format!("Failed to create directory bucket {bucket}: {e}"))
     }
 
     /// Delete all objects (including versions and delete markers) and then delete the bucket.
@@ -380,6 +426,86 @@ impl TestHelper {
             .unwrap_or_else(|e| panic!("Failed to put object {key} with tags: {e}"));
     }
 
+    /// Upload an object with an explicit S3 StorageClass.
+    ///
+    /// Pass the storage class as the string form (e.g. `"STANDARD_IA"`,
+    /// `"ONEZONE_IA"`, `"REDUCED_REDUNDANCY"`, `"INTELLIGENT_TIERING"`).
+    /// The helper converts it via `StorageClass::from(&str)`, which is
+    /// the same path `src/config/args/value_parser/storage_class.rs` uses.
+    ///
+    /// Used by filter e2e tests that need objects in multiple storage
+    /// classes to exercise `--storage-class` filtering.
+    pub async fn put_object_with_storage_class(
+        &self,
+        bucket: &str,
+        key: &str,
+        body: Vec<u8>,
+        storage_class: &str,
+    ) {
+        self.client
+            .put_object()
+            .bucket(bucket)
+            .key(key)
+            .body(body.into())
+            .storage_class(StorageClass::from(storage_class))
+            .send()
+            .await
+            .unwrap_or_else(|e| {
+                panic!("Failed to put object {key} with storage-class {storage_class}: {e}")
+            });
+    }
+
+    /// Create a delete marker on a versioned bucket by calling DeleteObject
+    /// without a VersionId. On a versioned bucket, S3 interprets this as
+    /// "add a delete marker" (the object appears deleted to non-versioned
+    /// readers, but all prior versions remain listable via
+    /// ListObjectVersions).
+    ///
+    /// Requires: the bucket must have versioning ENABLED (create it via
+    /// `create_versioned_bucket`). On a non-versioned bucket this call
+    /// would permanently delete the object.
+    pub async fn create_delete_marker(&self, bucket: &str, key: &str) {
+        self.client
+            .delete_object()
+            .bucket(bucket)
+            .key(key)
+            .send()
+            .await
+            .unwrap_or_else(|e| {
+                panic!("Failed to create delete marker for {key} in {bucket}: {e}")
+            });
+    }
+
+    /// Upload an object with an explicit S3 ChecksumAlgorithm.
+    ///
+    /// Used by display tests that exercise `--show-checksum-algorithm` /
+    /// `--show-checksum-type` — the default PUT does not populate a
+    /// checksum field, so tests that want non-empty checksum columns
+    /// must use this helper.
+    ///
+    /// Accepts the algorithm as a string ("CRC32", "CRC32C", "SHA1",
+    /// "SHA256", "CRC64NVME"). Converts via `ChecksumAlgorithm::from(&str)`
+    /// — same pattern as `put_object_with_storage_class`.
+    pub async fn put_object_with_checksum_algorithm(
+        &self,
+        bucket: &str,
+        key: &str,
+        body: Vec<u8>,
+        algorithm: &str,
+    ) {
+        self.client
+            .put_object()
+            .bucket(bucket)
+            .key(key)
+            .body(body.into())
+            .checksum_algorithm(ChecksumAlgorithm::from(algorithm))
+            .send()
+            .await
+            .unwrap_or_else(|e| {
+                panic!("Failed to put object {key} with checksum-algorithm {algorithm}: {e}")
+            });
+    }
+
     /// Upload an object with content-type, metadata, AND tags all at once.
     ///
     /// NOTE: Same URL-safety caveat as `put_object_with_tags` — tag keys and
@@ -420,7 +546,22 @@ impl TestHelper {
 
     /// Upload multiple objects in parallel (up to 16 concurrent uploads).
     pub async fn put_objects_parallel(&self, bucket: &str, objects: Vec<(String, Vec<u8>)>) {
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(16));
+        self.put_objects_parallel_n(bucket, objects, 16).await;
+    }
+
+    /// Upload multiple objects in parallel with configurable concurrency.
+    ///
+    /// `max_concurrency` controls the semaphore limit. Use 16 for small
+    /// fixtures (the default via `put_objects_parallel`). Use 256+ for
+    /// large-scale tests (e.g., 10K+ objects) to keep upload time
+    /// reasonable.
+    pub async fn put_objects_parallel_n(
+        &self,
+        bucket: &str,
+        objects: Vec<(String, Vec<u8>)>,
+        max_concurrency: usize,
+    ) {
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrency));
         let mut set = tokio::task::JoinSet::new();
         let client = self.client.clone();
         let bucket = bucket.to_string();
@@ -564,6 +705,19 @@ impl TestHelper {
             full_args.push(AWS_PROFILE.to_string());
         }
 
+        // Inject trace level from E2E_TEST_LOG_LEVEL env var if set.
+        // Valid values: "-v", "-vv", "-vvv", "-q", "-qq", etc.
+        // Invalid values are silently ignored.
+        if let Ok(level) = std::env::var("E2E_TEST_LOG_LEVEL") {
+            let level = level.trim();
+            if !level.is_empty()
+                && (level.chars().all(|c| c == '-' || c == 'v' || c == 'q')
+                    && level.starts_with('-'))
+            {
+                full_args.push(level.to_string());
+            }
+        }
+
         let output = std::process::Command::new(env!("CARGO_BIN_EXE_s3ls"))
             .args(&full_args)
             .output()
@@ -680,5 +834,297 @@ pub fn assert_key_order(stdout: &str, expected_order: &[&str]) {
             pos_a < pos_b,
             "expected {key_a:?} before {key_b:?}; got positions {pos_a} vs {pos_b} in stdout:\n{stdout}"
         );
+    }
+}
+
+/// Parse NDJSON stdout from `s3ls --json` and assert the set of `Key`
+/// fields equals `expected`. `label` is included in panic messages so
+/// tests with multiple sub-assertions can identify which sub-case failed.
+///
+/// Panics if:
+/// - any non-empty line fails to parse as JSON,
+/// - any JSON line is missing the `Key` field (use
+///   `assert_json_keys_or_prefixes_eq` if the output includes
+///   `{"Prefix": ...}` entries — only happens with `--max-depth`),
+/// - the actual set of keys does not equal `expected`.
+///
+/// Set-equality (not list-equality): catches both missing AND extra keys,
+/// order-independent, so filter tests don't accidentally depend on sort.
+pub fn assert_json_keys_eq(stdout: &str, expected: &[&str], label: &str) {
+    use std::collections::HashSet;
+
+    let actual: HashSet<String> = stdout
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|line| {
+            let v: serde_json::Value = serde_json::from_str(line).unwrap_or_else(|e| {
+                panic!("[{label}] failed to parse JSON line: {line}\nerror: {e}")
+            });
+            v.get("Key")
+                .and_then(|k| k.as_str())
+                .unwrap_or_else(|| panic!("[{label}] JSON line missing `Key`: {line}"))
+                .to_string()
+        })
+        .collect();
+
+    let expected_set: HashSet<String> = expected.iter().map(|s| s.to_string()).collect();
+
+    if actual != expected_set {
+        let mut missing: Vec<&String> = expected_set.difference(&actual).collect();
+        let mut extra: Vec<&String> = actual.difference(&expected_set).collect();
+        missing.sort();
+        extra.sort();
+        panic!(
+            "[{label}] key set mismatch\n  missing: {missing:?}\n  extra:   {extra:?}\n  stdout:\n{stdout}"
+        );
+    }
+}
+
+/// Like `assert_json_keys_eq`, but accepts JSON lines that have EITHER
+/// a `Key` field (for object entries) OR a `Prefix` field (for
+/// `CommonPrefix` entries under `--max-depth`). The actual set is the
+/// union of both kinds, and `expected` is compared against that union.
+///
+/// Used only by `e2e_filter_max_depth_common_prefix_passthrough`, which
+/// verifies that `--filter-include-regex` + `--max-depth` emits both
+/// matching objects (`{"Key": "readme.csv", ...}`) AND common prefixes
+/// (`{"Prefix": "logs/"}`) — the latter passes through every filter
+/// unconditionally per `src/filters/mod.rs:37`.
+pub fn assert_json_keys_or_prefixes_eq(stdout: &str, expected: &[&str], label: &str) {
+    use std::collections::HashSet;
+
+    let actual: HashSet<String> = stdout
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|line| {
+            let v: serde_json::Value = serde_json::from_str(line).unwrap_or_else(|e| {
+                panic!("[{label}] failed to parse JSON line: {line}\nerror: {e}")
+            });
+            if let Some(k) = v.get("Key").and_then(|k| k.as_str()) {
+                k.to_string()
+            } else if let Some(p) = v.get("Prefix").and_then(|p| p.as_str()) {
+                p.to_string()
+            } else {
+                panic!("[{label}] JSON line has neither `Key` nor `Prefix`: {line}");
+            }
+        })
+        .collect();
+
+    let expected_set: HashSet<String> = expected.iter().map(|s| s.to_string()).collect();
+
+    if actual != expected_set {
+        let mut missing: Vec<&String> = expected_set.difference(&actual).collect();
+        let mut extra: Vec<&String> = actual.difference(&expected_set).collect();
+        missing.sort();
+        extra.sort();
+        panic!(
+            "[{label}] key/prefix set mismatch\n  missing: {missing:?}\n  extra:   {extra:?}\n  stdout:\n{stdout}"
+        );
+    }
+}
+
+/// Parse NDJSON stdout from `s3ls --all-versions --json` and assert the
+/// multiset of `(Key, is_delete_marker)` tuples equals `expected`.
+///
+/// Unlike `assert_json_keys_eq` (which compares a set of `Key` strings),
+/// this helper:
+/// 1. Extracts both `Key` and the `DeleteMarker` boolean field from each
+///    JSON line (missing `DeleteMarker` field defaults to `false`).
+/// 2. Uses multiset comparison: 3 rows of `("doc.txt", false)` is
+///    distinguishable from 2 rows of `("doc.txt", false)`.
+///
+/// Panics if:
+/// - any non-empty line fails to parse as JSON,
+/// - any JSON line is missing the `Key` field,
+/// - the multiset of `(Key, is_delete_marker)` tuples does not equal
+///   `expected` (reports missing and extra counts separately).
+pub fn assert_json_version_shapes_eq(stdout: &str, expected: &[(&str, bool)], label: &str) {
+    use std::collections::HashMap;
+
+    let mut actual: HashMap<(String, bool), usize> = HashMap::new();
+    for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
+        let v: serde_json::Value = serde_json::from_str(line)
+            .unwrap_or_else(|e| panic!("[{label}] failed to parse JSON line: {line}\nerror: {e}"));
+        let key = v
+            .get("Key")
+            .and_then(|k| k.as_str())
+            .unwrap_or_else(|| panic!("[{label}] JSON line missing `Key`: {line}"))
+            .to_string();
+        let is_delete_marker = v
+            .get("DeleteMarker")
+            .and_then(|d| d.as_bool())
+            .unwrap_or(false);
+        *actual.entry((key, is_delete_marker)).or_insert(0) += 1;
+    }
+
+    let mut expected_counts: HashMap<(String, bool), usize> = HashMap::new();
+    for (key, is_dm) in expected {
+        *expected_counts
+            .entry((key.to_string(), *is_dm))
+            .or_insert(0) += 1;
+    }
+
+    if actual != expected_counts {
+        let mut missing: Vec<((String, bool), usize)> = expected_counts
+            .iter()
+            .filter_map(|(k, c)| {
+                let a = actual.get(k).copied().unwrap_or(0);
+                if a < *c {
+                    Some((k.clone(), c - a))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        missing.sort();
+        let mut extra: Vec<((String, bool), usize)> = actual
+            .iter()
+            .filter_map(|(k, c)| {
+                let e = expected_counts.get(k).copied().unwrap_or(0);
+                if *c > e {
+                    Some((k.clone(), c - e))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        extra.sort();
+        panic!(
+            "[{label}] version shape multiset mismatch\n  missing: {missing:?}\n  extra:   {extra:?}\n  stdout:\n{stdout}"
+        );
+    }
+}
+
+/// Split a tab-delimited line into its columns. Helper for display tests
+/// that need to assert on specific column indices.
+pub fn parse_tsv_line(line: &str) -> Vec<&str> {
+    line.split('\t').collect()
+}
+
+/// Assert the first line of `stdout` (from `s3ls --header ...` in text
+/// mode) is a tab-delimited header row with exactly the expected column
+/// names in order. Panics with the label on mismatch.
+///
+/// Panics if:
+/// - `stdout` has no non-empty lines,
+/// - the first non-empty line's columns don't match `expected` exactly.
+pub fn assert_header_columns(stdout: &str, expected: &[&str], label: &str) {
+    let header_line = stdout
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or_else(|| panic!("[{label}] stdout is empty"));
+    let actual: Vec<&str> = parse_tsv_line(header_line);
+    if actual != expected {
+        panic!(
+            "[{label}] header column mismatch\n  expected: {expected:?}\n  actual:   {actual:?}\n  header line: {header_line}"
+        );
+    }
+}
+
+/// Assert that every non-empty line of `stdout` has exactly
+/// `expected_count` tab-separated columns.
+///
+/// Lines identified as the summary (starting with `"Total:\t"`) are
+/// EXCLUDED from the count check, since the summary has a different
+/// column count than data rows.
+///
+/// The header row (if `--header` was used) has the same column count as
+/// data rows, so it naturally passes the same check and is NOT excluded.
+pub fn assert_all_data_rows_have_columns(stdout: &str, expected_count: usize, label: &str) {
+    for line in stdout.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if line.starts_with("Total:\t") {
+            continue;
+        }
+        let cols: Vec<&str> = parse_tsv_line(line);
+        if cols.len() != expected_count {
+            panic!(
+                "[{label}] row column count mismatch\n  expected: {expected_count}\n  actual:   {}\n  line: {line}",
+                cols.len()
+            );
+        }
+    }
+}
+
+/// Assert that `stdout` contains a text-mode summary line starting with
+/// `"Total:\t"` and return it. The caller can then do further substring
+/// assertions on its contents (e.g. contains the expected object count).
+pub fn assert_summary_present_text(stdout: &str, label: &str) -> String {
+    stdout
+        .lines()
+        .find(|l| l.starts_with("Total:\t"))
+        .unwrap_or_else(|| panic!("[{label}] no 'Total:' summary line found in stdout:\n{stdout}"))
+        .to_string()
+}
+
+/// Assert that `stdout` contains a JSON summary line (an NDJSON line that
+/// parses to an object with a top-level `"Summary"` key) and return the
+/// parsed `serde_json::Value`. The caller can then do further field
+/// assertions on its contents (e.g. `v["Summary"]["TotalObjects"]`).
+pub fn assert_summary_present_json(stdout: &str, label: &str) -> serde_json::Value {
+    for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line)
+            && v.get("Summary").is_some()
+        {
+            return v;
+        }
+    }
+    panic!("[{label}] no JSON 'Summary' line found in stdout:\n{stdout}");
+}
+
+/// Parse NDJSON stdout from `s3ls --json` and assert the sequence of
+/// `Key` fields (in order) equals `expected`. Unlike
+/// `assert_json_keys_eq` which does set comparison, this helper
+/// verifies exact ordering — the primary assertion for sort tests.
+///
+/// Duplicates in `expected` are handled naturally: a key that appears
+/// twice in the expected slice must also appear twice in the output,
+/// in the same positions. This makes the helper suitable for
+/// versioned-listing tests where the same key appears multiple times.
+///
+/// Lines that parse as JSON but have no `Key` field (e.g.,
+/// `{"Prefix": ...}` or `{"Summary": ...}`) are skipped — the ordering
+/// check applies only to object/delete-marker rows.
+///
+/// Panics if:
+/// - any non-empty line fails to parse as JSON,
+/// - the resulting sequence of `Key` values does not equal `expected`.
+pub fn assert_json_keys_order_eq(stdout: &str, expected: &[&str], label: &str) {
+    let actual: Vec<String> = stdout
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|line| {
+            let v: serde_json::Value = serde_json::from_str(line).unwrap_or_else(|e| {
+                panic!("[{label}] failed to parse JSON line: {line}\nerror: {e}")
+            });
+            v.get("Key").and_then(|k| k.as_str()).map(|s| s.to_string())
+        })
+        .collect();
+
+    let expected_owned: Vec<String> = expected.iter().map(|s| s.to_string()).collect();
+
+    if actual != expected_owned {
+        panic!(
+            "[{label}] key order mismatch\n  expected: {expected_owned:?}\n  actual:   {actual:?}\n  stdout:\n{stdout}"
+        );
+    }
+}
+
+/// Map a region to a known Express One Zone availability zone ID.
+/// Returns `None` for regions where Express One Zone is not mapped.
+/// Tests that depend on this can skip gracefully with a `println!`
+/// note when the region is unmapped.
+pub fn express_one_zone_az_for_region(region: &str) -> Option<&'static str> {
+    match region {
+        "us-east-1" => Some("use1-az4"),
+        "us-east-2" => Some("use2-az1"),
+        "us-west-2" => Some("usw2-az1"),
+        "ap-northeast-1" => Some("apne1-az4"),
+        "ap-southeast-1" => Some("apse1-az2"),
+        "eu-west-1" => Some("euw1-az1"),
+        "eu-north-1" => Some("eun1-az1"),
+        _ => None,
     }
 }

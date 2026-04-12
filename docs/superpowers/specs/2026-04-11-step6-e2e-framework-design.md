@@ -1,7 +1,7 @@
 # Step 6: E2E Test Framework — Design
 
 **Date:** 2026-04-11
-**Status:** Design (pending implementation plan)
+**Status:** Implemented. See `tests/common/mod.rs` and `tests/e2e_listing.rs` for final state.
 **Supersedes:** The framework sketch in `docs/superpowers/plans/2026-04-04-step6-e2e-tests.md` (Task 1). The per-feature test tasks in that plan (filters, output, versions) are out of scope here and will be re-planned per feature area after this framework lands.
 
 ---
