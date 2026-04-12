@@ -4,16 +4,16 @@
 
 List S3 objects and buckets using parallel API calls. Built in Rust.
 
-**200,000 objects listed in 1.4 seconds** — ~145,000 objects/sec throughput through massively parallel S3 API calls.
+**1,100,000 objects listed in 2.9 seconds** — ~379,000 objects/sec throughput through massively parallel S3 API calls.
 
 ```
-$ time s3ls --recursive s3://data.cpp17.org | wc -l
-  200002
+$ time s3ls --max-parallel-listings 64 -r s3://s3ls-rs-test | wc -l
+1100000
 
-real    1.38s
+real    0m2.905s
 ```
 
-> *Performance measured on the developer's local machine (ap-northeast-1 region). Results may vary depending on network conditions, bucket prefix distribution, and S3 endpoint proximity.*
+> *Benchmark: EC2 instance in the same region as the bucket. Median of 5 runs (2.874s–2.952s). Results may vary depending on network conditions, bucket prefix distribution, and S3 endpoint proximity.*
 
 ## Table of contents
 
@@ -125,7 +125,7 @@ The pipeline stages are decoupled through channels and trait abstractions. Filte
 
 ### High performance
 
-s3ls lists approximately 145,000 objects per second through parallel S3 API calls, approximately 15-20x faster than `aws s3 ls`, `s5cmd ls`, and `rclone ls`.
+s3ls lists approximately 379,000 objects per second through parallel S3 API calls (1.1M objects in 2.9 seconds on an EC2 instance).
 
 - Up to 32 concurrent listing operations by default (configurable up to 65,535)
 - Parallel prefix discovery at configurable depth
