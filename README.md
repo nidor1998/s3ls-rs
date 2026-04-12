@@ -13,15 +13,6 @@ $ time s3ls --recursive s3://data.cpp17.org | wc -l
 real    1.38s
 ```
 
-Benchmark on the same bucket (200,002 objects, ap-northeast-1):
-
-| Tool | Time | Throughput |
-|------|------|------------|
-| **s3ls** | **1.5s** | **~136,000 obj/s** |
-| s5cmd ls | 23.8s | ~8,400 obj/s |
-| rclone ls --fast-list | 22.4s | ~8,900 obj/s |
-| aws s3 ls --recursive | 29.7s | ~6,700 obj/s |
-
 > *Performance measured on the developer's local machine (ap-northeast-1 region). Results may vary depending on network conditions, bucket prefix distribution, and S3 endpoint proximity.*
 
 ## Table of contents
@@ -164,7 +155,7 @@ Multiple filter types can be combined with AND logic:
 s3ls supports listing all object versions including delete markers:
 
 - `--all-versions` — List all versions including delete markers
-- `--hide-delete-marker` — Filter out delete markers from version listing
+- `--hide-delete-markers` — Filter out delete markers from version listing
 - `--show-is-latest` — Display which version is current
 
 ### S3 Express One Zone support
@@ -634,7 +625,7 @@ The OS `sort` command automatically spills to disk when the data exceeds availab
 
 When `--all-versions` is specified, s3ls uses `ListObjectVersions` instead of `ListObjectsV2`. This returns all versions of each object, including delete markers. Each result includes a `VersionId` field.
 
-- Delete markers are included by default but can be hidden with `--hide-delete-marker`
+- Delete markers are included by default but can be hidden with `--hide-delete-markers`
 - The `--show-is-latest` flag adds a column showing whether each version is the current version
 - In JSON output, `IsLatest` and `VersionId` fields are always included regardless of `--show-is-latest`
 
@@ -764,7 +755,7 @@ s3ls -v --aws-sdk-tracing --recursive s3://my-bucket/
 
 ### --auto-complete-shell
 
-Generate shell completion scripts. Supported shells: bash, zsh, fish, pwsh.
+Generate shell completion scripts. Supported shells: bash, elvish, fish, powershell, zsh.
 
 ```bash
 s3ls --auto-complete-shell bash > /etc/bash_completion.d/s3ls
@@ -789,7 +780,7 @@ Fast S3 object listing tool
 Usage: s3ls [OPTIONS] [TARGET]
 
 Arguments:
-  [TARGET]  s3://<BUCKET_NAME>[/prefix] [env: TARGET=] [default: ""]
+  [TARGET]  S3 target path: s3://<BUCKET_NAME>[/prefix] (omit to list buckets) [env: TARGET=] [default: ""]
 
 Options:
   -v, --verbose...  Increase logging verbosity
@@ -798,54 +789,120 @@ Options:
   -V, --version     Print version
 
 General:
-  -r, --recursive                         List all objects recursively (enables parallel listing)
-      --all-versions                      List all versions including delete markers
-      --hide-delete-marker                Hide delete markers from version listing (requires --all-versions)
-      --max-depth <MAX_DEPTH>             Maximum depth for recursive listing (requires --recursive)
-      --bucket-name-prefix <PREFIX>       Filter buckets by name prefix (when listing buckets)
-      --list-express-one-zone-buckets     List only Express One Zone directory buckets (when listing buckets)
+  -r, --recursive              List all objects recursively (enables parallel listing) [env: RECURSIVE=]
+      --all-versions           List all versions including delete markers [env: LIST_ALL_VERSIONS=]
+      --hide-delete-markers    Hide delete markers from version listing (requires --all-versions) [env: HIDE_DELETE_MARKERS=]
+      --max-depth <MAX_DEPTH>  Maximum depth for recursive listing (requires --recursive) [env: MAX_DEPTH=]
+
+Bucket Listing:
+      --bucket-name-prefix <BUCKET_NAME_PREFIX>
+          Filter buckets by name prefix (bucket listing only) [env: BUCKET_NAME_PREFIX=]
+      --list-express-one-zone-buckets
+          List only Express One Zone directory buckets (bucket listing only) [env: LIST_EXPRESS_ONE_ZONE_BUCKETS=]
+      --show-bucket-arn
+          Show bucket ARN column (bucket listing only) [env: SHOW_BUCKET_ARN=]
 
 Filtering:
-      --filter-include-regex <REGEX>      List only objects whose key matches this regex
-      --filter-exclude-regex <REGEX>      Skip objects whose key matches this regex
-      --filter-mtime-before <TIME>        List only objects modified before this time
-      --filter-mtime-after <TIME>         List only objects modified at or after this time
-      --filter-smaller-size <SIZE>        List only objects smaller than this size
-      --filter-larger-size <SIZE>         List only objects larger than or equal to this size
-      --storage-class <LIST>              Comma-separated list of storage classes to include
+      --filter-include-regex <FILTER_INCLUDE_REGEX>
+          List only objects whose key matches this regex [env: FILTER_INCLUDE_REGEX=]
+      --filter-exclude-regex <FILTER_EXCLUDE_REGEX>
+          Skip objects whose key matches this regex [env: FILTER_EXCLUDE_REGEX=]
+      --filter-mtime-before <FILTER_MTIME_BEFORE>
+          List only objects modified before this time [env: FILTER_MTIME_BEFORE=]
+      --filter-mtime-after <FILTER_MTIME_AFTER>
+          List only objects modified at or after this time [env: FILTER_MTIME_AFTER=]
+      --filter-smaller-size <FILTER_SMALLER_SIZE>
+          List only objects smaller than this size [env: FILTER_SMALLER_SIZE=]
+      --filter-larger-size <FILTER_LARGER_SIZE>
+          List only objects larger than or equal to this size [env: FILTER_LARGER_SIZE=]
+      --storage-class <STORAGE_CLASS>
+          Comma-separated list of storage classes to include [env: STORAGE_CLASS=]
 
 Sort:
-      --sort <SORT>                       Sort by field(s): key, size, date (comma-separated, max 2) [default: key]
-      --reverse                           Reverse the sort order
-      --no-sort                           Disable sorting and stream results directly (reduces memory usage)
+      --sort <SORT>  Sort results by field(s), comma-separated (default: key for objects, bucket for bucket listing) [env: SORT=] [possible values: key, size, date, bucket, region]
+      --reverse      Reverse the sort order [env: REVERSE=]
+      --no-sort      Disable sorting and stream results directly in arbitrary order (reduces memory usage) [env: NO_SORT=]
 
 Display:
-      --summarize                         Append summary line (total count, total size)
-      --human-readable                    Human-readable sizes (e.g. 1.2KiB)
-      --show-relative-path                Show key relative to prefix instead of full path
-      --show-etag                         Show ETag column
-      --show-storage-class                Show storage class column
-      --show-checksum-algorithm           Show checksum algorithm column
-      --show-checksum-type                Show checksum type column
-      --show-is-latest                    Show is_latest column (requires --all-versions)
-      --show-owner                        Show owner DisplayName and ID columns
-      --show-restore-status               Show restore status column
-      --show-bucket-arn                   Show bucket ARN column (when listing buckets)
-      --header                            Add a header row to each column
-      --json                              Output as NDJSON (one JSON object per line)
-      --raw-output                        Emit raw S3 key bytes without escaping
+      --summarize                Append summary line (total count, total size) [env: SUMMARIZE=]
+      --human-readable           Human-readable sizes (e.g. 1.2KiB) [env: HUMAN_READABLE=]
+      --show-relative-path       Show key relative to prefix instead of full path [env: SHOW_RELATIVE_PATH=]
+      --show-etag                Show ETAG column [env: SHOW_ETAG=]
+      --show-storage-class       Show STORAGE_CLASS column [env: SHOW_STORAGE_CLASS=]
+      --show-checksum-algorithm  Show CHECKSUM_ALGORITHM column [env: SHOW_CHECKSUM_ALGORITHM=]
+      --show-checksum-type       Show CHECKSUM_TYPE column [env: SHOW_CHECKSUM_TYPE=]
+      --show-is-latest           Show IS_LATEST column (requires --all-versions) [env: SHOW_IS_LATEST=]
+      --show-owner               Show OWNER_DISPLAY_NAME and OWNER_ID columns [env: SHOW_OWNER=]
+      --show-restore-status      Show IS_RESTORE_IN_PROGRESS and RESTORE_EXPIRY_DATE columns [env: SHOW_RESTORE_STATUS=]
+      --header                   Add a header row to each column [env: HEADER=]
+      --json                     Output as NDJSON (one JSON object per line) [env: JSON=]
+      --raw-output               Emit raw S3 key/prefix bytes without escaping control characters [env: RAW_OUTPUT=]
+
+Tracing/Logging:
+      --json-tracing           Output structured logs in JSON format [env: JSON_TRACING=]
+      --aws-sdk-tracing        Include AWS SDK internal traces in log output [env: AWS_SDK_TRACING=]
+      --span-events-tracing    Include span open/close events in log output [env: SPAN_EVENTS_TRACING=]
+      --disable-color-tracing  Disable colored output in logs [env: DISABLE_COLOR_TRACING=]
 
 AWS Configuration:
-      --target-profile <PROFILE>          Target AWS CLI profile
-      --target-region <REGION>            AWS region for the target
-      --target-endpoint-url <URL>         Custom S3-compatible endpoint URL (e.g. MinIO, Wasabi)
-      --target-force-path-style           Use path-style access (required by some S3-compatible services)
-      --target-accelerate                 Enable S3 Transfer Acceleration
-      --target-request-payer              Enable requester-pays for the target bucket
+      --aws-config-file <AWS_CONFIG_FILE>
+          Path to the AWS config file [env: AWS_CONFIG_FILE=]
+      --aws-shared-credentials-file <AWS_SHARED_CREDENTIALS_FILE>
+          Path to the AWS shared credentials file [env: AWS_SHARED_CREDENTIALS_FILE=]
+      --target-profile <TARGET_PROFILE>
+          Target AWS CLI profile [env: TARGET_PROFILE=]
+      --target-access-key <TARGET_ACCESS_KEY>
+          Target access key [env: TARGET_ACCESS_KEY=]
+      --target-secret-access-key <TARGET_SECRET_ACCESS_KEY>
+          Target secret access key [env: TARGET_SECRET_ACCESS_KEY=]
+      --target-session-token <TARGET_SESSION_TOKEN>
+          Target session token [env: TARGET_SESSION_TOKEN=]
+      --target-region <TARGET_REGION>
+          AWS region for the target [env: TARGET_REGION=]
+      --target-endpoint-url <TARGET_ENDPOINT_URL>
+          Custom S3-compatible endpoint URL (e.g. MinIO, Wasabi) [env: TARGET_ENDPOINT_URL=]
+      --target-force-path-style
+          Use path-style access (required by some S3-compatible services) [env: TARGET_FORCE_PATH_STYLE=]
+      --target-accelerate
+          Enable S3 Transfer Acceleration [env: TARGET_ACCELERATE=]
+      --target-request-payer
+          Enable requester-pays for the target bucket [env: TARGET_REQUEST_PAYER=]
+      --disable-stalled-stream-protection
+          Disable stalled stream protection [env: DISABLE_STALLED_STREAM_PROTECTION=]
 
 Performance:
-      --max-parallel-listings <N>         Number of concurrent listing operations (1-65535) [default: 32]
-      --max-parallel-listing-max-depth <N> Maximum depth for parallel listing operations [default: 2]
+      --max-parallel-listings <MAX_PARALLEL_LISTINGS>
+          Number of concurrent listing operations (1-65535) [env: MAX_PARALLEL_LISTINGS=] [default: 32]
+      --max-parallel-listing-max-depth <MAX_PARALLEL_LISTING_MAX_DEPTH>
+          Maximum depth for parallel listing operations [env: MAX_PARALLEL_LISTING_MAX_DEPTH=] [default: 2]
+      --object-listing-queue-size <OBJECT_LISTING_QUEUE_SIZE>
+          Internal queue size for object listing [env: OBJECT_LISTING_QUEUE_SIZE=] [default: 200000]
+      --allow-parallel-listings-in-express-one-zone
+          Allow parallel listings in Express One Zone storage [env: ALLOW_PARALLEL_LISTINGS_IN_EXPRESS_ONE_ZONE=]
+      --parallel-sort-threshold <PARALLEL_SORT_THRESHOLD>
+          Minimum number of entries to trigger parallel sorting [env: PARALLEL_SORT_THRESHOLD=] [default: 1000000]
+
+Retry Options:
+      --aws-max-attempts <AWS_MAX_ATTEMPTS>
+          Maximum retry attempts for AWS SDK operations [env: AWS_MAX_ATTEMPTS=] [default: 10]
+      --initial-backoff-milliseconds <INITIAL_BACKOFF_MILLISECONDS>
+          Initial backoff in milliseconds for retries [env: INITIAL_BACKOFF_MILLISECONDS=] [default: 100]
+
+Timeout Options:
+      --operation-timeout-milliseconds <OPERATION_TIMEOUT_MILLISECONDS>
+          Overall operation timeout in milliseconds [env: OPERATION_TIMEOUT_MILLISECONDS=]
+      --operation-attempt-timeout-milliseconds <OPERATION_ATTEMPT_TIMEOUT_MILLISECONDS>
+          Per-attempt operation timeout in milliseconds [env: OPERATION_ATTEMPT_TIMEOUT_MILLISECONDS=]
+      --connect-timeout-milliseconds <CONNECT_TIMEOUT_MILLISECONDS>
+          Connection timeout in milliseconds [env: CONNECT_TIMEOUT_MILLISECONDS=]
+      --read-timeout-milliseconds <READ_TIMEOUT_MILLISECONDS>
+          Read timeout in milliseconds [env: READ_TIMEOUT_MILLISECONDS=]
+
+Advanced:
+      --max-keys <MAX_KEYS>
+          Maximum number of objects returned in a single list object request (1-1000) [env: MAX_KEYS=] [default: 1000]
+      --auto-complete-shell <AUTO_COMPLETE_SHELL>
+          Generate shell completions for the given shell [env: AUTO_COMPLETE_SHELL=] [possible values: bash, elvish, fish, powershell, zsh]
 ```
 
 ## CI/CD Integration
