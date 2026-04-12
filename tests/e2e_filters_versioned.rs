@@ -415,3 +415,71 @@ async fn e2e_versioned_size_filter_per_version() {
 
     _guard.cleanup().await;
 }
+
+/// Versioned listing with pagination: uploads enough versions to span
+/// multiple `ListObjectVersions` pages and verifies all versions are
+/// enumerated. Uses `--max-keys 3` to force pagination with a small
+/// fixture (3 keys × 3 versions = 9 version rows → 3 pages).
+///
+/// Also creates a delete marker to verify DMs are correctly enumerated
+/// across page boundaries.
+#[tokio::test]
+async fn e2e_versioned_pagination() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_versioned_bucket(&bucket).await;
+
+        // 3 keys × 3 versions each = 9 object version rows.
+        for i in 1..=3 {
+            helper
+                .put_object(&bucket, "alpha.txt", format!("alpha-v{i}").into_bytes())
+                .await;
+            helper
+                .put_object(&bucket, "beta.txt", format!("beta-v{i}").into_bytes())
+                .await;
+            helper
+                .put_object(&bucket, "gamma.txt", format!("gamma-v{i}").into_bytes())
+                .await;
+        }
+
+        // Add a delete marker on alpha.txt — 10th row total.
+        helper.create_delete_marker(&bucket, "alpha.txt").await;
+
+        let target = format!("s3://{bucket}/");
+
+        // --max-keys 3 forces 3-4 pages for 10 rows.
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--all-versions",
+            "--json",
+            "--no-sort",
+            "--max-keys",
+            "3",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        // Expect: 9 object versions + 1 delete marker = 10 rows.
+        assert_json_version_shapes_eq(
+            &output.stdout,
+            &[
+                ("alpha.txt", false),
+                ("alpha.txt", false),
+                ("alpha.txt", false),
+                ("alpha.txt", true), // delete marker
+                ("beta.txt", false),
+                ("beta.txt", false),
+                ("beta.txt", false),
+                ("gamma.txt", false),
+                ("gamma.txt", false),
+                ("gamma.txt", false),
+            ],
+            "versioned pagination: 10 rows across 3-4 pages (max-keys=3)",
+        );
+    });
+
+    _guard.cleanup().await;
+}
