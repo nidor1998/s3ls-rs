@@ -546,7 +546,22 @@ impl TestHelper {
 
     /// Upload multiple objects in parallel (up to 16 concurrent uploads).
     pub async fn put_objects_parallel(&self, bucket: &str, objects: Vec<(String, Vec<u8>)>) {
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(16));
+        self.put_objects_parallel_n(bucket, objects, 16).await;
+    }
+
+    /// Upload multiple objects in parallel with configurable concurrency.
+    ///
+    /// `max_concurrency` controls the semaphore limit. Use 16 for small
+    /// fixtures (the default via `put_objects_parallel`). Use 256+ for
+    /// large-scale tests (e.g., 10K+ objects) to keep upload time
+    /// reasonable.
+    pub async fn put_objects_parallel_n(
+        &self,
+        bucket: &str,
+        objects: Vec<(String, Vec<u8>)>,
+        max_concurrency: usize,
+    ) {
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrency));
         let mut set = tokio::task::JoinSet::new();
         let client = self.client.clone();
         let bucket = bucket.to_string();
