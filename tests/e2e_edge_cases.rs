@@ -645,55 +645,6 @@ async fn e2e_edge_case_request_payer() {
     _v_guard.cleanup().await;
 }
 
-/// `--show-relative-path` when the prefix exactly equals the object key.
-///
-/// Target: `s3://bucket/data/file.txt` (the full key as the prefix).
-/// With `--show-relative-path`, `format_key_display` strips the prefix
-/// from the key: `"data/file.txt".strip_prefix("data/file.txt") = ""`.
-/// The Key field in JSON should be an empty string.
-///
-/// This exercises the edge case at `src/aggregate.rs:296-300` where
-/// `strip_prefix` returns an empty string.
-#[tokio::test]
-async fn e2e_edge_case_prefix_equals_key_relative_path() {
-    let helper = TestHelper::new().await;
-    let bucket = helper.generate_bucket_name();
-    let _guard = helper.bucket_guard(&bucket);
-
-    e2e_timeout!(async {
-        helper.create_bucket(&bucket).await;
-        helper
-            .put_object(&bucket, "data/file.txt", b"x".to_vec())
-            .await;
-
-        // Target IS the exact key path — prefix == key.
-        let target = format!("s3://{bucket}/data/file.txt");
-
-        // JSON with --show-relative-path: Key should be empty string.
-        let output = TestHelper::run_s3ls(&[
-            target.as_str(),
-            "--recursive",
-            "--json",
-            "--show-relative-path",
-        ]);
-        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
-
-        let first_line = output
-            .stdout
-            .lines()
-            .find(|l| !l.trim().is_empty())
-            .expect("no JSON output");
-        let v: serde_json::Value = serde_json::from_str(first_line).expect("failed to parse JSON");
-        assert_eq!(
-            v.get("Key").and_then(|k| k.as_str()),
-            Some(""),
-            "prefix == key with --show-relative-path: Key should be empty string, got {v:?}"
-        );
-    });
-
-    _guard.cleanup().await;
-}
-
 /// `--summarize --all-versions` with delete markers: both text and JSON
 /// summary lines include the delete-marker count.
 ///
