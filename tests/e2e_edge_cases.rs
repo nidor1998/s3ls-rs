@@ -208,20 +208,17 @@ async fn e2e_edge_case_slash_suffix_key() {
     _guard.cleanup().await;
 }
 
-/// Objects with multiple checksum algorithms display correctly in both
-/// text and JSON formats.
+/// Objects with two explicitly-specified checksums display correctly
+/// in both text and JSON formats.
 ///
-/// S3 (since late 2024) automatically computes CRC64NVME in addition
-/// to any user-specified algorithm. An object uploaded with CRC32
-/// lists as `["CRC32", "CRC64NVME"]` — two algorithms.
+/// Uploads a single object with pre-computed CRC32 AND SHA256 checksum
+/// values on the same PutObject request. S3 stores both and reports
+/// them in ListObjectsV2's `ChecksumAlgorithm` array.
 ///
-/// JSON: `ChecksumAlgorithm` is an array with 2+ elements.
+/// JSON: `ChecksumAlgorithm` is an array containing both `"CRC32"` and
+/// `"SHA256"` (plus possibly `"CRC64NVME"` auto-added by S3).
 /// Text: the `--show-checksum-algorithm` column joins them with commas
-/// (e.g., `"CRC32,CRC64NVME"`) per `src/aggregate.rs:367`.
-///
-/// If S3 does NOT add CRC64NVME (pre-2024 behavior or non-standard
-/// endpoint), the test skips the multi-algorithm assertions with a
-/// println note.
+/// (e.g., `"CRC32,SHA256"`) per `src/aggregate.rs:367`.
 #[tokio::test]
 async fn e2e_edge_case_multiple_checksums() {
     let helper = TestHelper::new().await;
@@ -231,10 +228,21 @@ async fn e2e_edge_case_multiple_checksums() {
     e2e_timeout!(async {
         helper.create_bucket(&bucket).await;
 
-        // Upload with explicit CRC32. S3 auto-adds CRC64NVME (since 2024).
+        // Upload with BOTH CRC32 and SHA256 pre-computed checksum values.
+        // Pre-computed for the body b"hello":
+        //   CRC32:  0x3610A686 → base64 "NhCmhg=="
+        //   SHA256: 2cf24d...  → base64 "LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ="
         helper
-            .put_object_with_checksum_algorithm(&bucket, "file.txt", b"hello".to_vec(), "CRC32")
-            .await;
+            .client()
+            .put_object()
+            .bucket(&bucket)
+            .key("file.txt")
+            .body(b"hello".to_vec().into())
+            .checksum_crc32("NhCmhg==")
+            .checksum_sha256("LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=")
+            .send()
+            .await
+            .expect("failed to upload with dual checksums");
 
         let target = format!("s3://{bucket}/");
 
@@ -252,32 +260,21 @@ async fn e2e_edge_case_multiple_checksums() {
             .and_then(|a| a.as_array())
             .expect("multiple checksums: ChecksumAlgorithm missing or not array");
 
-        // Must contain the user-specified algorithm.
+        // Must contain BOTH explicitly-specified algorithms.
+        let algo_strs: Vec<&str> = algos.iter().filter_map(|a| a.as_str()).collect();
         assert!(
-            algos.iter().any(|a| a.as_str() == Some("CRC32")),
-            "multiple checksums json: CRC32 not in array: {algos:?}"
+            algo_strs.contains(&"CRC32"),
+            "multiple checksums json: CRC32 not in array: {algo_strs:?}"
         );
-
-        if algos.len() < 2 {
-            // S3 did not auto-add CRC64NVME — skip multi-algorithm checks.
-            println!(
-                "skipped multi-algorithm assertions: S3 returned only {} algorithm(s): {algos:?}",
-                algos.len()
-            );
-            return;
-        }
-
-        // 2+ algorithms present — verify all are strings.
-        println!(
-            "  S3 returned {} checksum algorithms: {algos:?}",
-            algos.len()
+        assert!(
+            algo_strs.contains(&"SHA256"),
+            "multiple checksums json: SHA256 not in array: {algo_strs:?}"
         );
-        for a in algos {
-            assert!(
-                a.as_str().is_some_and(|s| !s.is_empty()),
-                "multiple checksums json: array element is not a non-empty string: {a:?}"
-            );
-        }
+        assert!(
+            algos.len() >= 2,
+            "multiple checksums json: expected 2+ algorithms, got {algos:?}"
+        );
+        println!("  JSON ChecksumAlgorithm: {algo_strs:?}");
 
         // --- Text sub-assertion ---
         let output = TestHelper::run_s3ls(&[
@@ -300,10 +297,15 @@ async fn e2e_edge_case_multiple_checksums() {
             "multiple checksums text: column should contain CRC32, got {:?}",
             cols[2]
         );
-        // Multiple algorithms are comma-separated (e.g., "CRC32,CRC64NVME").
+        assert!(
+            cols[2].contains("SHA256"),
+            "multiple checksums text: column should contain SHA256, got {:?}",
+            cols[2]
+        );
+        // Multiple algorithms are comma-separated.
         assert!(
             cols[2].contains(','),
-            "multiple checksums text: expected comma-separated algorithms (2+), got {:?}",
+            "multiple checksums text: expected comma-separated algorithms, got {:?}",
             cols[2]
         );
         println!("  Text column: {:?}", cols[2]);
