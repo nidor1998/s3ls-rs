@@ -1522,3 +1522,59 @@ fn bucket_listing_rejects_max_depth_with_message() {
         "expected 'not valid for bucket listing' error, got: {err}"
     );
 }
+
+// ===========================================================================
+// --list-express-one-zone-buckets
+// ===========================================================================
+
+#[test]
+fn list_express_one_zone_buckets_accepted_in_bucket_listing() {
+    let config = build_config_from_args(args(&["--list-express-one-zone-buckets"])).unwrap();
+    assert!(config.list_express_one_zone_buckets);
+}
+
+#[test]
+fn list_express_one_zone_buckets_default_is_false() {
+    let config = build_config_from_args(args(&[])).unwrap();
+    assert!(!config.list_express_one_zone_buckets);
+}
+
+#[test]
+fn list_express_one_zone_buckets_with_show_bucket_arn() {
+    let config = build_config_from_args(args(&[
+        "--list-express-one-zone-buckets",
+        "--show-bucket-arn",
+    ]))
+    .unwrap();
+    assert!(config.list_express_one_zone_buckets);
+    assert!(config.display_config.show_bucket_arn);
+}
+
+#[test]
+fn list_express_one_zone_buckets_with_bucket_name_prefix() {
+    let config = build_config_from_args(args(&[
+        "--list-express-one-zone-buckets",
+        "--bucket-name-prefix",
+        "my-express-",
+    ]))
+    .unwrap();
+    assert!(config.list_express_one_zone_buckets);
+    assert_eq!(config.bucket_name_prefix.as_deref(), Some("my-express-"));
+}
+
+#[test]
+fn list_express_one_zone_buckets_with_json() {
+    let config =
+        build_config_from_args(args(&["--list-express-one-zone-buckets", "--json"])).unwrap();
+    assert!(config.list_express_one_zone_buckets);
+    assert!(config.display_config.json);
+}
+
+#[test]
+fn list_express_one_zone_buckets_with_sort_date() {
+    let config =
+        build_config_from_args(args(&["--list-express-one-zone-buckets", "--sort", "date"]))
+            .unwrap();
+    assert!(config.list_express_one_zone_buckets);
+    assert_eq!(config.sort, vec![SortField::Date]);
+}
