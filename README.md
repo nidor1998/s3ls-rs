@@ -228,8 +228,8 @@ The OS `sort` command automatically spills to disk when the data exceeds availab
 
 s3ls provides structured logging through the `tracing` framework:
 
-- `-v` / `-vv` — Increase logging verbosity (debug / trace)
-- `-q` / `-qq` / `-qqq` — Decrease logging verbosity (warn / error / silent)
+- `-v` / `-vv` / `-vvv` — Increase logging verbosity (info / debug / trace)
+- `-q` / `-qq` — Decrease logging verbosity (error / silent)
 - `--json-tracing` — Structured JSON log output for log aggregation systems
 - `--aws-sdk-tracing` — Include AWS SDK internal traces
 - `--span-events-tracing` — Include span open/close events
@@ -578,7 +578,7 @@ s3ls --recursive --filter-include-regex '\.csv$' s3://my-bucket/data/2025/
 
 #### Estimating API requests with -v
 
-Use `-v` (debug logging) to see each API call as it happens. Use `-vv` (trace logging) for per-page details including continuation tokens and the number of objects and prefixes returned per page.
+Use `-vv` (debug logging) to see each API call as it happens. Use `-vvv` (trace logging) for per-page details including continuation tokens and the number of objects and prefixes returned per page.
 
 #### When to consider S3 Inventory instead
 
@@ -746,8 +746,9 @@ s3ls --recursive --filter-include-regex '\.csv$' --filter-exclude-regex '^temp/'
 
 Increase logging verbosity. Can be specified multiple times:
 
-- `-v` — Debug level logging
-- `-vv` — Trace level logging (very verbose, includes per-page S3 API details)
+- `-v` — Info level logging
+- `-vv` — Debug level logging
+- `-vvv` — Trace level logging (very verbose, includes per-page S3 API details)
 
 ```bash
 s3ls -vv --recursive s3://my-bucket/
