@@ -43,6 +43,7 @@ With default sorting enabled, the same listing completes in ~2.9 seconds (~379,0
     * [Pre-built binaries](#pre-built-binaries)
     * [Build from source](#build-from-source)
 - [Usage](#usage)
+    * [Trailing slash matters](#trailing-slash-matters)
     * [List objects](#list-objects)
     * [List objects recursively](#list-objects-recursively)
     * [Filter by regex](#filter-by-regex)
@@ -109,7 +110,7 @@ S3 API → [Lister] → channel → [Filter Chain] → channel → [Aggregator] 
     parallel prefix discovery                          sort (or stream) + format
 ```
 
-1. **Lister** — Sends concurrent S3 API calls using parallel prefix discovery. Uses the S3 delimiter feature to discover "virtual directories" (common prefixes) at the top levels of the hierarchy, then lists each prefix independently and concurrently, with up to 32 parallel operations by default. A semaphore prevents overwhelming S3 while maximizing throughput.
+1. **Lister** — Sends concurrent S3 API calls using parallel prefix discovery. Uses the S3 delimiter feature to discover "virtual directories" (common prefixes) at the top levels of the hierarchy, then lists each prefix independently and concurrently, with up to 64 parallel operations by default. A semaphore prevents overwhelming S3 while maximizing throughput.
 2. **Filter Chain** — Applies regex, time range, size range, and storage class filters inline as entries arrive. Objects that don't match are discarded immediately without being forwarded.
 3. **Aggregator** — In default mode, buffers all entries, sorts them, and writes the formatted output. In streaming mode (`--no-sort`), writes each entry directly to stdout as it arrives with no buffering.
 
@@ -129,7 +130,7 @@ The pipeline stages are decoupled through channels and trait abstractions. Filte
 
 s3ls lists approximately 379,000 objects per second through parallel S3 API calls (1.1M objects in 2.9 seconds on an EC2 instance).
 
-- Up to 32 concurrent listing operations by default (configurable up to 65,535)
+- Up to 64 concurrent listing operations by default (configurable up to 65,535)
 - Parallel prefix discovery at configurable depth
 - Parallel sorting for large result sets (threshold: 1,000,000 objects)
 - Tested with buckets containing over 1 million objects
@@ -254,6 +255,18 @@ s3ls works with any S3-compatible storage service:
 - Requester-pays via `--target-request-payer`
 - HTTP/HTTPS proxy via standard environment variables (`HTTPS_PROXY`, `HTTP_PROXY`)
 
+s3ls is performance-tuned for Amazon S3, which supports high request rates. S3-compatible storage services may have lower rate limits. If you encounter throttling errors, use `--rate-limit-api` to cap the number of S3 API requests per second, or reduce concurrency with `--max-parallel-listings`:
+
+```bash
+# MinIO with rate limiting
+s3ls --recursive \
+     --target-endpoint-url http://localhost:9000 \
+     --target-force-path-style \
+     --rate-limit-api 50 \
+     --max-parallel-listings 4 \
+     s3://my-bucket/
+```
+
 ## Requirements
 
 - x86_64 Linux (kernel 3.2 or later)
@@ -295,6 +308,24 @@ cargo install --git https://github.com/nidor1998/s3ls-rs.git
 ```
 
 ## Usage
+
+### Trailing slash matters
+
+S3 is object storage, not a file system. There are no directories — only keys (strings) and prefixes (string matching). The prefix you specify is passed to the S3 API as a literal string match, and the presence or absence of a trailing slash changes which objects are returned.
+
+```bash
+# Without trailing slash: prefix = "data"
+# Matches keys starting with "data" — including data/, data-backup/, database.txt
+$ s3ls s3://my-bucket/data
+
+# With trailing slash: prefix = "data/"
+# Matches only keys starting with "data/" — the typical intended behavior
+$ s3ls s3://my-bucket/data/
+```
+
+If you specify a prefix that does not exist, S3 simply returns an empty result and s3ls exits with code 0 (success). There is no "not found" error — in object storage, a prefix is not a resource that exists or doesn't exist, it is just a filter applied to key names.
+
+This is not a quirk of s3ls — it is how the S3 `ListObjectsV2` API works. When in doubt, include the trailing slash to scope the listing to a specific "directory."
 
 ### List objects
 
@@ -694,7 +725,7 @@ s3ls requires the following IAM permissions:
 
 ### --max-parallel-listings
 
-Number of concurrent S3 API listing operations. Default: 32. Range: 1-65535.
+Number of concurrent S3 API listing operations. Default: 64. Range: 1-65535.
 
 Higher values increase throughput but also increase the number of concurrent S3 API calls. The default of 64 works well for most buckets. For buckets with very deep hierarchies, consider increasing this value.
 
@@ -842,8 +873,10 @@ Display:
       --show-is-latest           Show IS_LATEST column (requires --all-versions) [env: SHOW_IS_LATEST=]
       --show-owner               Show OWNER_DISPLAY_NAME and OWNER_ID columns [env: SHOW_OWNER=]
       --show-restore-status      Show IS_RESTORE_IN_PROGRESS and RESTORE_EXPIRY_DATE columns [env: SHOW_RESTORE_STATUS=]
+      --show-local-time          Display timestamps in local time instead of UTC [env: SHOW_LOCAL_TIME=]
       --header                   Add a header row to each column [env: HEADER=]
       --json                     Output as NDJSON (one JSON object per line) [env: JSON=]
+      --show-objects-only        Show only objects, hiding common prefixes (directory markers) from output [env: SHOW_OBJECTS_ONLY=]
       --raw-output               Emit raw S3 key/prefix bytes without escaping control characters [env: RAW_OUTPUT=]
 
 Tracing/Logging:
@@ -887,6 +920,8 @@ Performance:
           Internal queue size for object listing [env: OBJECT_LISTING_QUEUE_SIZE=] [default: 200000]
       --allow-parallel-listings-in-express-one-zone
           Allow parallel listings in Express One Zone storage [env: ALLOW_PARALLEL_LISTINGS_IN_EXPRESS_ONE_ZONE=]
+      --rate-limit-api <RATE_LIMIT_API>
+          Maximum S3 API requests per second for object listing operations [env: RATE_LIMIT_API=]
       --parallel-sort-threshold <PARALLEL_SORT_THRESHOLD>
           Minimum number of entries to trigger parallel sorting [env: PARALLEL_SORT_THRESHOLD=] [default: 1000000]
 
