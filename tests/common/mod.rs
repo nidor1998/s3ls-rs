@@ -705,6 +705,19 @@ impl TestHelper {
             full_args.push(AWS_PROFILE.to_string());
         }
 
+        // Inject trace level from E2E_TEST_LOG_LEVEL env var if set.
+        // Valid values: "-v", "-vv", "-vvv", "-q", "-qq", etc.
+        // Invalid values are silently ignored.
+        if let Ok(level) = std::env::var("E2E_TEST_LOG_LEVEL") {
+            let level = level.trim();
+            if !level.is_empty()
+                && (level.chars().all(|c| c == '-' || c == 'v' || c == 'q')
+                    && level.starts_with('-'))
+            {
+                full_args.push(level.to_string());
+            }
+        }
+
         let output = std::process::Command::new(env!("CARGO_BIN_EXE_s3ls"))
             .args(&full_args)
             .output()
