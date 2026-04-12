@@ -706,6 +706,9 @@ impl TryFrom<CLIArgs> for crate::config::Config {
             if args.show_restore_status {
                 return Err("--show-restore-status is not valid for bucket listing".to_string());
             }
+            if args.show_objects_only {
+                return Err("--show-objects-only is not valid for bucket listing".to_string());
+            }
         }
 
         // Reject bucket-only options in object listing mode.

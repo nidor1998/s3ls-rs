@@ -593,6 +593,17 @@ fn bucket_listing_rejects_show_restore_status() {
     );
 }
 
+#[test]
+fn bucket_listing_rejects_show_objects_only() {
+    let result = build_config_from_args(args(&["--show-objects-only"]));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .contains("--show-objects-only is not valid for bucket listing")
+    );
+}
+
 // ===========================================================================
 // 4b-3. Bucket-only options rejected in object listing mode
 // ===========================================================================
