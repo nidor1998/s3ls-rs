@@ -85,7 +85,7 @@ impl Default for Config {
             reverse: false,
             no_sort: false,
             display_config: DisplayConfig::default(),
-            max_parallel_listings: 32,
+            max_parallel_listings: 64,
             max_parallel_listing_max_depth: 2,
             object_listing_queue_size: 200_000,
             allow_parallel_listings_in_express_one_zone: false,
@@ -218,7 +218,7 @@ mod tests {
         assert!(!config.display_config.raw_output);
 
         // Performance
-        assert_eq!(config.max_parallel_listings, 32);
+        assert_eq!(config.max_parallel_listings, 64);
         assert_eq!(config.max_parallel_listing_max_depth, 2);
         assert_eq!(config.object_listing_queue_size, 200_000);
         assert!(!config.allow_parallel_listings_in_express_one_zone);

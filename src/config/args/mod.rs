@@ -20,7 +20,7 @@ mod tests;
 // Default constants
 // ---------------------------------------------------------------------------
 
-const DEFAULT_MAX_PARALLEL_LISTINGS: u16 = 32;
+const DEFAULT_MAX_PARALLEL_LISTINGS: u16 = 64;
 const DEFAULT_PARALLEL_LISTING_MAX_DEPTH: u16 = 2;
 const DEFAULT_OBJECT_LISTING_QUEUE_SIZE: u32 = 200000;
 const DEFAULT_PARALLEL_SORT_THRESHOLD: u32 = 1_000_000;

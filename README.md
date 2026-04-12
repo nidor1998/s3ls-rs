@@ -501,7 +501,7 @@ s3ls --target-region us-west-2 s3://my-bucket/
 s3ls uses a two-phase architecture for recursive listing:
 
 1. **Discovery phase** — Sends `ListObjectsV2` requests with a delimiter to discover common prefixes (virtual directories) at the top levels of the hierarchy, up to `--max-parallel-listing-max-depth` (default: 2).
-2. **Listing phase** — Each discovered prefix is listed independently and concurrently. A semaphore limits the number of concurrent listing operations to `--max-parallel-listings` (default: 32).
+2. **Listing phase** — Each discovered prefix is listed independently and concurrently. A semaphore limits the number of concurrent listing operations to `--max-parallel-listings` (default: 64).
 
 Non-recursive listing always uses a single sequential listing operation.
 
@@ -696,7 +696,7 @@ s3ls requires the following IAM permissions:
 
 Number of concurrent S3 API listing operations. Default: 32. Range: 1-65535.
 
-Higher values increase throughput but also increase the number of concurrent S3 API calls. The default of 32 works well for most buckets. For buckets with very deep hierarchies, consider increasing this value.
+Higher values increase throughput but also increase the number of concurrent S3 API calls. The default of 64 works well for most buckets. For buckets with very deep hierarchies, consider increasing this value.
 
 ```bash
 s3ls --recursive --max-parallel-listings 64 s3://my-bucket/
@@ -880,7 +880,7 @@ AWS Configuration:
 
 Performance:
       --max-parallel-listings <MAX_PARALLEL_LISTINGS>
-          Number of concurrent listing operations (1-65535) [env: MAX_PARALLEL_LISTINGS=] [default: 32]
+          Number of concurrent listing operations (1-65535) [env: MAX_PARALLEL_LISTINGS=] [default: 64]
       --max-parallel-listing-max-depth <MAX_PARALLEL_LISTING_MAX_DEPTH>
           Maximum depth for parallel listing operations [env: MAX_PARALLEL_LISTING_MAX_DEPTH=] [default: 2]
       --object-listing-queue-size <OBJECT_LISTING_QUEUE_SIZE>

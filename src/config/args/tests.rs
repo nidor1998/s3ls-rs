@@ -884,8 +884,8 @@ fn aws_disable_stalled_stream_protection() {
 
 #[test]
 fn perf_max_parallel_listings() {
-    let cli = parse_from_args(args(&["s3://bucket", "--max-parallel-listings", "32"])).unwrap();
-    assert_eq!(cli.max_parallel_listings, 32);
+    let cli = parse_from_args(args(&["s3://bucket", "--max-parallel-listings", "64"])).unwrap();
+    assert_eq!(cli.max_parallel_listings, 64);
 }
 
 #[test]
@@ -1125,7 +1125,7 @@ fn verify_all_defaults() {
     assert!(!cli.disable_stalled_stream_protection);
 
     // Performance
-    assert_eq!(cli.max_parallel_listings, 32);
+    assert_eq!(cli.max_parallel_listings, 64);
     assert_eq!(cli.max_parallel_listing_max_depth, 2);
     assert_eq!(cli.object_listing_queue_size, 200000);
     assert!(!cli.allow_parallel_listings_in_express_one_zone);
