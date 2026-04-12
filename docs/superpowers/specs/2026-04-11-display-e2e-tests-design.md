@@ -1,7 +1,7 @@
 # Display E2E Tests — Design
 
 **Date:** 2026-04-11
-**Status:** Design (pending implementation plan)
+**Status:** Implemented. Key deviation: human-readable expected format is `"2.0KiB"` (no space, 1 decimal per `format_size` at `src/aggregate.rs:284`), not `"2 KiB"` as originally spec'd. See `tests/e2e_display.rs` for final state.
 **Builds on:**
 - `docs/superpowers/specs/2026-04-11-step6-e2e-framework-design.md` (e2e framework)
 - `docs/superpowers/specs/2026-04-11-step7-filter-e2e-tests-design.md` (non-versioning filter tests)

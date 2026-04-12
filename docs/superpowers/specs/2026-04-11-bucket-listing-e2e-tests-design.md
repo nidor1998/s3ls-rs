@@ -1,7 +1,7 @@
 # Bucket Listing E2E Tests — Design
 
 **Date:** 2026-04-11
-**Status:** Design (pending implementation plan)
+**Status:** Implemented (8 tests, up from 6 in design). Key deviations: `create_directory_bucket` renamed to `try_create_directory_bucket` (returns Result for graceful skip); Express One Zone bucket name shortened for 63-char S3 limit; added Express One Zone object prefix listing (moved to `e2e_listing.rs`) and directory bucket listing with `--bucket-name-prefix`. See `tests/e2e_bucket_listing.rs` for final state.
 **Builds on:**
 - `docs/superpowers/specs/2026-04-11-step6-e2e-framework-design.md` (e2e framework)
 - `docs/superpowers/specs/2026-04-11-display-e2e-tests-design.md` (display tests — includes 2 bucket listing display tests)

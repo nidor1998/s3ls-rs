@@ -1,7 +1,7 @@
 # Large-Scale Listing Completeness E2E Test — Design
 
 **Date:** 2026-04-11
-**Status:** Design (pending implementation plan)
+**Status:** Implemented. Key deviations: reduced from 5 to 4 sub-assertions (removed `--max-parallel-listing-max-depth 4` due to connection pool exhaustion); upload concurrency reduced from 256 to 64 to avoid FD limit; max-depth 3 expected prefixes corrected to 12 (not 7). See `tests/e2e_large_listing.rs` for final state.
 **Builds on:**
 - `docs/superpowers/specs/2026-04-11-step6-e2e-framework-design.md` (e2e framework)
 

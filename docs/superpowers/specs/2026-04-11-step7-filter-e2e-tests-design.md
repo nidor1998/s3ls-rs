@@ -1,7 +1,7 @@
 # Step 7: Filter E2E Tests — Design
 
 **Date:** 2026-04-11
-**Status:** Design (pending implementation plan)
+**Status:** Implemented. Key deviations from design: mtime tests rewritten to use sequential uploads with 1.5s sleeps instead of parallel uploads with BTreeSet/conditional skip. See `tests/e2e_filters.rs` for final state.
 **Builds on:** `docs/superpowers/specs/2026-04-11-step6-e2e-framework-design.md`
 (the e2e framework from step 6 is reused without modification beyond one
 added assertion helper).
