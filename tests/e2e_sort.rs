@@ -429,3 +429,117 @@ async fn e2e_sort_versioned_secondary_date() {
 
     _guard.cleanup().await;
 }
+
+/// Bucket listing `--sort bucket`: two test buckets with deterministic
+/// name prefixes (`s3ls-e2e-a-*` and `s3ls-e2e-z-*`) are created, and
+/// the test asserts the `a-` bucket appears before the `z-` bucket in
+/// the listing. Assertions are scoped to these two test buckets because
+/// the account may have other buckets.
+#[tokio::test]
+async fn e2e_sort_bucket_listing_asc() {
+    use uuid::Uuid;
+
+    let helper = TestHelper::new().await;
+    let bucket_a = format!("s3ls-e2e-a-{}", Uuid::new_v4());
+    let bucket_z = format!("s3ls-e2e-z-{}", Uuid::new_v4());
+    let _guard_a = helper.bucket_guard(&bucket_a);
+    let _guard_z = helper.bucket_guard(&bucket_z);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket_a).await;
+        helper.create_bucket(&bucket_z).await;
+
+        let output = TestHelper::run_s3ls(&["--json", "--sort", "bucket"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        // Find positions of our two test buckets in the NDJSON output.
+        let mut pos_a: Option<usize> = None;
+        let mut pos_z: Option<usize> = None;
+        for (i, line) in output
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .enumerate()
+        {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(line)
+                && let Some(name) = v.get("Name").and_then(|n| n.as_str())
+            {
+                if name == bucket_a {
+                    pos_a = Some(i);
+                } else if name == bucket_z {
+                    pos_z = Some(i);
+                }
+            }
+        }
+
+        let pos_a = pos_a.unwrap_or_else(|| {
+            panic!("bucket listing asc: test bucket {bucket_a} not found in output")
+        });
+        let pos_z = pos_z.unwrap_or_else(|| {
+            panic!("bucket listing asc: test bucket {bucket_z} not found in output")
+        });
+
+        assert!(
+            pos_a < pos_z,
+            "bucket listing asc: expected {bucket_a} (pos {pos_a}) before {bucket_z} (pos {pos_z})"
+        );
+    });
+
+    _guard_a.cleanup().await;
+    _guard_z.cleanup().await;
+}
+
+/// Bucket listing `--sort bucket --reverse`: the `z-` test bucket must
+/// appear before the `a-` test bucket.
+#[tokio::test]
+async fn e2e_sort_bucket_listing_desc() {
+    use uuid::Uuid;
+
+    let helper = TestHelper::new().await;
+    let bucket_a = format!("s3ls-e2e-a-{}", Uuid::new_v4());
+    let bucket_z = format!("s3ls-e2e-z-{}", Uuid::new_v4());
+    let _guard_a = helper.bucket_guard(&bucket_a);
+    let _guard_z = helper.bucket_guard(&bucket_z);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket_a).await;
+        helper.create_bucket(&bucket_z).await;
+
+        let output = TestHelper::run_s3ls(&["--json", "--sort", "bucket", "--reverse"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        let mut pos_a: Option<usize> = None;
+        let mut pos_z: Option<usize> = None;
+        for (i, line) in output
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .enumerate()
+        {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(line)
+                && let Some(name) = v.get("Name").and_then(|n| n.as_str())
+            {
+                if name == bucket_a {
+                    pos_a = Some(i);
+                } else if name == bucket_z {
+                    pos_z = Some(i);
+                }
+            }
+        }
+
+        let pos_a = pos_a.unwrap_or_else(|| {
+            panic!("bucket listing desc: test bucket {bucket_a} not found in output")
+        });
+        let pos_z = pos_z.unwrap_or_else(|| {
+            panic!("bucket listing desc: test bucket {bucket_z} not found in output")
+        });
+
+        assert!(
+            pos_z < pos_a,
+            "bucket listing desc: expected {bucket_z} (pos {pos_z}) before {bucket_a} (pos {pos_a})"
+        );
+    });
+
+    _guard_a.cleanup().await;
+    _guard_z.cleanup().await;
+}
