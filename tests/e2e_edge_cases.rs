@@ -512,3 +512,262 @@ async fn e2e_edge_case_control_char_regex_filters() {
 
     _guard.cleanup().await;
 }
+
+/// `--target-request-payer` with general bucket listing, directory
+/// bucket listing, object listing, and versioned object listing.
+///
+/// S3 ignores the `x-amz-request-payer: requester` header when the
+/// requester IS the bucket owner, so this test runs against the test
+/// account's own buckets and verifies the flag is accepted and
+/// wired through without breaking normal operations.
+///
+/// The versioned sub-assertion uses `--max-keys 3` to force pagination
+/// (2 keys × 3 versions = 6 version rows → 2 pages at max-keys=3).
+#[tokio::test]
+async fn e2e_edge_case_request_payer() {
+    use std::time::Duration;
+    use tokio::time::sleep;
+
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        // --- Sub-assertion 1: general bucket listing ---
+        // Create a bucket so we have at least one to find.
+        helper.create_bucket(&bucket).await;
+
+        let output = TestHelper::run_s3ls(&["--json", "--target-request-payer"]);
+        assert!(
+            output.status.success(),
+            "request-payer bucket listing failed: {}",
+            output.stderr
+        );
+        assert!(
+            output.stdout.contains(&bucket),
+            "request-payer bucket listing: test bucket not found in output"
+        );
+
+        // --- Sub-assertion 2: directory bucket listing ---
+        // Skip if Express One Zone is not available.
+        let express_output = TestHelper::run_s3ls(&[
+            "--json",
+            "--list-express-one-zone-buckets",
+            "--target-request-payer",
+        ]);
+        // Just verify the command is accepted (exit 0). It may return
+        // zero directory buckets — that's fine; we're testing the flag
+        // doesn't cause an error.
+        assert!(
+            express_output.status.success(),
+            "request-payer directory bucket listing failed: {}",
+            express_output.stderr
+        );
+
+        // --- Sub-assertion 3: object listing ---
+        helper.put_object(&bucket, "a.txt", b"aaa".to_vec()).await;
+        helper.put_object(&bucket, "b.txt", b"bb".to_vec()).await;
+
+        let target = format!("s3://{bucket}/");
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--json",
+            "--target-request-payer",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_json_keys_eq(
+            &output.stdout,
+            &["a.txt", "b.txt"],
+            "request-payer object listing",
+        );
+
+        // --- Sub-assertion 4: versioned listing with pagination ---
+        // Create a separate versioned bucket for this sub-assertion.
+        // We reuse the same bucket by enabling versioning on it.
+        // Actually, we can't enable versioning on an existing non-versioned
+        // bucket and have previous objects become versioned retroactively
+        // in a useful way. Use a new bucket instead.
+    });
+
+    _guard.cleanup().await;
+
+    // Versioned sub-assertion in a separate bucket.
+    let v_bucket = helper.generate_bucket_name();
+    let _v_guard = helper.bucket_guard(&v_bucket);
+
+    e2e_timeout!(async {
+        helper.create_versioned_bucket(&v_bucket).await;
+
+        // Upload 2 keys × 3 versions each = 6 version rows.
+        // With --max-keys 3, this forces 2 pages of ListObjectVersions.
+        for i in 1..=3 {
+            helper
+                .put_object(&v_bucket, "alpha.txt", format!("v{i}").into_bytes())
+                .await;
+            helper
+                .put_object(&v_bucket, "beta.txt", format!("v{i}").into_bytes())
+                .await;
+            // Sleep between rounds to guarantee distinct version timestamps.
+            if i < 3 {
+                sleep(Duration::from_millis(100)).await;
+            }
+        }
+
+        let target = format!("s3://{v_bucket}/");
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--all-versions",
+            "--json",
+            "--no-sort",
+            "--target-request-payer",
+            "--max-keys",
+            "3",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        // Should have 6 version rows (2 keys × 3 versions).
+        assert_json_version_shapes_eq(
+            &output.stdout,
+            &[
+                ("alpha.txt", false),
+                ("alpha.txt", false),
+                ("alpha.txt", false),
+                ("beta.txt", false),
+                ("beta.txt", false),
+                ("beta.txt", false),
+            ],
+            "request-payer versioned listing with pagination",
+        );
+    });
+
+    _v_guard.cleanup().await;
+}
+
+/// `--show-relative-path` when the prefix exactly equals the object key.
+///
+/// Target: `s3://bucket/data/file.txt` (the full key as the prefix).
+/// With `--show-relative-path`, `format_key_display` strips the prefix
+/// from the key: `"data/file.txt".strip_prefix("data/file.txt") = ""`.
+/// The Key field in JSON should be an empty string.
+///
+/// This exercises the edge case at `src/aggregate.rs:296-300` where
+/// `strip_prefix` returns an empty string.
+#[tokio::test]
+async fn e2e_edge_case_prefix_equals_key_relative_path() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+        helper
+            .put_object(&bucket, "data/file.txt", b"x".to_vec())
+            .await;
+
+        // Target IS the exact key path — prefix == key.
+        let target = format!("s3://{bucket}/data/file.txt");
+
+        // JSON with --show-relative-path: Key should be empty string.
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--json",
+            "--show-relative-path",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        let first_line = output
+            .stdout
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .expect("no JSON output");
+        let v: serde_json::Value = serde_json::from_str(first_line).expect("failed to parse JSON");
+        assert_eq!(
+            v.get("Key").and_then(|k| k.as_str()),
+            Some(""),
+            "prefix == key with --show-relative-path: Key should be empty string, got {v:?}"
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// `--summarize --all-versions` with delete markers: both text and JSON
+/// summary lines include the delete-marker count.
+///
+/// Fixture: versioned bucket with 2 object versions + 1 delete marker.
+/// Text summary: `"Total:\t2\tobjects\t...\t1\tdelete markers"`.
+/// JSON summary: `{"Summary":{"TotalObjects":2,"TotalSize":...,"TotalDeleteMarkers":1}}`.
+#[tokio::test]
+async fn e2e_edge_case_versioned_summary_with_delete_marker() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_versioned_bucket(&bucket).await;
+
+        // Two versions of doc.txt (100 + 200 bytes) + 1 delete marker.
+        helper.put_object(&bucket, "doc.txt", vec![0u8; 100]).await;
+        helper.put_object(&bucket, "doc.txt", vec![0u8; 200]).await;
+        helper.create_delete_marker(&bucket, "doc.txt").await;
+
+        let target = format!("s3://{bucket}/");
+
+        // Sub-assertion 1: text summary.
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--all-versions",
+            "--summarize",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        let summary =
+            assert_summary_present_text(&output.stdout, "versioned summary with DM: text");
+        assert!(
+            summary.contains("\t2\tobjects"),
+            "versioned summary text: expected 2 objects, got {summary:?}"
+        );
+        assert!(
+            summary.contains("\t300\tbytes"),
+            "versioned summary text: expected 300 bytes, got {summary:?}"
+        );
+        assert!(
+            summary.contains("\t1\tdelete markers"),
+            "versioned summary text: expected 1 delete markers, got {summary:?}"
+        );
+
+        // Sub-assertion 2: JSON summary.
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--all-versions",
+            "--summarize",
+            "--json",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        let v = assert_summary_present_json(&output.stdout, "versioned summary with DM: json");
+        let summary_obj = v.get("Summary").expect("missing Summary object");
+        assert_eq!(
+            summary_obj.get("TotalObjects").and_then(|n| n.as_u64()),
+            Some(2),
+            "versioned summary json: TotalObjects should be 2"
+        );
+        assert_eq!(
+            summary_obj.get("TotalSize").and_then(|n| n.as_u64()),
+            Some(300),
+            "versioned summary json: TotalSize should be 300"
+        );
+        assert_eq!(
+            summary_obj
+                .get("TotalDeleteMarkers")
+                .and_then(|n| n.as_u64()),
+            Some(1),
+            "versioned summary json: TotalDeleteMarkers should be 1"
+        );
+    });
+
+    _guard.cleanup().await;
+}
