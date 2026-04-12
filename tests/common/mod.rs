@@ -137,6 +137,45 @@ impl TestHelper {
             .unwrap_or_else(|e| panic!("Failed to enable versioning on {bucket}: {e}"));
     }
 
+    /// Create an Express One Zone (directory) bucket.
+    ///
+    /// `bucket` must end with `--{az_id}--x-s3` (e.g.,
+    /// `s3ls-e2e-express-abc123--use1-az4--x-s3`).
+    /// `az_id` must be a valid availability zone ID that supports
+    /// Express One Zone (e.g., `"use1-az4"`).
+    ///
+    /// Used by `e2e_bucket_listing_express_one_zone`. The helper uses
+    /// `BucketType::Directory` + `DataRedundancy::SingleAvailabilityZone` +
+    /// `LocationType::AvailabilityZone`.
+    pub async fn create_directory_bucket(&self, bucket: &str, az_id: &str) {
+        use aws_sdk_s3::types::{
+            BucketInfo, BucketType, DataRedundancy, LocationInfo, LocationType,
+        };
+
+        let location = LocationInfo::builder()
+            .r#type(LocationType::AvailabilityZone)
+            .name(az_id)
+            .build();
+
+        let bucket_info = BucketInfo::builder()
+            .data_redundancy(DataRedundancy::SingleAvailabilityZone)
+            .r#type(BucketType::Directory)
+            .build();
+
+        let config = CreateBucketConfiguration::builder()
+            .location(location)
+            .bucket(bucket_info)
+            .build();
+
+        self.client
+            .create_bucket()
+            .bucket(bucket)
+            .create_bucket_configuration(config)
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("Failed to create directory bucket {bucket}: {e}"));
+    }
+
     /// Delete all objects (including versions and delete markers) and then delete the bucket.
     ///
     /// Best-effort: errors are swallowed so cleanup never panics during teardown
@@ -1035,5 +1074,22 @@ pub fn assert_json_keys_order_eq(stdout: &str, expected: &[&str], label: &str) {
         panic!(
             "[{label}] key order mismatch\n  expected: {expected_owned:?}\n  actual:   {actual:?}\n  stdout:\n{stdout}"
         );
+    }
+}
+
+/// Map a region to a known Express One Zone availability zone ID.
+/// Returns `None` for regions where Express One Zone is not mapped.
+/// Tests that depend on this can skip gracefully with a `println!`
+/// note when the region is unmapped.
+pub fn express_one_zone_az_for_region(region: &str) -> Option<&'static str> {
+    match region {
+        "us-east-1" => Some("use1-az4"),
+        "us-east-2" => Some("use2-az1"),
+        "us-west-2" => Some("usw2-az1"),
+        "ap-northeast-1" => Some("apne1-az4"),
+        "ap-southeast-1" => Some("apse1-az2"),
+        "eu-west-1" => Some("euw1-az1"),
+        "eu-north-1" => Some("eun1-az1"),
+        _ => None,
     }
 }
