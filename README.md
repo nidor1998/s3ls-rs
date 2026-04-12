@@ -1,5 +1,8 @@
 # s3ls
 
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![codecov](https://codecov.io/gh/nidor1998/s3ls-rs/graph/badge.svg)](https://codecov.io/gh/nidor1998/s3ls-rs)
+
 ## Fast Amazon S3 object listing tool
 
 List S3 objects and buckets using parallel API calls. Built in Rust.
