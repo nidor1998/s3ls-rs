@@ -175,3 +175,87 @@ async fn e2e_sort_size_desc() {
 
     _guard.cleanup().await;
 }
+
+/// `--sort date`: objects sorted by LastModified ascending (oldest first).
+///
+/// Fixture uploads objects sequentially with 1.5s sleeps between each
+/// to guarantee distinct S3-second timestamps. Upload order `c, a, b`
+/// is deliberately non-alphabetical so `--sort date` produces a
+/// different order than the default key sort.
+#[tokio::test]
+async fn e2e_sort_date_asc() {
+    use std::time::Duration;
+    use tokio::time::sleep;
+
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+
+        // Upload in non-alphabetical order: c, a, b.
+        // Sleeps guarantee distinct LastModified seconds.
+        helper.put_object(&bucket, "c.txt", vec![0u8; 100]).await;
+        sleep(Duration::from_millis(1500)).await;
+        helper.put_object(&bucket, "a.txt", vec![0u8; 100]).await;
+        sleep(Duration::from_millis(1500)).await;
+        helper.put_object(&bucket, "b.txt", vec![0u8; 100]).await;
+
+        let target = format!("s3://{bucket}/");
+
+        let output =
+            TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--json", "--sort", "date"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        // Oldest first = upload order: c, a, b.
+        assert_json_keys_order_eq(
+            &output.stdout,
+            &["c.txt", "a.txt", "b.txt"],
+            "sort date asc",
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// `--sort date --reverse`: objects sorted by LastModified descending
+/// (newest first).
+#[tokio::test]
+async fn e2e_sort_date_desc() {
+    use std::time::Duration;
+    use tokio::time::sleep;
+
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+
+        helper.put_object(&bucket, "c.txt", vec![0u8; 100]).await;
+        sleep(Duration::from_millis(1500)).await;
+        helper.put_object(&bucket, "a.txt", vec![0u8; 100]).await;
+        sleep(Duration::from_millis(1500)).await;
+        helper.put_object(&bucket, "b.txt", vec![0u8; 100]).await;
+
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--json",
+            "--sort",
+            "date",
+            "--reverse",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        // Newest first = reverse upload order: b, a, c.
+        assert_json_keys_order_eq(
+            &output.stdout,
+            &["b.txt", "a.txt", "c.txt"],
+            "sort date desc",
+        );
+    });
+
+    _guard.cleanup().await;
+}
