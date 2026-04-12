@@ -323,6 +323,10 @@ pub struct CLIArgs {
     #[arg(long, env, default_value_t = false, help_heading = "Bucket Listing")]
     pub show_bucket_arn: bool,
 
+    /// Display timestamps in local time instead of UTC
+    #[arg(long, env, default_value_t = false, help_heading = "Display")]
+    pub show_local_time: bool,
+
     /// Add a header row to each column
     #[arg(
         long,
@@ -793,6 +797,7 @@ impl TryFrom<CLIArgs> for crate::config::Config {
                 show_owner: args.show_owner,
                 show_restore_status: args.show_restore_status,
                 show_bucket_arn: args.show_bucket_arn,
+                show_local_time: args.show_local_time,
                 header: args.header,
                 json: args.json,
                 raw_output: args.raw_output,

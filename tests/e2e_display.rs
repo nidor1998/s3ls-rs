@@ -1421,3 +1421,90 @@ async fn e2e_display_show_objects_only() {
 
     _guard.cleanup().await;
 }
+
+/// `--show-local-time` displays timestamps with a numeric UTC offset instead
+/// of the trailing "Z" in both text and JSON output. Without the flag,
+/// timestamps use UTC with "Z" suffix.
+#[tokio::test]
+async fn e2e_display_show_local_time() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+        helper.put_object(&bucket, "file.txt", vec![0u8; 50]).await;
+
+        let target = format!("s3://{bucket}/");
+
+        // Sub-assertion 1: text WITHOUT --show-local-time uses UTC (Z suffix)
+        let output = TestHelper::run_s3ls(&[target.as_str(), "--recursive"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        let first_data_line = output
+            .stdout
+            .lines()
+            .find(|l| l.contains("file.txt"))
+            .expect("file.txt not in output");
+        let date_field = first_data_line.split('\t').next().unwrap();
+        assert!(
+            date_field.ends_with('Z'),
+            "default text should end with Z, got: {date_field}"
+        );
+
+        // Sub-assertion 2: text WITH --show-local-time uses numeric offset
+        let output = TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--show-local-time"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        let first_data_line = output
+            .stdout
+            .lines()
+            .find(|l| l.contains("file.txt"))
+            .expect("file.txt not in output");
+        let date_field = first_data_line.split('\t').next().unwrap();
+        assert!(
+            !date_field.ends_with('Z'),
+            "local time text should NOT end with Z, got: {date_field}"
+        );
+        // Should contain a numeric offset like +00:00 or +09:00
+        assert!(
+            date_field.contains('+') || date_field.contains("-0") || date_field.contains("-1"),
+            "local time should have a numeric offset, got: {date_field}"
+        );
+
+        // Sub-assertion 3: JSON WITHOUT --show-local-time
+        let output = TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--json"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        let json_line = output
+            .stdout
+            .lines()
+            .find(|l| l.contains("file.txt"))
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(json_line).unwrap();
+        let last_modified = v["LastModified"].as_str().unwrap();
+        assert!(
+            last_modified.ends_with('Z') || last_modified.contains("+00:00"),
+            "default JSON should be UTC, got: {last_modified}"
+        );
+
+        // Sub-assertion 4: JSON WITH --show-local-time
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--json",
+            "--show-local-time",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        let json_line = output
+            .stdout
+            .lines()
+            .find(|l| l.contains("file.txt"))
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(json_line).unwrap();
+        let last_modified = v["LastModified"].as_str().unwrap();
+        assert!(
+            !last_modified.ends_with('Z'),
+            "local time JSON should NOT end with Z, got: {last_modified}"
+        );
+    });
+
+    _guard.cleanup().await;
+}

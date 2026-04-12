@@ -126,6 +126,7 @@ pub struct DisplayConfig {
     pub show_owner: bool,
     pub show_restore_status: bool,
     pub show_bucket_arn: bool,
+    pub show_local_time: bool,
     pub header: bool,
     pub json: bool,
     /// Emit raw S3 key/prefix bytes without escaping control characters.
@@ -215,6 +216,7 @@ mod tests {
         assert!(!config.display_config.show_owner);
         assert!(!config.display_config.show_restore_status);
         assert!(!config.display_config.show_bucket_arn);
+        assert!(!config.display_config.show_local_time);
         assert!(!config.display_config.header);
         assert!(!config.display_config.json);
         assert!(!config.display_config.raw_output);

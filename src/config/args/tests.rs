@@ -723,6 +723,18 @@ fn display_show_objects_only_default_false() {
 }
 
 #[test]
+fn display_show_local_time() {
+    let cli = parse_from_args(args(&["s3://bucket", "--show-local-time"])).unwrap();
+    assert!(cli.show_local_time);
+}
+
+#[test]
+fn display_show_local_time_default_false() {
+    let cli = parse_from_args(args(&["s3://bucket"])).unwrap();
+    assert!(!cli.show_local_time);
+}
+
+#[test]
 fn display_json() {
     let cli = parse_from_args(args(&["s3://bucket", "--json"])).unwrap();
     assert!(cli.json);

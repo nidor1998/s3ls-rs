@@ -28,6 +28,7 @@ pub struct FormatOptions {
     /// `--json` (JSON output always preserves the original bytes since
     /// serde_json escapes them safely).
     pub raw_output: bool,
+    pub show_local_time: bool,
 }
 
 impl FormatOptions {
@@ -49,6 +50,7 @@ impl FormatOptions {
             all_versions,
             prefix,
             raw_output: display_config.raw_output,
+            show_local_time: display_config.show_local_time,
         }
     }
 }
@@ -308,8 +310,13 @@ fn format_key_display(entry_key: &str, opts: &FormatOptions) -> String {
     }
 }
 
-fn format_rfc3339(dt: &chrono::DateTime<chrono::Utc>) -> String {
-    dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+fn format_rfc3339(dt: &chrono::DateTime<chrono::Utc>, local: bool) -> String {
+    if local {
+        let local_dt: chrono::DateTime<chrono::Local> = dt.with_timezone(&chrono::Local);
+        local_dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, false)
+    } else {
+        dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    }
 }
 
 pub fn format_entry(entry: &ListEntry, opts: &FormatOptions) -> String {
@@ -355,7 +362,7 @@ pub fn format_entry(entry: &ListEntry, opts: &FormatOptions) -> String {
             cols.push(maybe_escape(&format_key_display(entry.key(), opts), opts).into_owned());
         }
         ListEntry::Object(obj) => {
-            cols.push(format_rfc3339(obj.last_modified()));
+            cols.push(format_rfc3339(obj.last_modified(), opts.show_local_time));
             cols.push(format_size(obj.size(), opts.human));
             if opts.show_storage_class {
                 cols.push(obj.storage_class().unwrap_or("STANDARD").to_string());
@@ -401,7 +408,7 @@ pub fn format_entry(entry: &ListEntry, opts: &FormatOptions) -> String {
             owner_display_name,
             owner_id,
         } => {
-            cols.push(format_rfc3339(last_modified));
+            cols.push(format_rfc3339(last_modified, opts.show_local_time));
             cols.push("DELETE".to_string());
             if opts.show_storage_class {
                 cols.push(String::new());
@@ -529,7 +536,10 @@ pub fn format_entry_json(entry: &ListEntry, opts: &FormatOptions) -> String {
             );
             map.insert(
                 "LastModified".to_string(),
-                serde_json::Value::String(obj.last_modified().to_rfc3339()),
+                serde_json::Value::String(format_rfc3339(
+                    obj.last_modified(),
+                    opts.show_local_time,
+                )),
             );
             map.insert(
                 "ETag".to_string(),
@@ -620,7 +630,7 @@ pub fn format_entry_json(entry: &ListEntry, opts: &FormatOptions) -> String {
             map.insert("IsLatest".to_string(), serde_json::json!(*is_latest));
             map.insert(
                 "LastModified".to_string(),
-                serde_json::Value::String(last_modified.to_rfc3339()),
+                serde_json::Value::String(format_rfc3339(last_modified, opts.show_local_time)),
             );
             map.insert("DeleteMarker".to_string(), serde_json::json!(true));
             if owner_id.is_some() || owner_display_name.is_some() {
@@ -1365,6 +1375,66 @@ mod tests {
         assert_eq!(parsed["VersionId"], "v1");
         assert_eq!(parsed["IsLatest"], true);
         assert_eq!(parsed["DeleteMarker"], true);
+    }
+
+    #[test]
+    fn format_text_local_time() {
+        let entry = make_entry("readme.txt", 1234, 2024, 1);
+        let opts = FormatOptions {
+            show_local_time: true,
+            ..Default::default()
+        };
+        let line = format_entry(&entry, &opts);
+        // Local time should NOT end with "Z" — it uses a numeric offset like +09:00
+        let date_field = line.split('\t').next().unwrap();
+        assert!(
+            !date_field.ends_with('Z'),
+            "local time should not end with Z, got: {date_field}"
+        );
+        assert!(
+            date_field.contains("2024-01-01"),
+            "should still contain the date, got: {date_field}"
+        );
+    }
+
+    #[test]
+    fn format_text_utc_time_default() {
+        let entry = make_entry("readme.txt", 1234, 2024, 1);
+        let opts = FormatOptions::default();
+        let line = format_entry(&entry, &opts);
+        assert!(
+            line.contains("2024-01-01T00:00:00Z"),
+            "default should be UTC with Z suffix"
+        );
+    }
+
+    #[test]
+    fn format_json_local_time() {
+        let entry = make_entry("readme.txt", 1234, 2024, 1);
+        let opts = FormatOptions {
+            show_local_time: true,
+            ..Default::default()
+        };
+        let json = format_entry_json(&entry, &opts);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let last_modified = parsed["LastModified"].as_str().unwrap();
+        assert!(
+            !last_modified.ends_with('Z'),
+            "local time JSON should not end with Z, got: {last_modified}"
+        );
+    }
+
+    #[test]
+    fn format_json_utc_time_default() {
+        let entry = make_entry("readme.txt", 1234, 2024, 1);
+        let opts = FormatOptions::default();
+        let json = format_entry_json(&entry, &opts);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let last_modified = parsed["LastModified"].as_str().unwrap();
+        assert!(
+            last_modified.ends_with('Z') || last_modified.contains("+00:00"),
+            "default JSON should be UTC, got: {last_modified}"
+        );
     }
 
     #[test]
