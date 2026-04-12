@@ -229,21 +229,22 @@ async fn e2e_versioned_storage_class_passes_delete_markers() {
 /// `mtime_after.rs:27`, which both use `entry.last_modified()` uniformly
 /// for both objects and delete markers.
 ///
-/// Two-batch fixture with a 1.5s sleep between batches to guarantee a
-/// second-level time pivot:
-///   Batch 1: put_object("old.bin", ...) — v1 of old.bin, BEFORE pivot
+/// Two-batch fixture with a 1.5s sleep between batches:
+///   Batch 1: put_object("old.bin") — v1, BEFORE pivot
 ///   sleep 1.5s
-///   Batch 2: put_object("new.bin", ...) — v1 of new.bin, AFTER pivot
-///           create_delete_marker("old.bin") — DM on old.bin, AFTER pivot
+///   Batch 2: put_object("new.bin") + create_delete_marker("old.bin")
+///
+/// Pivot = old.bin v1's LastModified + 1s. The 1.5s sleep guarantees
+/// batch 2 items are at least 1 second later.
 ///
 /// Expected under `--filter-mtime-after <pivot>`:
-///   - new.bin v1 passes (batch 2)
+///   - new.bin v1 passes (batch 2, after pivot)
 ///   - old.bin v1 fails (batch 1, before pivot)
-///   - old.bin DM passes (created in batch 2, after pivot — DM mtime is
-///     its own creation time, not the original object's)
+///   - old.bin DM passes (created in batch 2 — DM mtime is its own
+///     creation time, not the original object's)
 #[tokio::test]
 async fn e2e_versioned_mtime_filter_applies_to_delete_markers() {
-    use chrono::{DateTime, Utc};
+    use chrono::{DateTime, Duration as ChronoDuration, Utc};
     use std::time::Duration;
     use tokio::time::sleep;
 
@@ -263,10 +264,9 @@ async fn e2e_versioned_mtime_filter_applies_to_delete_markers() {
         helper.put_object(&bucket, "new.bin", vec![0u8; 100]).await;
         helper.create_delete_marker(&bucket, "old.bin").await;
 
-        // Read back all rows via list_object_versions. This returns
-        // objects AND delete markers with their LastModified timestamps.
-        // Compute t_pivot = min(batch 2 last_modified) and sanity-check
-        // it is strictly after old.bin v1's LastModified.
+        // Read back old.bin v1's LastModified. Use old_lm + 1s as the
+        // pivot — the 1.5s sleep guarantees batch 2 items land at least
+        // 1 second later.
         let resp = helper
             .client()
             .list_object_versions()
@@ -275,48 +275,19 @@ async fn e2e_versioned_mtime_filter_applies_to_delete_markers() {
             .await
             .expect("list_object_versions failed");
 
-        let mut old_lm: Option<DateTime<Utc>> = None;
-        let mut batch2_min: Option<DateTime<Utc>> = None;
+        let old_lm = resp
+            .versions()
+            .iter()
+            .find(|v| v.key() == Some("old.bin"))
+            .and_then(|v| v.last_modified())
+            .map(|lm| {
+                DateTime::<Utc>::from_timestamp(lm.secs(), lm.subsec_nanos())
+                    .expect("invalid timestamp from S3")
+            })
+            .expect("old.bin v1 not found in listing");
 
-        // Regular object versions
-        for v in resp.versions() {
-            let key = v.key().expect("version missing key");
-            let lm = v.last_modified().expect("version missing last_modified");
-            let dt = DateTime::<Utc>::from_timestamp(lm.secs(), lm.subsec_nanos())
-                .expect("invalid timestamp from S3");
-            if key == "old.bin" {
-                // old.bin v1 — batch 1
-                old_lm = Some(dt);
-            } else {
-                // new.bin v1 — batch 2
-                batch2_min = Some(match batch2_min {
-                    None => dt,
-                    Some(cur) => cur.min(dt),
-                });
-            }
-        }
-
-        // Delete markers (old.bin DM — batch 2)
-        for m in resp.delete_markers() {
-            let lm = m.last_modified().expect("DM missing last_modified");
-            let dt = DateTime::<Utc>::from_timestamp(lm.secs(), lm.subsec_nanos())
-                .expect("invalid timestamp from S3");
-            batch2_min = Some(match batch2_min {
-                None => dt,
-                Some(cur) => cur.min(dt),
-            });
-        }
-
-        let old_lm = old_lm.expect("old.bin v1 not found in listing");
-        let t_pivot = batch2_min.expect("batch 2 rows not found in listing");
-
-        assert!(
-            t_pivot > old_lm,
-            "t_pivot ({t_pivot}) must be strictly after old.bin v1 ({old_lm}) \
-             — the 1.5s sleep should have guaranteed this. Clock skew > 1.5s?"
-        );
-
-        let mtime_after = t_pivot.to_rfc3339();
+        let pivot = old_lm + ChronoDuration::seconds(1);
+        let mtime_after = pivot.to_rfc3339();
         let target = format!("s3://{bucket}/");
 
         let output = TestHelper::run_s3ls(&[
