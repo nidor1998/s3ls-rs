@@ -79,6 +79,14 @@ impl S3PageFetcher {
         delimiter: Option<&str>,
         continuation_token: Option<&str>,
     ) -> Result<ListPage> {
+        tracing::trace!(
+            bucket = %self.bucket,
+            prefix = ?prefix,
+            delimiter = ?delimiter,
+            max_keys,
+            continuation_token = ?continuation_token,
+            "ListObjectsV2 request"
+        );
         let mut req = self
             .client
             .list_objects_v2()
@@ -152,6 +160,15 @@ impl S3PageFetcher {
         key_marker: Option<&str>,
         version_id_marker: Option<&str>,
     ) -> Result<ListPage> {
+        tracing::trace!(
+            bucket = %self.bucket,
+            prefix = ?prefix,
+            delimiter = ?delimiter,
+            max_keys,
+            key_marker = ?key_marker,
+            version_id_marker = ?version_id_marker,
+            "ListObjectVersions request"
+        );
         let mut req = self
             .client
             .list_object_versions()
