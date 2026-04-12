@@ -221,3 +221,149 @@ async fn e2e_listing_with_explicit_timeouts_and_retries() {
 
     _guard.cleanup().await;
 }
+
+/// Exit code 1 when object listing fails (nonexistent bucket).
+///
+/// s3ls should return a non-zero exit code when it cannot list objects
+/// — e.g., because the bucket doesn't exist. This test uses a
+/// UUID-suffixed bucket name that is never created, so the S3 API
+/// call fails with NoSuchBucket.
+#[tokio::test]
+async fn e2e_listing_error_returns_exit_code_1() {
+    use uuid::Uuid;
+
+    e2e_timeout!(async {
+        // Bucket is never created — guaranteed to not exist.
+        let nonexistent = format!("s3ls-e2e-noexist-{}", Uuid::new_v4());
+        let target = format!("s3://{nonexistent}/");
+
+        let output = TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--json"]);
+        assert!(
+            !output.status.success(),
+            "listing nonexistent bucket should fail, but s3ls exited 0.\nstdout: {}\nstderr: {}",
+            output.stdout,
+            output.stderr
+        );
+
+        // Verify exit code is specifically 1 (not some other non-zero).
+        let code = output.status.code().expect("process terminated by signal");
+        assert_eq!(
+            code, 1,
+            "expected exit code 1 for listing error, got {code}"
+        );
+    });
+}
+
+/// Exit code 1 when bucket listing fails (invalid credentials).
+///
+/// s3ls should return exit code 1 when bucket listing fails — e.g.,
+/// because the credentials are invalid. This test passes a bogus
+/// access key to trigger an authentication failure.
+#[tokio::test]
+async fn e2e_bucket_listing_error_returns_exit_code_1() {
+    e2e_timeout!(async {
+        let output = TestHelper::run_s3ls(&[
+            "--json",
+            "--target-access-key",
+            "AKIAINVALIDEXAMPLE00",
+            "--target-secret-access-key",
+            "wJalrXUtnFEMI/K7MDENG/INVALIDEXAMPLEKEY00",
+        ]);
+        assert!(
+            !output.status.success(),
+            "bucket listing with invalid credentials should fail, but s3ls exited 0.\nstderr: {}",
+            output.stderr
+        );
+
+        let code = output.status.code().expect("process terminated by signal");
+        assert_eq!(
+            code, 1,
+            "expected exit code 1 for bucket listing error, got {code}"
+        );
+    });
+}
+
+/// Exit code 0 when listing an empty bucket (no objects to display).
+///
+/// An empty bucket is not an error — s3ls should exit 0 with no
+/// output. This test creates a bucket, uploads nothing, and verifies
+/// s3ls exits cleanly.
+#[tokio::test]
+async fn e2e_listing_empty_bucket_returns_exit_code_0() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--json"]);
+        assert!(
+            output.status.success(),
+            "listing empty bucket should succeed (exit 0), but s3ls failed.\nstderr: {}",
+            output.stderr
+        );
+
+        let code = output.status.code().expect("process terminated by signal");
+        assert_eq!(
+            code, 0,
+            "expected exit code 0 for empty bucket listing, got {code}"
+        );
+
+        // No Key entries in the output.
+        let has_keys = output
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .any(|l| {
+                serde_json::from_str::<serde_json::Value>(l)
+                    .ok()
+                    .and_then(|v| v.get("Key").map(|_| true))
+                    .unwrap_or(false)
+            });
+        assert!(
+            !has_keys,
+            "empty bucket should produce no Key entries in JSON output"
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// Exit code 0 when listing a non-empty bucket with a prefix that
+/// matches nothing (no objects to display, but the bucket exists).
+#[tokio::test]
+async fn e2e_listing_no_matching_prefix_returns_exit_code_0() {
+    use uuid::Uuid;
+
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+        helper
+            .put_object(&bucket, "data/file.txt", b"x".to_vec())
+            .await;
+
+        // List with a prefix that matches nothing.
+        let target = format!("s3://{bucket}/nonexistent-{}/", Uuid::new_v4());
+
+        let output = TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--json"]);
+        assert!(
+            output.status.success(),
+            "listing with no matching prefix should succeed (exit 0), but s3ls failed.\nstderr: {}",
+            output.stderr
+        );
+
+        let code = output.status.code().expect("process terminated by signal");
+        assert_eq!(
+            code, 0,
+            "expected exit code 0 for no-matching-prefix listing, got {code}"
+        );
+    });
+
+    _guard.cleanup().await;
+}
