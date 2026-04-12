@@ -156,14 +156,14 @@ async fn e2e_large_listing_completeness() {
         let expected_set: HashSet<String> = expected_keys.iter().cloned().collect();
 
         println!(
-            "Uploading {} objects with 256 concurrent PUTs...",
+            "Uploading {} objects with 64 concurrent PUTs...",
             expected_keys.len()
         );
         let objects: Vec<(String, Vec<u8>)> = expected_keys
             .iter()
             .map(|k| (k.clone(), b"x".to_vec()))
             .collect();
-        helper.put_objects_parallel_n(&bucket, objects, 256).await;
+        helper.put_objects_parallel_n(&bucket, objects, 64).await;
         println!("Upload complete.");
 
         let target = format!("s3://{bucket}/");
