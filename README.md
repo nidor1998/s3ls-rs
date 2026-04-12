@@ -198,16 +198,18 @@ s3ls exposes S3 object metadata that other listing tools do not surface:
 
 By default, s3ls buffers all results in memory for sorting. Measured memory usage (RSS) on EC2 with `--max-parallel-listings 64`:
 
-| Objects | Peak RSS | Per-object |
-|--------:|---------:|-----------:|
-| 0 (baseline) | ~15 MB | — |
-| 100,000 | ~97 MB | ~860 bytes |
-| 900,000 | ~543 MB | ~615 bytes |
-| 1,100,000 | ~785 MB | ~734 bytes |
+| Objects | Default (sorted) | `--no-sort` (streaming) |
+|--------:|------------------:|------------------------:|
+| 0 (baseline) | ~15 MB | ~15 MB |
+| 100,000 | ~97 MB | — |
+| 900,000 | ~543 MB | — |
+| 1,100,000 | **~785 MB** | **~84 MB** |
 
-The per-object cost includes the `ListEntry` struct, heap-allocated strings (key, ETag), and allocator overhead. The ~15 MB baseline covers the async runtime, AWS SDK, TLS context, and connection pool.
+In default sorted mode, each object consumes ~700-860 bytes of memory (struct + heap strings + allocator overhead), plus a ~15 MB baseline for the async runtime, AWS SDK, and connection pool.
 
-The `--no-sort` streaming mode writes results directly as they arrive from S3, with near-zero memory usage regardless of object count. If you still need sorted output for very large buckets, you can stream to a file and sort externally:
+In `--no-sort` streaming mode, memory stays at **~84 MB regardless of object count** — entries are written to stdout immediately and never buffered. This is 9x less memory than sorted mode for 1.1 million objects, and the gap grows linearly with object count.
+
+If you still need sorted output for very large buckets, you can stream to a file and sort externally:
 
 ```bash
 # Stream to a file, then sort by the 3rd column (key) using the OS sort command
