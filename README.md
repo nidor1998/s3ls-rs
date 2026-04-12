@@ -496,6 +496,8 @@ Non-recursive listing always uses a single sequential listing operation.
 
 ### API request calculation
 
+s3ls uses only `ListObjectsV2` (for current-version listing) and `ListObjectVersions` (for `--all-versions` listing). It does **not** call `HeadObject` or `GetObject` — all metadata displayed in the output (key, size, last modified, ETag, storage class, checksum, owner, restore status) comes from the list response itself.
+
 s3ls sends one S3 API call per page of results. Each page returns up to `--max-keys` objects (default: 1,000, the S3 API maximum). The total number of API requests depends on the listing mode.
 
 #### Sequential listing
