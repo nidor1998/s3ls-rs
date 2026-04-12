@@ -1466,3 +1466,59 @@ fn show_restore_status_without_json() {
     assert!(!config.display_config.json);
     assert!(config.display_config.show_restore_status);
 }
+
+// ===========================================================================
+// Client construction with access tokens
+// ===========================================================================
+
+#[test]
+fn config_client_constructed_with_access_keys() {
+    let config = build_config_from_args(args(&[
+        "s3://bucket",
+        "--target-access-key",
+        "AKIAIOSFODNN7EXAMPLE",
+        "--target-secret-access-key",
+        "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        "--target-session-token",
+        "FwoGZXIvYXdzEBYaDExampleSessionToken",
+    ]))
+    .unwrap();
+
+    let client_config = config
+        .target_client_config
+        .as_ref()
+        .expect("target_client_config should be present when access keys are provided");
+
+    match &client_config.credential {
+        crate::types::S3Credentials::Credentials { access_keys } => {
+            assert_eq!(access_keys.access_key, "AKIAIOSFODNN7EXAMPLE");
+            assert_eq!(
+                access_keys.secret_access_key,
+                "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+            );
+            assert_eq!(
+                access_keys.session_token.as_deref(),
+                Some("FwoGZXIvYXdzEBYaDExampleSessionToken")
+            );
+        }
+        other => panic!("expected S3Credentials::Credentials, got {:?}", other),
+    }
+}
+
+// ===========================================================================
+// --max-depth rejected in bucket listing mode
+// ===========================================================================
+
+#[test]
+fn bucket_listing_rejects_max_depth_with_message() {
+    // --max-depth requires --recursive (clap constraint), so we must
+    // pass both. The Config::try_from validation rejects --recursive
+    // in bucket listing mode (no target) first, then --max-depth.
+    let result = build_config_from_args(args(&["--recursive", "--max-depth", "3"]));
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("not valid for bucket listing"),
+        "expected 'not valid for bucket listing' error, got: {err}"
+    );
+}

@@ -172,3 +172,84 @@ pub struct TracingConfig {
     pub span_events_tracing: bool,
     pub disable_color_tracing: bool,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_default_values() {
+        let config = Config::default();
+
+        // Target
+        assert!(config.target.bucket.is_empty());
+        assert!(config.target.prefix.is_none());
+
+        // Listing mode
+        assert!(!config.recursive);
+        assert!(!config.all_versions);
+        assert!(!config.hide_delete_markers);
+        assert!(config.max_depth.is_none());
+        assert!(config.bucket_name_prefix.is_none());
+        assert!(!config.list_express_one_zone_buckets);
+
+        // Sort
+        assert_eq!(config.sort, vec![SortField::Key]);
+        assert!(!config.reverse);
+        assert!(!config.no_sort);
+
+        // Display
+        assert!(!config.display_config.summary);
+        assert!(!config.display_config.human);
+        assert!(!config.display_config.show_relative_path);
+        assert!(!config.display_config.show_etag);
+        assert!(!config.display_config.show_storage_class);
+        assert!(!config.display_config.show_checksum_algorithm);
+        assert!(!config.display_config.show_checksum_type);
+        assert!(!config.display_config.show_is_latest);
+        assert!(!config.display_config.show_owner);
+        assert!(!config.display_config.show_restore_status);
+        assert!(!config.display_config.show_bucket_arn);
+        assert!(!config.display_config.header);
+        assert!(!config.display_config.json);
+        assert!(!config.display_config.raw_output);
+
+        // Performance
+        assert_eq!(config.max_parallel_listings, 32);
+        assert_eq!(config.max_parallel_listing_max_depth, 2);
+        assert_eq!(config.object_listing_queue_size, 200_000);
+        assert!(!config.allow_parallel_listings_in_express_one_zone);
+        assert_eq!(config.parallel_sort_threshold, 1_000_000);
+
+        // AWS Client
+        assert!(config.target_client_config.is_none());
+
+        // Advanced
+        assert_eq!(config.max_keys, 1000);
+        assert!(config.auto_complete_shell.is_none());
+
+        // Tracing
+        assert!(config.tracing_config.is_none());
+
+        // Filter
+        assert!(config.filter_config.include_regex.is_none());
+        assert!(config.filter_config.exclude_regex.is_none());
+        assert!(config.filter_config.mtime_before.is_none());
+        assert!(config.filter_config.mtime_after.is_none());
+        assert!(config.filter_config.smaller_size.is_none());
+        assert!(config.filter_config.larger_size.is_none());
+        assert!(config.filter_config.storage_class.is_none());
+    }
+
+    #[test]
+    fn config_for_target_sets_bucket_and_prefix() {
+        let config = Config::for_target("my-bucket", "data/");
+        assert_eq!(config.target.bucket, "my-bucket");
+        assert_eq!(config.target.prefix.as_deref(), Some("data/"));
+
+        // Empty prefix → None
+        let config = Config::for_target("my-bucket", "");
+        assert_eq!(config.target.bucket, "my-bucket");
+        assert!(config.target.prefix.is_none());
+    }
+}
