@@ -269,6 +269,38 @@ mod tests {
     }
 
     #[test]
+    fn format_size_split_below_1024() {
+        use super::format_size_split;
+        let (num, unit) = format_size_split(512);
+        assert_eq!(num, "512");
+        assert_eq!(unit, "bytes");
+    }
+
+    #[test]
+    fn format_size_split_zero() {
+        use super::format_size_split;
+        let (num, unit) = format_size_split(0);
+        assert_eq!(num, "0");
+        assert_eq!(unit, "bytes");
+    }
+
+    #[test]
+    fn format_size_split_above_1024() {
+        use super::format_size_split;
+        let (num, unit) = format_size_split(1_048_576); // 1 MiB
+        assert_eq!(num, "1.0");
+        assert_eq!(unit, "MiB");
+    }
+
+    #[test]
+    fn format_size_split_exactly_1024() {
+        use super::format_size_split;
+        let (num, unit) = format_size_split(1024);
+        assert_eq!(num, "1.0");
+        assert_eq!(unit, "KiB");
+    }
+
+    #[test]
     fn compute_statistics_counts_correctly() {
         let entries = vec![
             make_entry_dated("a.txt", 100, 2024, 1),

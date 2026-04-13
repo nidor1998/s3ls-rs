@@ -655,6 +655,167 @@ mod tests {
     }
 
     #[test]
+    fn format_text_common_prefix_with_all_optional_columns() {
+        let entry = ListEntry::CommonPrefix("logs/".to_string());
+        let fmt = TsvFormatter::new(FormatOptions {
+            show_storage_class: true,
+            show_etag: true,
+            show_checksum_algorithm: true,
+            show_checksum_type: true,
+            all_versions: true,
+            show_is_latest: true,
+            show_owner: true,
+            show_restore_status: true,
+            ..Default::default()
+        });
+        let line = fmt.format_entry(&entry);
+        let fields: Vec<&str> = line.split('\t').collect();
+        // date, PRE, storage_class, etag, checksum_algo, checksum_type,
+        // version_id, is_latest, owner_name, owner_id, restore_in_progress,
+        // restore_expiry, key
+        assert_eq!(fields.len(), 13);
+        assert_eq!(fields[0], ""); // date
+        assert_eq!(fields[1], "PRE"); // size
+        // Optional columns should all be empty
+        for i in 2..12 {
+            assert_eq!(fields[i], "", "field {i} should be empty");
+        }
+        assert_eq!(fields[12], "logs/"); // key
+    }
+
+    fn make_delete_marker() -> ListEntry {
+        ListEntry::DeleteMarker {
+            key: "deleted.txt".to_string(),
+            version_id: "ver-123".to_string(),
+            last_modified: chrono::Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap(),
+            is_latest: false,
+            owner_display_name: Some("alice".to_string()),
+            owner_id: Some("id-alice".to_string()),
+        }
+    }
+
+    #[test]
+    fn format_text_delete_marker_basic() {
+        let entry = make_delete_marker();
+        let fmt = TsvFormatter::new(FormatOptions::default());
+        let line = fmt.format_entry(&entry);
+        let fields: Vec<&str> = line.split('\t').collect();
+        // date, DELETE, version_id, key
+        assert_eq!(fields[1], "DELETE");
+        assert_eq!(fields[2], "ver-123");
+        assert!(fields.last().unwrap().contains("deleted.txt"));
+    }
+
+    #[test]
+    fn format_text_delete_marker_with_all_optional_columns() {
+        let entry = make_delete_marker();
+        let fmt = TsvFormatter::new(FormatOptions {
+            show_storage_class: true,
+            show_etag: true,
+            show_checksum_algorithm: true,
+            show_checksum_type: true,
+            show_is_latest: true,
+            show_owner: true,
+            show_restore_status: true,
+            ..Default::default()
+        });
+        let line = fmt.format_entry(&entry);
+        let fields: Vec<&str> = line.split('\t').collect();
+        // date, DELETE, storage_class(empty), etag(empty), checksum_algo(empty),
+        // checksum_type(empty), version_id, is_latest, owner_name, owner_id,
+        // restore_in_progress(empty), restore_expiry(empty), key
+        assert_eq!(fields[1], "DELETE");
+        assert_eq!(fields[2], ""); // storage_class
+        assert_eq!(fields[3], ""); // etag
+        assert_eq!(fields[4], ""); // checksum_algorithm
+        assert_eq!(fields[5], ""); // checksum_type
+        assert_eq!(fields[6], "ver-123"); // version_id
+        assert_eq!(fields[7], "NOT_LATEST"); // is_latest
+        assert_eq!(fields[8], "alice"); // owner_display_name
+        assert_eq!(fields[9], "id-alice"); // owner_id
+        assert_eq!(fields[10], ""); // restore_in_progress
+        assert_eq!(fields[11], ""); // restore_expiry
+        assert_eq!(fields[12], "deleted.txt"); // key
+    }
+
+    #[test]
+    fn format_text_delete_marker_is_latest() {
+        let entry = ListEntry::DeleteMarker {
+            key: "k".to_string(),
+            version_id: "v".to_string(),
+            last_modified: chrono::Utc::now(),
+            is_latest: true,
+            owner_display_name: None,
+            owner_id: None,
+        };
+        let fmt = TsvFormatter::new(FormatOptions {
+            show_is_latest: true,
+            ..Default::default()
+        });
+        let line = fmt.format_entry(&entry);
+        assert!(line.contains("LATEST"));
+        assert!(!line.contains("NOT_LATEST"));
+    }
+
+    #[test]
+    fn format_text_object_with_restore_status() {
+        let entry = ListEntry::Object(S3Object::NotVersioning {
+            key: "k.dat".to_string(),
+            size: 100,
+            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            e_tag: "\"e\"".to_string(),
+            storage_class: Some("GLACIER".to_string()),
+            checksum_algorithm: vec![],
+            checksum_type: None,
+            owner_display_name: None,
+            owner_id: None,
+            is_restore_in_progress: Some(true),
+            restore_expiry_date: Some("2024-02-01T00:00:00Z".to_string()),
+        });
+        let fmt = TsvFormatter::new(FormatOptions {
+            show_restore_status: true,
+            ..Default::default()
+        });
+        let line = fmt.format_entry(&entry);
+        assert!(line.contains("true"));
+        assert!(line.contains("2024-02-01T00:00:00Z"));
+    }
+
+    #[test]
+    fn format_summary_text_with_human_size() {
+        let stats = crate::types::ListingStatistics {
+            total_objects: 5,
+            total_size: 1_048_576, // 1 MiB
+            total_delete_markers: 0,
+        };
+        let fmt = TsvFormatter::new(FormatOptions {
+            human: true,
+            ..Default::default()
+        });
+        let summary = fmt.format_summary(&stats);
+        assert!(summary.starts_with("\nTotal:"));
+        assert!(summary.contains("5"));
+        assert!(summary.contains("MiB"));
+    }
+
+    #[test]
+    fn format_summary_text_with_delete_markers() {
+        let stats = crate::types::ListingStatistics {
+            total_objects: 3,
+            total_size: 100,
+            total_delete_markers: 2,
+        };
+        let fmt = TsvFormatter::new(FormatOptions {
+            human: false,
+            all_versions: true,
+            ..Default::default()
+        });
+        let summary = fmt.format_summary(&stats);
+        assert!(summary.contains("2"));
+        assert!(summary.contains("delete markers"));
+    }
+
+    #[test]
     fn format_summary_with_versions() {
         let stats = crate::types::ListingStatistics {
             total_objects: 10,

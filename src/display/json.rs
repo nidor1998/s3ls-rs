@@ -379,6 +379,119 @@ mod tests {
     }
 
     #[test]
+    fn format_json_object_with_restore_status() {
+        let entry = ListEntry::Object(S3Object::NotVersioning {
+            key: "archived.dat".to_string(),
+            size: 500,
+            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            e_tag: "\"abc\"".to_string(),
+            storage_class: Some("GLACIER".to_string()),
+            checksum_algorithm: vec![],
+            checksum_type: None,
+            owner_display_name: None,
+            owner_id: None,
+            is_restore_in_progress: Some(true),
+            restore_expiry_date: Some("2024-02-01T00:00:00Z".to_string()),
+        });
+        let opts = FormatOptions::default();
+        let json_str = JsonFormatter::new(opts).format_entry(&entry);
+        let val: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        let restore = &val["RestoreStatus"];
+        assert_eq!(restore["IsRestoreInProgress"], true);
+        assert_eq!(restore["RestoreExpiryDate"], "2024-02-01T00:00:00Z");
+    }
+
+    #[test]
+    fn format_json_object_restore_in_progress_without_expiry() {
+        let entry = ListEntry::Object(S3Object::NotVersioning {
+            key: "k".to_string(),
+            size: 0,
+            last_modified: chrono::Utc::now(),
+            e_tag: "\"e\"".to_string(),
+            storage_class: None,
+            checksum_algorithm: vec![],
+            checksum_type: None,
+            owner_display_name: None,
+            owner_id: None,
+            is_restore_in_progress: Some(false),
+            restore_expiry_date: None,
+        });
+        let opts = FormatOptions::default();
+        let json_str = JsonFormatter::new(opts).format_entry(&entry);
+        let val: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        let restore = &val["RestoreStatus"];
+        assert_eq!(restore["IsRestoreInProgress"], false);
+        assert!(restore.get("RestoreExpiryDate").is_none());
+    }
+
+    #[test]
+    fn format_json_delete_marker_with_owner() {
+        let entry = ListEntry::DeleteMarker {
+            key: "deleted.txt".to_string(),
+            version_id: "v-dm".to_string(),
+            last_modified: chrono::Utc.with_ymd_and_hms(2024, 6, 1, 0, 0, 0).unwrap(),
+            is_latest: true,
+            owner_display_name: Some("bob".to_string()),
+            owner_id: Some("id-bob".to_string()),
+        };
+        let opts = FormatOptions::default();
+        let json_str = JsonFormatter::new(opts).format_entry(&entry);
+        let val: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(val["DeleteMarker"], true);
+        assert_eq!(val["VersionId"], "v-dm");
+        assert_eq!(val["IsLatest"], true);
+        let owner = &val["Owner"];
+        assert_eq!(owner["DisplayName"], "bob");
+        assert_eq!(owner["ID"], "id-bob");
+    }
+
+    #[test]
+    fn format_json_object_with_owner() {
+        let entry = ListEntry::Object(S3Object::NotVersioning {
+            key: "owned.txt".to_string(),
+            size: 10,
+            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            e_tag: "\"e\"".to_string(),
+            storage_class: None,
+            checksum_algorithm: vec![],
+            checksum_type: None,
+            owner_display_name: Some("alice".to_string()),
+            owner_id: Some("id-alice".to_string()),
+            is_restore_in_progress: None,
+            restore_expiry_date: None,
+        });
+        let opts = FormatOptions::default();
+        let json_str = JsonFormatter::new(opts).format_entry(&entry);
+        let val: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        let owner = &val["Owner"];
+        assert_eq!(owner["DisplayName"], "alice");
+        assert_eq!(owner["ID"], "id-alice");
+    }
+
+    #[test]
+    fn format_json_object_with_owner_name_only() {
+        let entry = ListEntry::Object(S3Object::NotVersioning {
+            key: "k".to_string(),
+            size: 0,
+            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            e_tag: "\"e\"".to_string(),
+            storage_class: None,
+            checksum_algorithm: vec![],
+            checksum_type: None,
+            owner_display_name: Some("bob".to_string()),
+            owner_id: None,
+            is_restore_in_progress: None,
+            restore_expiry_date: None,
+        });
+        let opts = FormatOptions::default();
+        let json_str = JsonFormatter::new(opts).format_entry(&entry);
+        let val: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        let owner = &val["Owner"];
+        assert_eq!(owner["DisplayName"], "bob");
+        assert!(owner.get("ID").is_none());
+    }
+
+    #[test]
     fn format_json_multiple_checksum_algorithms() {
         let entry = make_entry_with_checksums("file.txt", vec!["CRC32", "SHA256"]);
         let opts = FormatOptions::default();
