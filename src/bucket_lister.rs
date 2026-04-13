@@ -124,7 +124,7 @@ pub async fn list_buckets(config: &Config) -> Result<()> {
                 if config.display_config.raw_output {
                     s.to_string()
                 } else {
-                    crate::aggregate::escape_control_chars(s).into_owned()
+                    crate::display::escape_control_chars(s).into_owned()
                 }
             };
 

@@ -1,5 +1,9 @@
-use crate::aggregate::{Aggregator, AggregatorConfig, FormatOptions};
+use crate::aggregate::{Aggregator, AggregatorConfig};
 use crate::config::Config;
+use crate::display::json::JsonFormatter;
+use crate::display::tsv::TsvFormatter;
+use crate::display::{EntryFormatter, FormatOptions};
+use crate::display_writer::{DisplayMessage, DisplayWriter, DisplayWriterConfig};
 use crate::filters::build_filter_chain;
 use crate::lister::ObjectLister;
 use crate::storage::StorageTrait;
@@ -49,17 +53,29 @@ impl ListingPipeline {
         }
 
         let queue_size = self.config.object_listing_queue_size as usize;
-        let (tx, rx) = tokio::sync::mpsc::channel(queue_size);
+        let (lister_tx, lister_rx) = tokio::sync::mpsc::channel(queue_size);
+        let (display_tx, display_rx) = tokio::sync::mpsc::channel(queue_size);
 
         let storage = self.build_storage().await?;
 
-        let lister_handle = self.spawn_lister(Arc::clone(&storage), tx, queue_size)?;
-        let aggregator_handle = self.spawn_aggregator(rx)?;
+        let lister_handle = self.spawn_lister(Arc::clone(&storage), lister_tx, queue_size)?;
+        let aggregator_handle = self.spawn_aggregator(lister_rx, display_tx)?;
+        let display_writer_handle = self.spawn_display_writer(display_rx)?;
 
-        // Wait for aggregator to finish (completes when rx closes).
-        // On aggregator error, cancel the token and wait for the lister to
-        // wind down before returning — otherwise the lister keeps issuing
-        // S3 API calls until it notices the dropped aggregate receiver.
+        // Wait for display writer first (terminal stage).
+        let display_writer_err = match display_writer_handle.await {
+            Ok(Ok(())) => None,
+            Ok(Err(e)) => {
+                self.cancellation_token.cancel();
+                Some(e)
+            }
+            Err(join_err) => {
+                self.cancellation_token.cancel();
+                Some(anyhow::anyhow!("DisplayWriter task panicked: {}", join_err))
+            }
+        };
+
+        // Wait for aggregator.
         let aggregator_err = match aggregator_handle.await {
             Ok(Ok(())) => None,
             Ok(Err(e)) => {
@@ -72,16 +88,17 @@ impl ListingPipeline {
             }
         };
 
-        // Wait for lister to finish and propagate errors
+        // Wait for lister.
         let lister_result = match lister_handle.await {
             Ok(Ok(())) => Ok(()),
             Ok(Err(e)) => Err(e),
             Err(join_err) => Err(anyhow::anyhow!("Lister+filter task panicked: {}", join_err)),
         };
 
-        // The aggregator error (if any) is the original cause; surface it
-        // in preference to the lister's error, which is usually a downstream
-        // symptom (cancellation or receiver dropped).
+        // Surface errors in precedence order: display writer > aggregator > lister
+        if let Some(e) = display_writer_err {
+            return Err(e);
+        }
         if let Some(e) = aggregator_err {
             return Err(e);
         }
@@ -121,34 +138,46 @@ impl ListingPipeline {
     fn spawn_aggregator(
         &self,
         rx: tokio::sync::mpsc::Receiver<crate::types::ListEntry>,
+        tx: tokio::sync::mpsc::Sender<DisplayMessage>,
+    ) -> Result<tokio::task::JoinHandle<Result<()>>> {
+        let aggregator_config = AggregatorConfig {
+            no_sort: self.config.no_sort,
+            sort_fields: self.config.sort.clone(),
+            reverse: self.config.reverse,
+            summary: self.config.display_config.summary,
+            parallel_sort_threshold: self.config.parallel_sort_threshold as usize,
+            cancellation_token: self.cancellation_token.clone(),
+        };
+        let aggregator = Aggregator::new(rx, tx, aggregator_config);
+
+        Ok(tokio::spawn(async move { aggregator.run().await }))
+    }
+
+    fn spawn_display_writer(
+        &self,
+        rx: tokio::sync::mpsc::Receiver<DisplayMessage>,
     ) -> Result<tokio::task::JoinHandle<Result<()>>> {
         let opts = FormatOptions::from_display_config(
             &self.config.display_config,
             self.config.target.prefix.clone(),
             self.config.all_versions,
         );
-        let use_json = self.config.display_config.json;
         let writer: Box<dyn std::io::Write + Send> =
             Box::new(std::io::BufWriter::new(std::io::stdout()));
 
-        let aggregator_config = AggregatorConfig {
-            use_json,
-            no_sort: self.config.no_sort,
-            sort_fields: self.config.sort.clone(),
-            reverse: self.config.reverse,
-            summary: self.config.display_config.summary,
-            human: self.config.display_config.human,
-            all_versions: self.config.all_versions,
-            parallel_sort_threshold: self.config.parallel_sort_threshold as usize,
+        let formatter: Box<dyn EntryFormatter> = if self.config.display_config.json {
+            Box::new(JsonFormatter::new(opts))
+        } else {
+            Box::new(TsvFormatter::new(opts))
+        };
+
+        let display_writer_config = DisplayWriterConfig {
+            header: self.config.display_config.header,
             cancellation_token: self.cancellation_token.clone(),
         };
-        let mut aggregator = Aggregator::new(rx, writer, opts, aggregator_config);
+        let display_writer = DisplayWriter::new(rx, writer, formatter, display_writer_config);
 
-        if !use_json && self.config.display_config.header {
-            aggregator.write_header()?;
-        }
-
-        Ok(tokio::spawn(async move { aggregator.run().await }))
+        Ok(tokio::spawn(async move { display_writer.run().await }))
     }
 
     async fn build_storage(&self) -> Result<Arc<dyn StorageTrait>> {

@@ -99,16 +99,17 @@ s3ls takes a fundamentally different approach by discovering virtual directories
 
 ### How it works
 
-s3ls uses a two-stage streaming pipeline connected by a bounded async channel:
+s3ls uses a three-stage streaming pipeline connected by bounded async channels:
 
 ```
-S3 API → [Lister + Filter Chain] → channel → [Aggregator] → stdout
-                   ↑                                ↓
-         parallel prefix discovery          sort (or stream) + format
+S3 API → [Lister + Filter Chain] → channel → [Aggregator] → channel → [DisplayWriter] → stdout
+                   ↑                               ↓                          ↓
+         parallel prefix discovery          sort (or stream)          format + output
 ```
 
 1. **Lister + Filter Chain** — Sends concurrent S3 API calls using parallel prefix discovery. Uses the S3 delimiter feature to discover "virtual directories" (common prefixes) at the top levels of the hierarchy, then lists each prefix independently and concurrently, with up to 64 parallel operations by default. A semaphore prevents overwhelming S3 while maximizing throughput. Filters (regex, time range, size range, storage class) are applied inline as entries arrive — objects that don't match are discarded immediately without being forwarded to the aggregator.
-2. **Aggregator** — In default mode, buffers all entries, sorts them, and writes the formatted output. In streaming mode (`--no-sort`), writes each entry directly to stdout as it arrives with no buffering.
+2. **Aggregator** — In default mode, buffers all entries and sorts them. In streaming mode (`--no-sort`), passes each entry through immediately with no buffering. Computes statistics when summary output is requested.
+3. **DisplayWriter** — Receives sorted (or streamed) entries and formats them as tab-delimited text or NDJSON, writing the result to stdout.
 
 ### Why it's fast
 
@@ -118,7 +119,7 @@ Rust contributes low per-object overhead (no garbage collector pauses, small str
 
 ### Why it's flexible
 
-The pipeline stages are decoupled through a channel and trait abstractions. Filters are composed as a chain within the lister. The aggregator handles both tab-delimited text and JSON formatting through the same interface. Adding a new filter, sort field, or output column does not require changes to the pipeline coordination — each concern is isolated.
+The pipeline stages are decoupled through channels and trait abstractions. Filters are composed as a chain within the lister. Sorting and display are separated — the aggregator handles ordering while the display writer handles both tab-delimited text and JSON formatting. Adding a new filter, sort field, or output column does not require changes to the pipeline coordination — each concern is isolated.
 
 ## Features
 
