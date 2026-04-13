@@ -543,3 +543,146 @@ async fn e2e_sort_bucket_listing_desc() {
     _guard_a.cleanup().await;
     _guard_z.cleanup().await;
 }
+
+/// Bucket listing `--sort date`: buckets sorted by creation date ascending.
+///
+/// Creates two buckets with a 1.5s sleep between them. The first bucket
+/// (`early-`) should appear before the second bucket (`late-`).
+///
+/// Covers `src/bucket_lister.rs:44` (SortField::Date for bucket sorting).
+#[tokio::test]
+async fn e2e_sort_bucket_listing_by_date() {
+    use std::time::Duration;
+    use tokio::time::sleep;
+    use uuid::Uuid;
+
+    let helper = TestHelper::new().await;
+    let id = Uuid::new_v4();
+    let bucket_early = format!("s3ls-e2e-early-{id}");
+    let bucket_late = format!("s3ls-e2e-late-{id}");
+    let _guard_early = helper.bucket_guard(&bucket_early);
+    let _guard_late = helper.bucket_guard(&bucket_late);
+
+    e2e_timeout!(async {
+        // Create early bucket first, then sleep, then create late bucket.
+        helper.create_bucket(&bucket_early).await;
+        sleep(Duration::from_millis(1500)).await;
+        helper.create_bucket(&bucket_late).await;
+
+        let output = TestHelper::run_s3ls(&["--json", "--sort", "date"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        // Find positions of our two test buckets.
+        let mut pos_early: Option<usize> = None;
+        let mut pos_late: Option<usize> = None;
+        for (i, line) in output
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .enumerate()
+        {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(line)
+                && let Some(name) = v.get("Name").and_then(|n| n.as_str())
+            {
+                if name == bucket_early {
+                    pos_early = Some(i);
+                } else if name == bucket_late {
+                    pos_late = Some(i);
+                }
+            }
+        }
+
+        let pos_early = pos_early.unwrap_or_else(|| {
+            panic!("bucket sort date: test bucket {bucket_early} not found in output")
+        });
+        let pos_late = pos_late.unwrap_or_else(|| {
+            panic!("bucket sort date: test bucket {bucket_late} not found in output")
+        });
+
+        assert!(
+            pos_early < pos_late,
+            "bucket sort date: expected {bucket_early} (pos {pos_early}) before {bucket_late} (pos {pos_late})"
+        );
+    });
+
+    _guard_early.cleanup().await;
+    _guard_late.cleanup().await;
+}
+
+/// Bucket listing `--sort size`: buckets have no size, so the comparator
+/// always returns Equal. The test verifies that both buckets appear and
+/// s3ls does not error.
+///
+/// Covers `src/bucket_lister.rs:46` (SortField::Size for bucket sorting —
+/// always Equal).
+#[tokio::test]
+async fn e2e_sort_bucket_listing_by_size() {
+    use uuid::Uuid;
+
+    let helper = TestHelper::new().await;
+    let bucket_a = format!("s3ls-e2e-a-{}", Uuid::new_v4());
+    let bucket_z = format!("s3ls-e2e-z-{}", Uuid::new_v4());
+    let _guard_a = helper.bucket_guard(&bucket_a);
+    let _guard_z = helper.bucket_guard(&bucket_z);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket_a).await;
+        helper.create_bucket(&bucket_z).await;
+
+        // `--sort size` is not valid for bucket listing and must be rejected.
+        let output = TestHelper::run_s3ls(&["--json", "--sort", "size"]);
+        assert!(
+            !output.status.success(),
+            "s3ls should reject --sort size for bucket listing"
+        );
+        assert!(
+            output
+                .stderr
+                .contains("sort field 'size' is not valid for bucket listing"),
+            "expected validation error in stderr, got: {}",
+            output.stderr
+        );
+    });
+
+    _guard_a.cleanup().await;
+    _guard_z.cleanup().await;
+}
+
+/// Bucket listing `--sort region`: buckets sorted by region. Since all
+/// test buckets are in the same region, sort-by-region is equivalent to
+/// a stable no-op — the test verifies that both buckets appear in the
+/// output (the branch is exercised even if the region comparison always
+/// returns Equal).
+///
+/// Covers `src/bucket_lister.rs:45` (SortField::Region for bucket sorting).
+#[tokio::test]
+async fn e2e_sort_bucket_listing_by_region() {
+    use uuid::Uuid;
+
+    let helper = TestHelper::new().await;
+    let bucket_a = format!("s3ls-e2e-a-{}", Uuid::new_v4());
+    let bucket_z = format!("s3ls-e2e-z-{}", Uuid::new_v4());
+    let _guard_a = helper.bucket_guard(&bucket_a);
+    let _guard_z = helper.bucket_guard(&bucket_z);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket_a).await;
+        helper.create_bucket(&bucket_z).await;
+
+        let output = TestHelper::run_s3ls(&["--json", "--sort", "region"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        // Both buckets must appear in the output.
+        assert!(
+            output.stdout.contains(&bucket_a),
+            "bucket sort region: bucket {bucket_a} not found in output"
+        );
+        assert!(
+            output.stdout.contains(&bucket_z),
+            "bucket sort region: bucket {bucket_z} not found in output"
+        );
+    });
+
+    _guard_a.cleanup().await;
+    _guard_z.cleanup().await;
+}

@@ -534,6 +534,101 @@ async fn e2e_listing_rate_limit_api_versioned() {
     _guard.cleanup().await;
 }
 
+/// `--all-versions` with a sub-prefix target: verifies that versioned
+/// listing correctly sets the prefix parameter on the ListObjectVersions
+/// API call.
+///
+/// Covers `src/storage/s3/mod.rs:179` (fetch_page_versions prefix
+/// parameter).
+#[tokio::test]
+async fn e2e_listing_all_versions_with_prefix() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_versioned_bucket(&bucket).await;
+        // Put objects under a sub-prefix and at the root
+        helper
+            .put_object(&bucket, "logs/app.log", b"v1".to_vec())
+            .await;
+        helper
+            .put_object(&bucket, "logs/app.log", b"v2".to_vec())
+            .await;
+        helper
+            .put_object(&bucket, "root.txt", b"data".to_vec())
+            .await;
+
+        // List only under the "logs/" prefix with --all-versions
+        let target = format!("s3://{bucket}/logs/");
+        let output =
+            TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--all-versions", "--json"]);
+
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        // Both versions of app.log should appear
+        let app_lines: Vec<&str> = output
+            .stdout
+            .lines()
+            .filter(|l| l.contains("app.log"))
+            .collect();
+        assert_eq!(
+            app_lines.len(),
+            2,
+            "expected 2 versions of app.log under logs/ prefix, got {}: {:?}",
+            app_lines.len(),
+            app_lines
+        );
+
+        // root.txt should NOT appear (it's outside the prefix)
+        assert!(
+            !output.stdout.contains("root.txt"),
+            "root.txt should not appear when listing with logs/ prefix"
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// `--rate-limit-api` with a value above the internal refill divider
+/// threshold (> 10): exercises the proportional-refill rate limiter
+/// branch.
+///
+/// Covers `src/storage/s3/mod.rs:751` (rate limiter else branch for
+/// values > REFILL_PER_INTERVAL_DIVIDER).
+#[tokio::test]
+async fn e2e_listing_rate_limit_api_high_value() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+        helper.put_object(&bucket, "a.txt", b"aaa".to_vec()).await;
+        helper.put_object(&bucket, "b.txt", b"bbb".to_vec()).await;
+
+        let target = format!("s3://{bucket}/");
+        let output =
+            TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--rate-limit-api", "20"]);
+
+        assert!(
+            output.status.success(),
+            "s3ls failed with --rate-limit-api 20: {}",
+            output.stderr
+        );
+        assert!(
+            output.stdout.contains("a.txt"),
+            "a.txt missing from rate-limited output"
+        );
+        assert!(
+            output.stdout.contains("b.txt"),
+            "b.txt missing from rate-limited output"
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
 /// Edge case: enumerate 1,000 objects without a prefix, paginated via
 /// `--max-keys 10` (100 pages). Verifies that pagination works correctly
 /// across many pages when the bucket has no prefix hierarchy.

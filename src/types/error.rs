@@ -35,3 +35,58 @@ pub fn exit_code_from_error(err: &anyhow::Error) -> i32 {
         .map(|e| e.exit_code())
         .unwrap_or(1)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exit_code_cancelled_is_zero() {
+        assert_eq!(S3lsError::Cancelled.exit_code(), 0);
+    }
+
+    #[test]
+    fn exit_code_invalid_config_is_two() {
+        assert_eq!(S3lsError::InvalidConfig("bad".into()).exit_code(), 2);
+    }
+
+    #[test]
+    fn exit_code_invalid_uri_is_two() {
+        assert_eq!(S3lsError::InvalidUri("bad".into()).exit_code(), 2);
+    }
+
+    #[test]
+    fn exit_code_listing_error_is_one() {
+        assert_eq!(S3lsError::ListingError("fail".into()).exit_code(), 1);
+    }
+
+    #[test]
+    fn is_cancelled_error_true_for_cancelled() {
+        let err: anyhow::Error = S3lsError::Cancelled.into();
+        assert!(is_cancelled_error(&err));
+    }
+
+    #[test]
+    fn is_cancelled_error_false_for_other_variants() {
+        let err: anyhow::Error = S3lsError::ListingError("x".into()).into();
+        assert!(!is_cancelled_error(&err));
+    }
+
+    #[test]
+    fn is_cancelled_error_false_for_non_s3ls_error() {
+        let err = anyhow::anyhow!("generic error");
+        assert!(!is_cancelled_error(&err));
+    }
+
+    #[test]
+    fn exit_code_from_error_delegates_to_variant() {
+        let err: anyhow::Error = S3lsError::InvalidUri("bad".into()).into();
+        assert_eq!(exit_code_from_error(&err), 2);
+    }
+
+    #[test]
+    fn exit_code_from_error_defaults_to_one_for_unknown() {
+        let err = anyhow::anyhow!("unknown error");
+        assert_eq!(exit_code_from_error(&err), 1);
+    }
+}

@@ -580,4 +580,134 @@ mod tests {
         assert_eq!(entry.size(), 0);
         assert!(entry.last_modified().is_some());
     }
+
+    #[test]
+    fn s3_credentials_from_environment_debug() {
+        let cred = S3Credentials::FromEnvironment;
+        let rendered = format!("{cred:?}");
+        assert_eq!(rendered, "FromEnvironment");
+    }
+
+    #[test]
+    fn s3_credentials_profile_debug() {
+        let cred = S3Credentials::Profile("my-profile".to_string());
+        let rendered = format!("{cred:?}");
+        assert!(rendered.contains("my-profile"));
+    }
+
+    #[test]
+    fn s3_credentials_credentials_debug() {
+        let cred = S3Credentials::Credentials {
+            access_keys: AccessKeys {
+                access_key: "AKIAIOSFODNN7EXAMPLE".to_string(),
+                secret_access_key: "secret".to_string(),
+                session_token: None,
+            },
+        };
+        let rendered = format!("{cred:?}");
+        assert!(rendered.contains("Credentials"));
+        assert!(rendered.contains("AKIA"));
+    }
+
+    #[test]
+    fn restore_expiry_date_not_versioning() {
+        let obj = S3Object::NotVersioning {
+            key: "k".to_string(),
+            size: 0,
+            last_modified: Utc::now(),
+            e_tag: "\"e\"".to_string(),
+            storage_class: None,
+            checksum_algorithm: vec![],
+            checksum_type: None,
+            owner_display_name: None,
+            owner_id: None,
+            is_restore_in_progress: Some(false),
+            restore_expiry_date: Some("2024-12-31T00:00:00Z".to_string()),
+        };
+        assert_eq!(obj.restore_expiry_date(), Some("2024-12-31T00:00:00Z"));
+        assert_eq!(obj.is_restore_in_progress(), Some(false));
+    }
+
+    #[test]
+    fn restore_expiry_date_versioning() {
+        let obj = S3Object::Versioning {
+            key: "k".to_string(),
+            version_id: "v1".to_string(),
+            size: 0,
+            last_modified: Utc::now(),
+            e_tag: "\"e\"".to_string(),
+            is_latest: true,
+            storage_class: None,
+            checksum_algorithm: vec![],
+            checksum_type: None,
+            owner_display_name: None,
+            owner_id: None,
+            is_restore_in_progress: Some(true),
+            restore_expiry_date: Some("2025-01-15T00:00:00Z".to_string()),
+        };
+        assert_eq!(obj.restore_expiry_date(), Some("2025-01-15T00:00:00Z"));
+        assert_eq!(obj.is_restore_in_progress(), Some(true));
+    }
+
+    #[test]
+    fn list_entry_version_id_for_all_variants() {
+        let obj_entry = ListEntry::Object(S3Object::NotVersioning {
+            key: "a".to_string(),
+            size: 0,
+            last_modified: Utc::now(),
+            e_tag: "\"e\"".to_string(),
+            storage_class: None,
+            checksum_algorithm: vec![],
+            checksum_type: None,
+            owner_display_name: None,
+            owner_id: None,
+            is_restore_in_progress: None,
+            restore_expiry_date: None,
+        });
+        assert!(obj_entry.version_id().is_none());
+
+        let dm_entry = ListEntry::DeleteMarker {
+            key: "b".to_string(),
+            version_id: "dm-v1".to_string(),
+            last_modified: Utc::now(),
+            is_latest: true,
+            owner_display_name: None,
+            owner_id: None,
+        };
+        assert_eq!(dm_entry.version_id(), Some("dm-v1"));
+
+        let cp_entry = ListEntry::CommonPrefix("prefix/".to_string());
+        assert!(cp_entry.version_id().is_none());
+    }
+
+    #[test]
+    fn list_entry_is_delete_marker() {
+        let dm = ListEntry::DeleteMarker {
+            key: "k".to_string(),
+            version_id: "v".to_string(),
+            last_modified: Utc::now(),
+            is_latest: false,
+            owner_display_name: None,
+            owner_id: None,
+        };
+        assert!(dm.is_delete_marker());
+
+        let obj = ListEntry::Object(S3Object::NotVersioning {
+            key: "k".to_string(),
+            size: 0,
+            last_modified: Utc::now(),
+            e_tag: "\"e\"".to_string(),
+            storage_class: None,
+            checksum_algorithm: vec![],
+            checksum_type: None,
+            owner_display_name: None,
+            owner_id: None,
+            is_restore_in_progress: None,
+            restore_expiry_date: None,
+        });
+        assert!(!obj.is_delete_marker());
+
+        let cp = ListEntry::CommonPrefix("p/".to_string());
+        assert!(!cp.is_delete_marker());
+    }
 }
