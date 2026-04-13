@@ -551,4 +551,415 @@ mod tests {
 
         assert!(display_rx.recv().await.is_none());
     }
+
+    // ========================================================================
+    // format_size_split
+    // ========================================================================
+
+    #[test]
+    fn format_size_split_below_1024() {
+        let (num, unit) = format_size_split(512);
+        assert_eq!(num, "512");
+        assert_eq!(unit, "bytes");
+    }
+
+    #[test]
+    fn format_size_split_zero() {
+        let (num, unit) = format_size_split(0);
+        assert_eq!(num, "0");
+        assert_eq!(unit, "bytes");
+    }
+
+    #[test]
+    fn format_size_split_above_1024() {
+        let (num, unit) = format_size_split(1_048_576); // 1 MiB
+        assert_eq!(num, "1.0");
+        assert_eq!(unit, "MiB");
+    }
+
+    #[test]
+    fn format_size_split_exactly_1024() {
+        let (num, unit) = format_size_split(1024);
+        assert_eq!(num, "1.0");
+        assert_eq!(unit, "KiB");
+    }
+
+    // ========================================================================
+    // format_entry: CommonPrefix with optional columns
+    // ========================================================================
+
+    #[test]
+    fn format_text_common_prefix_with_all_optional_columns() {
+        let entry = ListEntry::CommonPrefix("logs/".to_string());
+        let opts = FormatOptions {
+            show_storage_class: true,
+            show_etag: true,
+            show_checksum_algorithm: true,
+            show_checksum_type: true,
+            all_versions: true,
+            show_is_latest: true,
+            show_owner: true,
+            show_restore_status: true,
+            ..Default::default()
+        };
+        let line = format_entry(&entry, &opts);
+        let fields: Vec<&str> = line.split('\t').collect();
+        // date, PRE, storage_class, etag, checksum_algo, checksum_type,
+        // version_id, is_latest, owner_name, owner_id, restore_in_progress,
+        // restore_expiry, key
+        assert_eq!(fields.len(), 13);
+        assert_eq!(fields[0], ""); // date
+        assert_eq!(fields[1], "PRE"); // size
+        // Optional columns should all be empty
+        for i in 2..12 {
+            assert_eq!(fields[i], "", "field {i} should be empty");
+        }
+        assert_eq!(fields[12], "logs/"); // key
+    }
+
+    // ========================================================================
+    // format_entry: DeleteMarker with optional columns
+    // ========================================================================
+
+    fn make_delete_marker() -> ListEntry {
+        ListEntry::DeleteMarker {
+            key: "deleted.txt".to_string(),
+            version_id: "ver-123".to_string(),
+            last_modified: chrono::Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap(),
+            is_latest: false,
+            owner_display_name: Some("alice".to_string()),
+            owner_id: Some("id-alice".to_string()),
+        }
+    }
+
+    #[test]
+    fn format_text_delete_marker_basic() {
+        let entry = make_delete_marker();
+        let opts = FormatOptions::default();
+        let line = format_entry(&entry, &opts);
+        let fields: Vec<&str> = line.split('\t').collect();
+        // date, DELETE, version_id, key
+        assert_eq!(fields[1], "DELETE");
+        assert_eq!(fields[2], "ver-123");
+        assert!(fields.last().unwrap().contains("deleted.txt"));
+    }
+
+    #[test]
+    fn format_text_delete_marker_with_all_optional_columns() {
+        let entry = make_delete_marker();
+        let opts = FormatOptions {
+            show_storage_class: true,
+            show_etag: true,
+            show_checksum_algorithm: true,
+            show_checksum_type: true,
+            show_is_latest: true,
+            show_owner: true,
+            show_restore_status: true,
+            ..Default::default()
+        };
+        let line = format_entry(&entry, &opts);
+        let fields: Vec<&str> = line.split('\t').collect();
+        // date, DELETE, storage_class(empty), etag(empty), checksum_algo(empty),
+        // checksum_type(empty), version_id, is_latest, owner_name, owner_id,
+        // restore_in_progress(empty), restore_expiry(empty), key
+        assert_eq!(fields[1], "DELETE");
+        assert_eq!(fields[2], ""); // storage_class
+        assert_eq!(fields[3], ""); // etag
+        assert_eq!(fields[4], ""); // checksum_algorithm
+        assert_eq!(fields[5], ""); // checksum_type
+        assert_eq!(fields[6], "ver-123"); // version_id
+        assert_eq!(fields[7], "NOT_LATEST"); // is_latest
+        assert_eq!(fields[8], "alice"); // owner_display_name
+        assert_eq!(fields[9], "id-alice"); // owner_id
+        assert_eq!(fields[10], ""); // restore_in_progress
+        assert_eq!(fields[11], ""); // restore_expiry
+        assert_eq!(fields[12], "deleted.txt"); // key
+    }
+
+    #[test]
+    fn format_text_delete_marker_is_latest() {
+        let entry = ListEntry::DeleteMarker {
+            key: "k".to_string(),
+            version_id: "v".to_string(),
+            last_modified: chrono::Utc::now(),
+            is_latest: true,
+            owner_display_name: None,
+            owner_id: None,
+        };
+        let opts = FormatOptions {
+            show_is_latest: true,
+            ..Default::default()
+        };
+        let line = format_entry(&entry, &opts);
+        assert!(line.contains("LATEST"));
+        assert!(!line.contains("NOT_LATEST"));
+    }
+
+    // ========================================================================
+    // format_entry_json: restore status
+    // ========================================================================
+
+    #[test]
+    fn format_json_object_with_restore_status() {
+        let entry = ListEntry::Object(S3Object::NotVersioning {
+            key: "archived.dat".to_string(),
+            size: 500,
+            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            e_tag: "\"abc\"".to_string(),
+            storage_class: Some("GLACIER".to_string()),
+            checksum_algorithm: vec![],
+            checksum_type: None,
+            owner_display_name: None,
+            owner_id: None,
+            is_restore_in_progress: Some(true),
+            restore_expiry_date: Some("2024-02-01T00:00:00Z".to_string()),
+        });
+        let opts = FormatOptions::default();
+        let json_str = format_entry_json(&entry, &opts);
+        let val: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        let restore = &val["RestoreStatus"];
+        assert_eq!(restore["IsRestoreInProgress"], true);
+        assert_eq!(restore["RestoreExpiryDate"], "2024-02-01T00:00:00Z");
+    }
+
+    #[test]
+    fn format_json_object_restore_in_progress_without_expiry() {
+        let entry = ListEntry::Object(S3Object::NotVersioning {
+            key: "k".to_string(),
+            size: 0,
+            last_modified: chrono::Utc::now(),
+            e_tag: "\"e\"".to_string(),
+            storage_class: None,
+            checksum_algorithm: vec![],
+            checksum_type: None,
+            owner_display_name: None,
+            owner_id: None,
+            is_restore_in_progress: Some(false),
+            restore_expiry_date: None,
+        });
+        let opts = FormatOptions::default();
+        let json_str = format_entry_json(&entry, &opts);
+        let val: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        let restore = &val["RestoreStatus"];
+        assert_eq!(restore["IsRestoreInProgress"], false);
+        assert!(restore.get("RestoreExpiryDate").is_none());
+    }
+
+    // ========================================================================
+    // accumulate_statistics
+    // ========================================================================
+
+    #[test]
+    fn accumulate_statistics_counts_delete_markers() {
+        let mut stats = crate::types::ListingStatistics {
+            total_objects: 0,
+            total_size: 0,
+            total_delete_markers: 0,
+        };
+        let dm = ListEntry::DeleteMarker {
+            key: "k".to_string(),
+            version_id: "v".to_string(),
+            last_modified: chrono::Utc::now(),
+            is_latest: true,
+            owner_display_name: None,
+            owner_id: None,
+        };
+        accumulate_statistics(&dm, &mut stats);
+        assert_eq!(stats.total_delete_markers, 1);
+        assert_eq!(stats.total_objects, 0);
+        assert_eq!(stats.total_size, 0);
+    }
+
+    #[test]
+    fn accumulate_statistics_ignores_common_prefix() {
+        let mut stats = crate::types::ListingStatistics {
+            total_objects: 0,
+            total_size: 0,
+            total_delete_markers: 0,
+        };
+        accumulate_statistics(&ListEntry::CommonPrefix("p/".to_string()), &mut stats);
+        assert_eq!(stats.total_objects, 0);
+        assert_eq!(stats.total_size, 0);
+        assert_eq!(stats.total_delete_markers, 0);
+    }
+
+    #[test]
+    fn accumulate_statistics_counts_objects() {
+        let mut stats = crate::types::ListingStatistics {
+            total_objects: 0,
+            total_size: 0,
+            total_delete_markers: 0,
+        };
+        accumulate_statistics(&make_entry("a.txt", 100, 2024, 1), &mut stats);
+        accumulate_statistics(&make_entry("b.txt", 200, 2024, 2), &mut stats);
+        assert_eq!(stats.total_objects, 2);
+        assert_eq!(stats.total_size, 300);
+    }
+
+    // ========================================================================
+    // cmp_mtime with None (CommonPrefix)
+    // ========================================================================
+
+    #[test]
+    fn cmp_mtime_with_common_prefix() {
+        let cp = ListEntry::CommonPrefix("p/".to_string());
+        let obj = make_entry("a.txt", 100, 2024, 1);
+
+        // Object (Some) vs CommonPrefix (None)
+        assert_eq!(cmp_mtime(&obj, &cp), std::cmp::Ordering::Less);
+        // CommonPrefix (None) vs Object (Some)
+        assert_eq!(cmp_mtime(&cp, &obj), std::cmp::Ordering::Greater);
+        // CommonPrefix vs CommonPrefix
+        let cp2 = ListEntry::CommonPrefix("q/".to_string());
+        assert_eq!(cmp_mtime(&cp, &cp2), std::cmp::Ordering::Equal);
+    }
+
+    // ========================================================================
+    // sort_entries with Region field (always Equal)
+    // ========================================================================
+
+    #[test]
+    fn sort_by_region_preserves_order() {
+        let mut entries = vec![
+            make_entry("c.txt", 100, 2024, 1),
+            make_entry("a.txt", 200, 2024, 2),
+            make_entry("b.txt", 300, 2024, 3),
+        ];
+        let original_keys: Vec<String> = entries.iter().map(|e| e.key().to_string()).collect();
+        sort_entries(&mut entries, &[SortField::Region], false, usize::MAX);
+        let sorted_keys: Vec<&str> = entries.iter().map(|e| e.key()).collect();
+        // Region sort is always Equal, so order is stable (unchanged)
+        assert_eq!(
+            sorted_keys,
+            original_keys.iter().map(|s| s.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    // ========================================================================
+    // format_summary with human-readable and all_versions
+    // ========================================================================
+
+    #[test]
+    fn format_summary_text_with_human_size() {
+        let stats = crate::types::ListingStatistics {
+            total_objects: 5,
+            total_size: 1_048_576, // 1 MiB
+            total_delete_markers: 0,
+        };
+        let summary = format_summary(&stats, false, true, false);
+        assert!(summary.starts_with("Total:"));
+        assert!(summary.contains("5"));
+        assert!(summary.contains("MiB"));
+    }
+
+    #[test]
+    fn format_summary_text_with_delete_markers() {
+        let stats = crate::types::ListingStatistics {
+            total_objects: 3,
+            total_size: 100,
+            total_delete_markers: 2,
+        };
+        let summary = format_summary(&stats, false, false, true);
+        assert!(summary.contains("2"));
+        assert!(summary.contains("delete markers"));
+    }
+
+    // ========================================================================
+    // format_entry: Object with restore status in text mode
+    // ========================================================================
+
+    #[test]
+    fn format_text_object_with_restore_status() {
+        let entry = ListEntry::Object(S3Object::NotVersioning {
+            key: "k.dat".to_string(),
+            size: 100,
+            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            e_tag: "\"e\"".to_string(),
+            storage_class: Some("GLACIER".to_string()),
+            checksum_algorithm: vec![],
+            checksum_type: None,
+            owner_display_name: None,
+            owner_id: None,
+            is_restore_in_progress: Some(true),
+            restore_expiry_date: Some("2024-02-01T00:00:00Z".to_string()),
+        });
+        let opts = FormatOptions {
+            show_restore_status: true,
+            ..Default::default()
+        };
+        let line = format_entry(&entry, &opts);
+        assert!(line.contains("true"));
+        assert!(line.contains("2024-02-01T00:00:00Z"));
+    }
+
+    // ========================================================================
+    // format_entry_json: DeleteMarker with owner
+    // ========================================================================
+
+    #[test]
+    fn format_json_delete_marker_with_owner() {
+        let entry = ListEntry::DeleteMarker {
+            key: "deleted.txt".to_string(),
+            version_id: "v-dm".to_string(),
+            last_modified: chrono::Utc.with_ymd_and_hms(2024, 6, 1, 0, 0, 0).unwrap(),
+            is_latest: true,
+            owner_display_name: Some("bob".to_string()),
+            owner_id: Some("id-bob".to_string()),
+        };
+        let opts = FormatOptions::default();
+        let json_str = format_entry_json(&entry, &opts);
+        let val: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(val["DeleteMarker"], true);
+        assert_eq!(val["VersionId"], "v-dm");
+        assert_eq!(val["IsLatest"], true);
+        let owner = &val["Owner"];
+        assert_eq!(owner["DisplayName"], "bob");
+        assert_eq!(owner["ID"], "id-bob");
+    }
+
+    #[test]
+    fn format_json_object_with_owner() {
+        let entry = ListEntry::Object(S3Object::NotVersioning {
+            key: "owned.txt".to_string(),
+            size: 10,
+            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            e_tag: "\"e\"".to_string(),
+            storage_class: None,
+            checksum_algorithm: vec![],
+            checksum_type: None,
+            owner_display_name: Some("alice".to_string()),
+            owner_id: Some("id-alice".to_string()),
+            is_restore_in_progress: None,
+            restore_expiry_date: None,
+        });
+        let opts = FormatOptions::default();
+        let json_str = format_entry_json(&entry, &opts);
+        let val: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        let owner = &val["Owner"];
+        assert_eq!(owner["DisplayName"], "alice");
+        assert_eq!(owner["ID"], "id-alice");
+    }
+
+    #[test]
+    fn format_json_object_with_owner_name_only() {
+        let entry = ListEntry::Object(S3Object::NotVersioning {
+            key: "k".to_string(),
+            size: 0,
+            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            e_tag: "\"e\"".to_string(),
+            storage_class: None,
+            checksum_algorithm: vec![],
+            checksum_type: None,
+            owner_display_name: Some("bob".to_string()),
+            owner_id: None,
+            is_restore_in_progress: None,
+            restore_expiry_date: None,
+        });
+        let opts = FormatOptions::default();
+        let json_str = format_entry_json(&entry, &opts);
+        let val: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        let owner = &val["Owner"];
+        assert_eq!(owner["DisplayName"], "bob");
+        assert!(owner.get("ID").is_none());
+    }
 }

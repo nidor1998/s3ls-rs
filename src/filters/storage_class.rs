@@ -118,4 +118,11 @@ mod tests {
         };
         assert!(filter.matches(&entry).unwrap());
     }
+
+    #[test]
+    fn common_prefix_passes_through() {
+        let filter = StorageClassFilter::new(vec!["GLACIER".to_string()]);
+        let entry = ListEntry::CommonPrefix("logs/".to_string());
+        assert!(filter.matches(&entry).unwrap());
+    }
 }

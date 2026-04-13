@@ -88,4 +88,12 @@ mod tests {
         let filter = MtimeAfterFilter::new(now);
         assert!(filter.matches(&make_entry_at(now)).unwrap());
     }
+
+    #[test]
+    fn common_prefix_passes_through() {
+        let filter = MtimeAfterFilter::new(Utc::now());
+        let entry = ListEntry::CommonPrefix("logs/".to_string());
+        // CommonPrefix has no last_modified → None branch → passes
+        assert!(filter.matches(&entry).unwrap());
+    }
 }

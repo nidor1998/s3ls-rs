@@ -147,4 +147,47 @@ mod tests {
             Err(anyhow::anyhow!("simulated filter error"))
         }
     }
+
+    #[test]
+    fn filter_chain_rejects_non_matching_object() {
+        let chain = FilterChain::new(vec![Box::new(RejectAllFilter)]);
+        let entry = ListEntry::Object(S3Object::NotVersioning {
+            key: "test.txt".to_string(),
+            size: 100,
+            last_modified: chrono::Utc::now(),
+            e_tag: "\"e\"".to_string(),
+            storage_class: None,
+            checksum_algorithm: vec![],
+            checksum_type: None,
+            owner_display_name: None,
+            owner_id: None,
+            is_restore_in_progress: None,
+            restore_expiry_date: None,
+        });
+        assert!(!chain.matches(&entry).unwrap());
+    }
+
+    #[test]
+    fn filter_chain_is_empty() {
+        let empty = FilterChain::new(vec![]);
+        assert!(empty.is_empty());
+
+        let non_empty = FilterChain::new(vec![Box::new(RejectAllFilter)]);
+        assert!(!non_empty.is_empty());
+    }
+
+    #[test]
+    fn delete_marker_passes_through_reject_all() {
+        let chain = FilterChain::new(vec![Box::new(RejectAllFilter)]);
+        let entry = ListEntry::DeleteMarker {
+            key: "k".to_string(),
+            version_id: "v".to_string(),
+            last_modified: chrono::Utc::now(),
+            is_latest: true,
+            owner_display_name: None,
+            owner_id: None,
+        };
+        // DeleteMarker is not CommonPrefix, so it goes through filter chain
+        assert!(!chain.matches(&entry).unwrap());
+    }
 }

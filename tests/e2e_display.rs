@@ -89,6 +89,145 @@ async fn e2e_display_show_storage_class() {
     _guard.cleanup().await;
 }
 
+/// `--show-checksum-algorithm --show-checksum-type` on a CommonPrefix (PRE)
+/// row: columns are present in the header but empty for PRE rows.
+///
+/// Covers `src/aggregate.rs:338-342` (CommonPrefix branch for
+/// show_checksum_algorithm and show_checksum_type).
+#[tokio::test]
+async fn e2e_display_common_prefix_with_checksum_flags() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+        helper.put_object(&bucket, "top.txt", vec![0u8; 100]).await;
+        helper
+            .put_object(&bucket, "logs/deep.log", vec![0u8; 100])
+            .await;
+
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--max-depth",
+            "1",
+            "--header",
+            "--show-checksum-algorithm",
+            "--show-checksum-type",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_header_columns(
+            &output.stdout,
+            &["DATE", "SIZE", "CHECKSUM_ALGORITHM", "CHECKSUM_TYPE", "KEY"],
+            "common-prefix checksum flags: header",
+        );
+        assert_all_data_rows_have_columns(
+            &output.stdout,
+            5,
+            "common-prefix checksum flags: row count",
+        );
+
+        // PRE row: checksum columns should be empty
+        let pre_row = output
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .find(|l| {
+                let cols = parse_tsv_line(l);
+                cols.len() >= 2 && cols[1] == "PRE"
+            })
+            .expect("common-prefix checksum flags: no PRE row found");
+        let cols = parse_tsv_line(pre_row);
+        assert!(
+            cols[2].is_empty(),
+            "common-prefix checksum flags: CHECKSUM_ALGORITHM should be empty, got {:?}",
+            cols[2]
+        );
+        assert!(
+            cols[3].is_empty(),
+            "common-prefix checksum flags: CHECKSUM_TYPE should be empty, got {:?}",
+            cols[3]
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// `--show-restore-status` on a CommonPrefix (PRE) row: columns are present
+/// in the header but empty for PRE rows.
+///
+/// Covers `src/aggregate.rs:358-359` (CommonPrefix branch for
+/// show_restore_status).
+#[tokio::test]
+async fn e2e_display_common_prefix_with_restore_status() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+        helper.put_object(&bucket, "top.txt", vec![0u8; 100]).await;
+        helper
+            .put_object(&bucket, "logs/deep.log", vec![0u8; 100])
+            .await;
+
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--max-depth",
+            "1",
+            "--header",
+            "--show-restore-status",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_header_columns(
+            &output.stdout,
+            &[
+                "DATE",
+                "SIZE",
+                "IS_RESTORE_IN_PROGRESS",
+                "RESTORE_EXPIRY_DATE",
+                "KEY",
+            ],
+            "common-prefix restore-status: header",
+        );
+        assert_all_data_rows_have_columns(
+            &output.stdout,
+            5,
+            "common-prefix restore-status: row count",
+        );
+
+        // PRE row: restore-status columns should be empty
+        let pre_row = output
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .find(|l| {
+                let cols = parse_tsv_line(l);
+                cols.len() >= 2 && cols[1] == "PRE"
+            })
+            .expect("common-prefix restore-status: no PRE row found");
+        let cols = parse_tsv_line(pre_row);
+        assert!(
+            cols[2].is_empty(),
+            "common-prefix restore-status: IS_RESTORE_IN_PROGRESS should be empty, got {:?}",
+            cols[2]
+        );
+        assert!(
+            cols[3].is_empty(),
+            "common-prefix restore-status: RESTORE_EXPIRY_DATE should be empty, got {:?}",
+            cols[3]
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
 /// `--show-etag` adds an ETAG column between SIZE and KEY. The JSON output
 /// always includes the `ETag` field for regular objects regardless of the
 /// flag, so the JSON sub-assertion verifies the field is present.
@@ -991,6 +1130,223 @@ async fn e2e_display_delete_marker_row() {
     _guard.cleanup().await;
 }
 
+/// Verifies that DeleteMarker text rows correctly pad
+/// `--show-checksum-algorithm --show-checksum-type` columns as empty.
+///
+/// Covers `src/aggregate.rs:419-423` (DeleteMarker branch for
+/// show_checksum_algorithm and show_checksum_type).
+#[tokio::test]
+async fn e2e_display_delete_marker_with_checksum_flags() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_versioned_bucket(&bucket).await;
+        helper.put_object(&bucket, "doc.txt", vec![0u8; 100]).await;
+        helper.create_delete_marker(&bucket, "doc.txt").await;
+
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--all-versions",
+            "--header",
+            "--show-checksum-algorithm",
+            "--show-checksum-type",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_header_columns(
+            &output.stdout,
+            &[
+                "DATE",
+                "SIZE",
+                "CHECKSUM_ALGORITHM",
+                "CHECKSUM_TYPE",
+                "VERSION_ID",
+                "KEY",
+            ],
+            "delete-marker checksum flags: header",
+        );
+        assert_all_data_rows_have_columns(
+            &output.stdout,
+            6,
+            "delete-marker checksum flags: row count",
+        );
+
+        // Find the DELETE row and verify checksum columns are empty.
+        let dm_row = output
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .find(|l| {
+                let cols = parse_tsv_line(l);
+                cols.len() >= 2 && cols[1] == "DELETE"
+            })
+            .expect("delete-marker checksum flags: no DELETE row found");
+        let cols = parse_tsv_line(dm_row);
+        assert!(
+            cols[2].is_empty(),
+            "delete-marker checksum flags: CHECKSUM_ALGORITHM should be empty, got {:?}",
+            cols[2]
+        );
+        assert!(
+            cols[3].is_empty(),
+            "delete-marker checksum flags: CHECKSUM_TYPE should be empty, got {:?}",
+            cols[3]
+        );
+        assert_eq!(cols[5], "doc.txt");
+    });
+
+    _guard.cleanup().await;
+}
+
+/// Verifies that DeleteMarker text rows with `--show-is-latest` show
+/// `LATEST` or `NOT_LATEST` correctly. Two versions of doc.txt + 1
+/// delete marker (which is the latest). This also exercises the
+/// NOT_LATEST path for both an older object version and verifies a DM
+/// can be LATEST.
+///
+/// Covers `src/aggregate.rs:427-430` (DeleteMarker branch for
+/// show_is_latest, both LATEST and NOT_LATEST).
+#[tokio::test]
+async fn e2e_display_delete_marker_with_is_latest() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_versioned_bucket(&bucket).await;
+        helper.put_object(&bucket, "doc.txt", vec![0u8; 100]).await;
+        helper.put_object(&bucket, "doc.txt", vec![0u8; 200]).await;
+        helper.create_delete_marker(&bucket, "doc.txt").await;
+
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--all-versions",
+            "--header",
+            "--show-is-latest",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_header_columns(
+            &output.stdout,
+            &["DATE", "SIZE", "VERSION_ID", "IS_LATEST", "KEY"],
+            "delete-marker is-latest: header",
+        );
+        assert_all_data_rows_have_columns(&output.stdout, 5, "delete-marker is-latest: row count");
+
+        // Find the DELETE row: its IS_LATEST should be "LATEST" since
+        // it was created after the two object versions.
+        let dm_row = output
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .find(|l| {
+                let cols = parse_tsv_line(l);
+                cols.len() >= 2 && cols[1] == "DELETE"
+            })
+            .expect("delete-marker is-latest: no DELETE row found");
+        let cols = parse_tsv_line(dm_row);
+        assert_eq!(
+            cols[3], "LATEST",
+            "delete-marker is-latest: DM should be LATEST, got {:?}",
+            cols[3]
+        );
+
+        // Verify NOT_LATEST appears for object versions (they are no longer latest)
+        let not_latest_count = output
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .filter(|l| {
+                let cols = parse_tsv_line(l);
+                cols.len() >= 4 && cols[3] == "NOT_LATEST"
+            })
+            .count();
+        assert_eq!(
+            not_latest_count, 2,
+            "delete-marker is-latest: expected 2 NOT_LATEST rows (both object versions), got {not_latest_count}"
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// Verifies that DeleteMarker text rows pad `--show-restore-status`
+/// columns as empty.
+///
+/// Covers `src/aggregate.rs:439-442` (DeleteMarker branch for
+/// show_restore_status — empty columns since DMs have no restore status).
+#[tokio::test]
+async fn e2e_display_delete_marker_with_restore_status() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_versioned_bucket(&bucket).await;
+        helper.put_object(&bucket, "doc.txt", vec![0u8; 100]).await;
+        helper.create_delete_marker(&bucket, "doc.txt").await;
+
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--all-versions",
+            "--header",
+            "--show-restore-status",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        assert_header_columns(
+            &output.stdout,
+            &[
+                "DATE",
+                "SIZE",
+                "VERSION_ID",
+                "IS_RESTORE_IN_PROGRESS",
+                "RESTORE_EXPIRY_DATE",
+                "KEY",
+            ],
+            "delete-marker restore-status: header",
+        );
+        assert_all_data_rows_have_columns(
+            &output.stdout,
+            6,
+            "delete-marker restore-status: row count",
+        );
+
+        // Find the DELETE row and verify restore-status columns are empty.
+        let dm_row = output
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .find(|l| {
+                let cols = parse_tsv_line(l);
+                cols.len() >= 2 && cols[1] == "DELETE"
+            })
+            .expect("delete-marker restore-status: no DELETE row found");
+        let cols = parse_tsv_line(dm_row);
+        assert!(
+            cols[3].is_empty(),
+            "delete-marker restore-status: IS_RESTORE_IN_PROGRESS should be empty, got {:?}",
+            cols[3]
+        );
+        assert!(
+            cols[4].is_empty(),
+            "delete-marker restore-status: RESTORE_EXPIRY_DATE should be empty, got {:?}",
+            cols[4]
+        );
+        assert_eq!(cols[5], "doc.txt");
+    });
+
+    _guard.cleanup().await;
+}
+
 /// Verifies `--summarize` appends a summary line in text mode (with and
 /// without `--human-readable`) and a JSON summary object in JSON mode.
 /// Fixture is 3 objects × 1000 bytes each = 3000 bytes total.
@@ -1108,6 +1464,49 @@ async fn e2e_display_summarize_versioned() {
         assert!(
             summary.contains("\t1\tdelete markers"),
             "summarize versioned: expected 1 delete markers, got {summary:?}"
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// Verifies `--summarize --human-readable` with a total size below 1024
+/// bytes renders as raw bytes in the summary line (the `format_size_split`
+/// path where `size < 1024` returns `(size, "bytes")`).
+///
+/// Covers `src/aggregate.rs:264-265` (format_size_split size < 1024 branch).
+#[tokio::test]
+async fn e2e_display_summarize_human_small_total() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+        // 3 objects × 100 bytes = 300 bytes total (< 1024)
+        helper.put_object(&bucket, "a.bin", vec![0u8; 100]).await;
+        helper.put_object(&bucket, "b.bin", vec![0u8; 100]).await;
+        helper.put_object(&bucket, "c.bin", vec![0u8; 100]).await;
+
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--summarize",
+            "--human-readable",
+        ]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+        let summary = assert_summary_present_text(&output.stdout, "summarize human small total");
+        assert!(
+            summary.contains("\t3\tobjects"),
+            "summarize human small: expected 3 objects, got {summary:?}"
+        );
+        // 300 bytes < 1024 — format_size_split returns "300" + "bytes" even
+        // in human-readable mode.
+        assert!(
+            summary.contains("\t300\tbytes"),
+            "summarize human small: expected '300\\tbytes' (< 1024 stays as bytes), got {summary:?}"
         );
     });
 
@@ -1503,6 +1902,90 @@ async fn e2e_display_show_local_time() {
         assert!(
             !last_modified.ends_with('Z'),
             "local time JSON should NOT end with Z, got: {last_modified}"
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// Bucket listing `--show-owner` JSON: verify `Owner.DisplayName` is
+/// emitted in the JSON when the S3 account returns it.
+///
+/// Covers `src/bucket_lister.rs:105-109` (Owner.DisplayName insertion)
+/// and `src/bucket_lister.rs:114-115` (Owner object insertion into map).
+#[tokio::test]
+async fn e2e_display_bucket_listing_show_owner_json_owner_fields() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+
+        let output = TestHelper::run_s3ls(&["--json", "--show-owner"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        let bucket_line = output
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .find(|l| {
+                serde_json::from_str::<serde_json::Value>(l)
+                    .ok()
+                    .and_then(|v| v.get("Name").and_then(|n| n.as_str()).map(|s| s == bucket))
+                    .unwrap_or(false)
+            })
+            .unwrap_or_else(|| {
+                panic!("bucket owner json: test bucket {bucket} not found in output")
+            });
+
+        let v: serde_json::Value = serde_json::from_str(bucket_line).unwrap();
+        let owner = v.get("Owner");
+
+        // The S3 ListBuckets API always returns at least an Owner.ID for the
+        // account. Owner.DisplayName may or may not be present depending on
+        // account configuration. Verify the Owner object exists and has at
+        // least one field.
+        assert!(
+            owner.is_some(),
+            "bucket owner json: Owner should be present with --show-owner, got {v:?}"
+        );
+        let owner = owner.unwrap();
+        let has_id = owner.get("ID").and_then(|v| v.as_str()).is_some();
+        let has_name = owner.get("DisplayName").and_then(|v| v.as_str()).is_some();
+        assert!(
+            has_id || has_name,
+            "bucket owner json: Owner should have at least ID or DisplayName, got {owner:?}"
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// Bucket listing text mode with `--raw-output`: verifies that the
+/// text-mode escape function chooses the raw (no-escape) path.
+///
+/// Covers `src/bucket_lister.rs:124-125` (raw_output branch of the
+/// escape closure).
+#[tokio::test]
+async fn e2e_display_bucket_listing_text_raw_output() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+
+        let output = TestHelper::run_s3ls(&["--raw-output"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        // The test bucket must appear in the output. The --raw-output flag
+        // disables control-char escaping (bucket names are all clean ASCII
+        // anyway, so the output is identical to the default — but the code
+        // path through the raw_output branch is exercised).
+        assert!(
+            output.stdout.contains(&bucket),
+            "bucket listing raw-output: test bucket {bucket} not found in output"
         );
     });
 

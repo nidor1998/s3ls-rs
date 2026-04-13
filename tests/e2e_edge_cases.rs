@@ -695,6 +695,97 @@ async fn e2e_edge_case_prefix_equals_key_relative_path() {
 /// `--summarize --all-versions` with delete markers: both text and JSON
 /// summary lines include the delete-marker count.
 ///
+/// Object listing piped to `head -1`: the process should exit 0 despite
+/// receiving SIGPIPE / BrokenPipe from the terminated reader.
+///
+/// Covers `src/bin/s3ls/main.rs:94-97` (object listing broken-pipe
+/// recovery path).
+#[tokio::test]
+async fn e2e_edge_case_object_listing_broken_pipe() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+        for i in 0..10 {
+            helper
+                .put_object(&bucket, &format!("file_{i:04}.txt"), vec![0u8; 10])
+                .await;
+        }
+
+        let target = format!("s3://{bucket}/");
+
+        // Pipe to `head -1`: the reader closes after one line, causing
+        // SIGPIPE / BrokenPipe on the writer side.
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!(
+                "{} --recursive --target-profile s3ls-e2e-test {} | head -1",
+                env!("CARGO_BIN_EXE_s3ls"),
+                target
+            ))
+            .output()
+            .expect("failed to spawn sh -c pipe command");
+
+        // s3ls should exit 0 (broken pipe handled gracefully)
+        assert!(
+            output.status.success(),
+            "object listing broken pipe: expected exit 0, got {:?}\nstderr: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        // head -1 should have produced exactly one line
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let non_empty_lines: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(
+            non_empty_lines.len(),
+            1,
+            "object listing broken pipe: expected 1 line from head, got {}",
+            non_empty_lines.len()
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// Bucket listing piped to `head -1`: the process should exit 0 despite
+/// the early pipe close.
+///
+/// Covers `src/bin/s3ls/main.rs:66-69` (bucket listing broken-pipe
+/// recovery path).
+#[tokio::test]
+async fn e2e_edge_case_bucket_listing_broken_pipe() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+
+        // Pipe bucket listing to `head -1`. Even if the account has
+        // many buckets, head closes the pipe after one line.
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!(
+                "{} --target-profile s3ls-e2e-test | head -1",
+                env!("CARGO_BIN_EXE_s3ls"),
+            ))
+            .output()
+            .expect("failed to spawn sh -c pipe command");
+
+        assert!(
+            output.status.success(),
+            "bucket listing broken pipe: expected exit 0, got {:?}\nstderr: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    });
+
+    _guard.cleanup().await;
+}
+
 /// Fixture: versioned bucket with 2 object versions + 1 delete marker.
 /// Text summary: `"Total:\t2\tobjects\t...\t1\tdelete markers"`.
 /// JSON summary: `{"Summary":{"TotalObjects":2,"TotalSize":...,"TotalDeleteMarkers":1}}`.
