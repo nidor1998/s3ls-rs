@@ -109,7 +109,7 @@ mod tests {
 
     fn sample_entries() -> Vec<ListEntry> {
         vec![
-            ListEntry::Object(S3Object::NotVersioning {
+            ListEntry::Object(S3Object {
                 key: "file1.txt".to_string(),
                 size: 100,
                 last_modified: Utc::now(),
@@ -121,6 +121,7 @@ mod tests {
                 owner_id: None,
                 is_restore_in_progress: None,
                 restore_expiry_date: None,
+                version_info: None,
             }),
             ListEntry::CommonPrefix("logs/".to_string()),
         ]
@@ -174,7 +175,7 @@ mod tests {
         // Generate 100 entries — plenty to overflow a queue of size 1.
         let entries: Vec<ListEntry> = (0..100)
             .map(|i| {
-                ListEntry::Object(S3Object::NotVersioning {
+                ListEntry::Object(S3Object {
                     key: format!("file_{i}.txt"),
                     size: 100,
                     last_modified: Utc::now(),
@@ -186,6 +187,7 @@ mod tests {
                     owner_id: None,
                     is_restore_in_progress: None,
                     restore_expiry_date: None,
+                    version_info: None,
                 })
             })
             .collect();

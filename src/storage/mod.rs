@@ -54,7 +54,7 @@ mod tests {
 
     fn sample_entries() -> Vec<ListEntry> {
         vec![
-            ListEntry::Object(S3Object::NotVersioning {
+            ListEntry::Object(S3Object {
                 key: "file1.txt".to_string(),
                 size: 100,
                 last_modified: Utc::now(),
@@ -66,13 +66,16 @@ mod tests {
                 owner_id: None,
                 is_restore_in_progress: None,
                 restore_expiry_date: None,
+                version_info: None,
             }),
             ListEntry::CommonPrefix("logs/".to_string()),
             ListEntry::DeleteMarker {
                 key: "deleted.txt".to_string(),
-                version_id: "v1".to_string(),
+                version_info: crate::types::VersionInfo {
+                    version_id: "v1".to_string(),
+                    is_latest: true,
+                },
                 last_modified: Utc::now(),
-                is_latest: true,
                 owner_display_name: None,
                 owner_id: None,
             },

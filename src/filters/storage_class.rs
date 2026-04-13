@@ -30,7 +30,7 @@ impl ObjectFilter for StorageClassFilter {
         match entry {
             ListEntry::Object(obj) => {
                 // S3 API omits StorageClass for STANDARD objects (returns None).
-                let sc = obj.storage_class().unwrap_or("STANDARD");
+                let sc = obj.storage_class.as_deref().unwrap_or("STANDARD");
                 let matched = self.classes.iter().any(|c| c == sc);
                 if !matched {
                     debug!(
@@ -54,10 +54,10 @@ impl ObjectFilter for StorageClassFilter {
 mod tests {
     use super::*;
     use crate::filters::ObjectFilter;
-    use crate::types::{ListEntry, S3Object};
+    use crate::types::{ListEntry, S3Object, VersionInfo};
 
     fn make_entry_with_class(class: Option<&str>) -> ListEntry {
-        ListEntry::Object(S3Object::NotVersioning {
+        ListEntry::Object(S3Object {
             key: "test.txt".to_string(),
             size: 100,
             last_modified: chrono::Utc::now(),
@@ -69,6 +69,7 @@ mod tests {
             owner_id: None,
             is_restore_in_progress: None,
             restore_expiry_date: None,
+            version_info: None,
         })
     }
 
@@ -110,12 +111,21 @@ mod tests {
         let filter = StorageClassFilter::new(vec!["STANDARD".to_string()]);
         let entry = ListEntry::DeleteMarker {
             key: "test.txt".to_string(),
-            version_id: "v1".to_string(),
+            version_info: VersionInfo {
+                version_id: "v1".to_string(),
+                is_latest: true,
+            },
             last_modified: chrono::Utc::now(),
-            is_latest: true,
             owner_display_name: None,
             owner_id: None,
         };
+        assert!(filter.matches(&entry).unwrap());
+    }
+
+    #[test]
+    fn common_prefix_passes_through() {
+        let filter = StorageClassFilter::new(vec!["GLACIER".to_string()]);
+        let entry = ListEntry::CommonPrefix("logs/".to_string());
         assert!(filter.matches(&entry).unwrap());
     }
 }

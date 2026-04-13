@@ -18,7 +18,7 @@ use tracing::debug;
 use crate::config::ClientConfig;
 use crate::storage::StorageTrait;
 use crate::types::token::PipelineCancellationToken;
-use crate::types::{ListEntry, S3Object};
+use crate::types::{ListEntry, S3Object, VersionInfo};
 use leaky_bucket::RateLimiter;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -851,7 +851,7 @@ fn convert_object(object: &aws_sdk_s3::types::Object) -> Option<ListEntry> {
         .and_then(|dt| aws_datetime_to_chrono(Some(dt)))
         .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
 
-    Some(ListEntry::Object(S3Object::NotVersioning {
+    Some(ListEntry::Object(S3Object {
         key,
         size,
         last_modified,
@@ -863,6 +863,7 @@ fn convert_object(object: &aws_sdk_s3::types::Object) -> Option<ListEntry> {
         owner_id,
         is_restore_in_progress,
         restore_expiry_date,
+        version_info: None,
     }))
 }
 
@@ -895,13 +896,11 @@ fn convert_object_version(version: &aws_sdk_s3::types::ObjectVersion) -> Option<
         .and_then(|dt| aws_datetime_to_chrono(Some(dt)))
         .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
 
-    Some(ListEntry::Object(S3Object::Versioning {
+    Some(ListEntry::Object(S3Object {
         key,
-        version_id,
         size,
         last_modified,
         e_tag,
-        is_latest,
         storage_class,
         checksum_algorithm,
         checksum_type,
@@ -909,6 +908,10 @@ fn convert_object_version(version: &aws_sdk_s3::types::ObjectVersion) -> Option<
         owner_id,
         is_restore_in_progress,
         restore_expiry_date,
+        version_info: Some(VersionInfo {
+            version_id,
+            is_latest,
+        }),
     }))
 }
 
@@ -926,9 +929,11 @@ fn convert_delete_marker(marker: &aws_sdk_s3::types::DeleteMarkerEntry) -> Optio
 
     Some(ListEntry::DeleteMarker {
         key,
-        version_id,
+        version_info: VersionInfo {
+            version_id,
+            is_latest,
+        },
         last_modified,
-        is_latest,
         owner_display_name,
         owner_id,
     })
@@ -1073,7 +1078,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn make_entry(key: &str) -> ListEntry {
-        ListEntry::Object(S3Object::NotVersioning {
+        ListEntry::Object(S3Object {
             key: key.to_string(),
             size: 100,
             last_modified: chrono::Utc::now(),
@@ -1085,6 +1090,7 @@ mod tests {
             owner_id: None,
             is_restore_in_progress: None,
             restore_expiry_date: None,
+            version_info: None,
         })
     }
 
@@ -1910,7 +1916,7 @@ mod tests {
             None,
             vec![ListPage {
                 objects: vec![
-                    ListEntry::Object(S3Object::NotVersioning {
+                    ListEntry::Object(S3Object {
                         key: "prefix/a.txt".to_string(),
                         size: 10,
                         last_modified: chrono::Utc::now(),
@@ -1922,8 +1928,9 @@ mod tests {
                         owner_id: None,
                         is_restore_in_progress: None,
                         restore_expiry_date: None,
+                        version_info: None,
                     }),
-                    ListEntry::Object(S3Object::NotVersioning {
+                    ListEntry::Object(S3Object {
                         key: "prefix/b.txt".to_string(),
                         size: 20,
                         last_modified: chrono::Utc::now(),
@@ -1935,6 +1942,7 @@ mod tests {
                         owner_id: None,
                         is_restore_in_progress: None,
                         restore_expiry_date: None,
+                        version_info: None,
                     }),
                 ],
                 sub_prefixes: vec![],
@@ -1984,7 +1992,7 @@ mod tests {
             Some("prefix/"),
             None,
             vec![ListPage {
-                objects: vec![ListEntry::Object(S3Object::NotVersioning {
+                objects: vec![ListEntry::Object(S3Object {
                     key: "prefix/file.txt".to_string(),
                     size: 10,
                     last_modified: chrono::Utc::now(),
@@ -1996,6 +2004,7 @@ mod tests {
                     owner_id: None,
                     is_restore_in_progress: None,
                     restore_expiry_date: None,
+                    version_info: None,
                 })],
                 sub_prefixes: vec![],
                 is_truncated: false,
@@ -2031,7 +2040,7 @@ mod tests {
             None,
             vec![
                 ListPage {
-                    objects: vec![ListEntry::Object(S3Object::NotVersioning {
+                    objects: vec![ListEntry::Object(S3Object {
                         key: "p/a.txt".to_string(),
                         size: 10,
                         last_modified: chrono::Utc::now(),
@@ -2043,6 +2052,7 @@ mod tests {
                         owner_id: None,
                         is_restore_in_progress: None,
                         restore_expiry_date: None,
+                        version_info: None,
                     })],
                     sub_prefixes: vec![],
                     is_truncated: true,
@@ -2051,7 +2061,7 @@ mod tests {
                     version_id_marker: None,
                 },
                 ListPage {
-                    objects: vec![ListEntry::Object(S3Object::NotVersioning {
+                    objects: vec![ListEntry::Object(S3Object {
                         key: "p/b.txt".to_string(),
                         size: 20,
                         last_modified: chrono::Utc::now(),
@@ -2063,6 +2073,7 @@ mod tests {
                         owner_id: None,
                         is_restore_in_progress: None,
                         restore_expiry_date: None,
+                        version_info: None,
                     })],
                     sub_prefixes: vec![],
                     is_truncated: false,
@@ -2107,7 +2118,7 @@ mod tests {
             Some("p/"),
             None,
             vec![ListPage {
-                objects: vec![ListEntry::Object(S3Object::NotVersioning {
+                objects: vec![ListEntry::Object(S3Object {
                     key: "p/file.txt".to_string(),
                     size: 10,
                     last_modified: chrono::Utc::now(),
@@ -2119,6 +2130,7 @@ mod tests {
                     owner_id: None,
                     is_restore_in_progress: None,
                     restore_expiry_date: None,
+                    version_info: None,
                 })],
                 sub_prefixes: vec![],
                 is_truncated: false,

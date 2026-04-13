@@ -1,6 +1,8 @@
 pub mod aggregate;
 pub mod bucket_lister;
 pub mod config;
+pub mod display;
+pub mod display_writer;
 pub mod filters;
 pub mod lister;
 pub mod pipeline;

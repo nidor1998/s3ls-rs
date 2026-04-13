@@ -99,16 +99,17 @@ s3ls takes a fundamentally different approach by discovering virtual directories
 
 ### How it works
 
-s3ls uses a two-stage streaming pipeline connected by a bounded async channel:
+s3ls uses a three-stage streaming pipeline connected by bounded async channels:
 
 ```
-S3 API → [Lister + Filter Chain] → channel → [Aggregator] → stdout
-                   ↑                                ↓
-         parallel prefix discovery          sort (or stream) + format
+[Lister + Filter Chain] → channel → [Aggregator] → channel → [DisplayWriter] → stdout
+                   ↑                               ↓                          ↓
+         parallel prefix discovery          sort (or stream)          format + output
 ```
 
 1. **Lister + Filter Chain** — Sends concurrent S3 API calls using parallel prefix discovery. Uses the S3 delimiter feature to discover "virtual directories" (common prefixes) at the top levels of the hierarchy, then lists each prefix independently and concurrently, with up to 64 parallel operations by default. A semaphore prevents overwhelming S3 while maximizing throughput. Filters (regex, time range, size range, storage class) are applied inline as entries arrive — objects that don't match are discarded immediately without being forwarded to the aggregator.
-2. **Aggregator** — In default mode, buffers all entries, sorts them, and writes the formatted output. In streaming mode (`--no-sort`), writes each entry directly to stdout as it arrives with no buffering.
+2. **Aggregator** — In default mode, buffers all entries and sorts them. In streaming mode (`--no-sort`), passes each entry through immediately with no buffering. Computes statistics when summary output is requested.
+3. **DisplayWriter** — Receives sorted (or streamed) entries and formats them as tab-delimited text or NDJSON, writing the result to stdout.
 
 ### Why it's fast
 
@@ -118,7 +119,7 @@ Rust contributes low per-object overhead (no garbage collector pauses, small str
 
 ### Why it's flexible
 
-The pipeline stages are decoupled through a channel and trait abstractions. Filters are composed as a chain within the lister. The aggregator handles both tab-delimited text and JSON formatting through the same interface. Adding a new filter, sort field, or output column does not require changes to the pipeline coordination — each concern is isolated.
+The pipeline stages are decoupled through channels and trait abstractions. Filters are composed as a chain within the lister. Sorting and display are separated — the aggregator handles ordering while the display writer handles both tab-delimited text and JSON formatting. Adding a new filter, sort field, or output column does not require changes to the pipeline coordination — each concern is isolated.
 
 ## Features
 
@@ -157,7 +158,12 @@ s3ls supports S3 Express One Zone directory buckets:
 - `--list-express-one-zone-buckets` — List only Express One Zone directory buckets
 - `--allow-parallel-listings-in-express-one-zone` — Enable parallel listing in Express One Zone buckets
 
-Parallel listing is disabled by default for Express One Zone directory buckets. S3 Express One Zone uses a single-AZ architecture with different internal behavior and rate limits compared to general-purpose S3 buckets. The delimiter-based prefix discovery that drives parallel listing may not yield the same performance benefit, and concurrent API calls could hit throttling limits more quickly. s3ls detects Express One Zone buckets by their `--x-s3` name suffix and falls back to sequential listing as a conservative default.
+Parallel listing is disabled by default for Express One Zone directory buckets due to two ListObjectsV2 API limitations specific to directory buckets:
+
+1. **Prefix restriction** — Directory buckets only support prefixes that end in a delimiter (`/`). The prefix discovery that drives parallel listing splits the key space using single-character prefixes (e.g., `a`, `b`, `c`), which are not delimiter-terminated and therefore not supported.
+2. **CommonPrefixes pollution** — When querying with a delimiter during in-progress multipart uploads, the `CommonPrefixes` response includes prefixes associated with those uploads. This can produce spurious prefixes that don't correspond to actual object key hierarchies, making prefix-based parallelization unreliable.
+
+s3ls detects Express One Zone buckets by their `--x-s3` name suffix and falls back to sequential listing as a conservative default.
 
 To enable parallel listing on Express One Zone buckets:
 
@@ -552,29 +558,29 @@ For example, 200,000 objects with the default `--max-keys 1000` requires 200 API
 
 #### Parallel listing
 
-Parallel listing sends API requests in two phases:
+Parallel listing works in two phases. Both phases return objects — the distinction is how prefixes are handled, not whether objects are listed.
 
-**Discovery phase** (depth 0 to `--max-parallel-listing-max-depth`):
+**Delimiter phase** (depth 0 to `--max-parallel-listing-max-depth`):
 
-At each depth level, s3ls sends `ListObjectsV2` requests with `delimiter="/"` to discover sub-prefixes. Each page can return both objects at the current level and common prefixes. If there are more than `max_keys` results at a given level, multiple pages are fetched.
-
-```
-Discovery requests per prefix = ceil((objects_at_level + prefixes_at_level) / max_keys)
-Total discovery requests = sum across all prefixes at all discovery depths
-```
-
-**Listing phase** (beyond max parallel depth):
-
-Each discovered leaf prefix is listed sequentially without a delimiter.
+At each depth level, s3ls sends `ListObjectsV2` requests with `delimiter="/"`. Each response returns both objects at the current prefix level and `CommonPrefixes` for deeper levels. Objects are emitted immediately; sub-prefixes are queued for further exploration.
 
 ```
-Listing requests per leaf prefix = ceil(objects_under_prefix / max_keys)
-Total listing requests = sum across all leaf prefixes
+Requests per prefix = ceil((objects_at_level + prefixes_at_level) / max_keys)
+Total delimiter requests = sum across all prefixes at all depths up to max parallel depth
 ```
 
-**Total API requests = discovery requests + listing requests**
+**Non-delimiter phase** (beyond max parallel depth):
 
-Parallel listing sends slightly more API requests than sequential listing due to the discovery overhead, but the requests execute concurrently, which is why throughput is higher.
+Each leaf prefix discovered in the delimiter phase is listed without a delimiter, returning all remaining objects under that prefix.
+
+```
+Requests per leaf prefix = ceil(objects_under_prefix / max_keys)
+Total non-delimiter requests = sum across all leaf prefixes
+```
+
+**Total API requests = delimiter requests + non-delimiter requests**
+
+Parallel listing may send more API requests than sequential listing because delimiter-based pages contain a mix of objects and prefixes (reducing effective objects-per-request), but the requests execute concurrently, which is why throughput is higher.
 
 #### Version listing
 

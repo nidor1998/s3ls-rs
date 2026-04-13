@@ -87,12 +87,12 @@ pub fn build_filter_chain(filter_config: &FilterConfig) -> Result<FilterChain, S
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ListEntry, S3Object};
+    use crate::types::{ListEntry, S3Object, VersionInfo};
 
     #[test]
     fn empty_filter_chain_passes_all() {
         let chain = FilterChain::new(vec![]);
-        let entry = ListEntry::Object(S3Object::NotVersioning {
+        let entry = ListEntry::Object(S3Object {
             key: "test.txt".to_string(),
             size: 100,
             last_modified: chrono::Utc::now(),
@@ -104,6 +104,7 @@ mod tests {
             owner_id: None,
             is_restore_in_progress: None,
             restore_expiry_date: None,
+            version_info: None,
         });
         assert!(chain.matches(&entry).unwrap());
     }
@@ -118,7 +119,7 @@ mod tests {
     #[test]
     fn filter_error_propagates_through_chain() {
         let chain = FilterChain::new(vec![Box::new(ErrorFilter)]);
-        let entry = ListEntry::Object(S3Object::NotVersioning {
+        let entry = ListEntry::Object(S3Object {
             key: "test.txt".to_string(),
             size: 100,
             last_modified: chrono::Utc::now(),
@@ -130,6 +131,7 @@ mod tests {
             owner_id: None,
             is_restore_in_progress: None,
             restore_expiry_date: None,
+            version_info: None,
         });
         assert!(chain.matches(&entry).is_err());
     }
@@ -146,5 +148,51 @@ mod tests {
         fn matches(&self, _entry: &ListEntry) -> anyhow::Result<bool> {
             Err(anyhow::anyhow!("simulated filter error"))
         }
+    }
+
+    #[test]
+    fn filter_chain_rejects_non_matching_object() {
+        let chain = FilterChain::new(vec![Box::new(RejectAllFilter)]);
+        let entry = ListEntry::Object(S3Object {
+            key: "test.txt".to_string(),
+            size: 100,
+            last_modified: chrono::Utc::now(),
+            e_tag: "\"e\"".to_string(),
+            storage_class: None,
+            checksum_algorithm: vec![],
+            checksum_type: None,
+            owner_display_name: None,
+            owner_id: None,
+            is_restore_in_progress: None,
+            restore_expiry_date: None,
+            version_info: None,
+        });
+        assert!(!chain.matches(&entry).unwrap());
+    }
+
+    #[test]
+    fn filter_chain_is_empty() {
+        let empty = FilterChain::new(vec![]);
+        assert!(empty.is_empty());
+
+        let non_empty = FilterChain::new(vec![Box::new(RejectAllFilter)]);
+        assert!(!non_empty.is_empty());
+    }
+
+    #[test]
+    fn delete_marker_passes_through_reject_all() {
+        let chain = FilterChain::new(vec![Box::new(RejectAllFilter)]);
+        let entry = ListEntry::DeleteMarker {
+            key: "k".to_string(),
+            version_info: VersionInfo {
+                version_id: "v".to_string(),
+                is_latest: true,
+            },
+            last_modified: chrono::Utc::now(),
+            owner_display_name: None,
+            owner_id: None,
+        };
+        // DeleteMarker is not CommonPrefix, so it goes through filter chain
+        assert!(!chain.matches(&entry).unwrap());
     }
 }

@@ -51,7 +51,7 @@ mod tests {
     use chrono::{Duration, Utc};
 
     fn make_entry_at(time: DateTime<Utc>) -> ListEntry {
-        ListEntry::Object(S3Object::NotVersioning {
+        ListEntry::Object(S3Object {
             key: "test.txt".to_string(),
             size: 100,
             last_modified: time,
@@ -63,6 +63,7 @@ mod tests {
             owner_id: None,
             is_restore_in_progress: None,
             restore_expiry_date: None,
+            version_info: None,
         })
     }
 

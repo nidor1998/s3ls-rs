@@ -51,7 +51,7 @@ mod tests {
     use chrono::{Duration, Utc};
 
     fn make_entry_at(time: DateTime<Utc>) -> ListEntry {
-        ListEntry::Object(S3Object::NotVersioning {
+        ListEntry::Object(S3Object {
             key: "test.txt".to_string(),
             size: 100,
             last_modified: time,
@@ -63,6 +63,7 @@ mod tests {
             owner_id: None,
             is_restore_in_progress: None,
             restore_expiry_date: None,
+            version_info: None,
         })
     }
 
@@ -87,5 +88,13 @@ mod tests {
         let now = Utc::now();
         let filter = MtimeAfterFilter::new(now);
         assert!(filter.matches(&make_entry_at(now)).unwrap());
+    }
+
+    #[test]
+    fn common_prefix_passes_through() {
+        let filter = MtimeAfterFilter::new(Utc::now());
+        let entry = ListEntry::CommonPrefix("logs/".to_string());
+        // CommonPrefix has no last_modified → None branch → passes
+        assert!(filter.matches(&entry).unwrap());
     }
 }
