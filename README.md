@@ -102,7 +102,7 @@ s3ls takes a fundamentally different approach by discovering virtual directories
 s3ls uses a three-stage streaming pipeline connected by bounded async channels:
 
 ```
-S3 API → [Lister + Filter Chain] → channel → [Aggregator] → channel → [DisplayWriter] → stdout
+[Lister + Filter Chain] → channel → [Aggregator] → channel → [DisplayWriter] → stdout
                    ↑                               ↓                          ↓
          parallel prefix discovery          sort (or stream)          format + output
 ```

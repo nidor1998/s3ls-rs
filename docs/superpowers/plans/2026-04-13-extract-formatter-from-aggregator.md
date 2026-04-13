@@ -1083,11 +1083,13 @@ git commit -m "refactor: clean up dead code after aggregator/formatter split"
 ## Summary of final architecture
 
 ```
-Lister ──[mpsc<ListEntry>]──> Aggregator ──[mpsc<DisplayMessage>]──> DisplayWriter ──> stdout
-           (filter+send)        (collect+sort)                         (format+write)
+[Lister + Filter Chain] ──[mpsc<ListEntry>]──> Aggregator ──[mpsc<DisplayMessage>]──> DisplayWriter ──> stdout
+                                                (collect+sort)                       (Box<dyn EntryFormatter>)
 ```
 
-- **`aggregate.rs`** (554 lines): `Aggregator`, `AggregatorConfig`, `sort_entries`, `cmp_mtime`, sorting tests
-- **`display.rs`** (1,267 lines): `FormatOptions`, all format/escape/statistics functions, formatting tests
-- **`display_writer.rs`** (274 lines): `DisplayWriter`, `DisplayWriterConfig`, `DisplayMessage`, pipeline stage tests
-- **`pipeline.rs`** (279 lines): Three `tokio::spawn` tasks, two channels, error precedence: DisplayWriter > Aggregator > Lister
+- **`aggregate.rs`**: `Aggregator`, `AggregatorConfig`, `sort_entries`, `cmp_mtime`, sorting tests
+- **`display/mod.rs`**: `EntryFormatter` trait, `FormatOptions`, shared helpers, statistics
+- **`display/tsv.rs`**: `TsvFormatter` — tab-delimited output
+- **`display/json.rs`**: `JsonFormatter` — NDJSON output
+- **`display_writer.rs`**: `DisplayWriter`, `DisplayWriterConfig`, `DisplayMessage`, pipeline stage tests
+- **`pipeline.rs`**: Three `tokio::spawn` tasks, two channels, error precedence: DisplayWriter > Aggregator > Lister

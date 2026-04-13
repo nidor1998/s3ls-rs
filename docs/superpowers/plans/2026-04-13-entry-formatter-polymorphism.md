@@ -943,14 +943,14 @@ git commit -m "refactor: clean up dead code after EntryFormatter polymorphism"
 ```
 pipeline.rs constructs:
   if --json → JsonFormatter
-  else      → TextFormatter
+  else      → TsvFormatter
 
-Lister ──[mpsc<ListEntry>]──> Aggregator ──[mpsc<DisplayMessage>]──> DisplayWriter ──> stdout
-                                (sort)                                (Box<dyn EntryFormatter>)
+[Lister + Filter Chain] ──[mpsc<ListEntry>]──> Aggregator ──[mpsc<DisplayMessage>]──> DisplayWriter ──> stdout
+                                                  (sort)                                (Box<dyn EntryFormatter>)
 ```
 
 - **`display/mod.rs`**: `EntryFormatter` trait, `FormatOptions`, shared helpers, statistics
-- **`display/text.rs`**: `TextFormatter` — tab-delimited text output
+- **`display/tsv.rs`**: `TsvFormatter` — tab-delimited output
 - **`display/json.rs`**: `JsonFormatter` — NDJSON output
 - **`display_writer.rs`**: `DisplayWriter` — format-agnostic pipeline stage
 - **`pipeline.rs`**: Constructs the right formatter, passes `Box<dyn EntryFormatter>` to `DisplayWriter`
