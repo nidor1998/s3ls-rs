@@ -7,14 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [v0.2.0] - 2026-04-13
 
+### Added
+
+- Automated dependency auditing and code analysis via GitHub Actions.
+
 ### Fixed
 
 - Fix incorrect documentation about why parallel listing is disabled for Express One Zone directory buckets.
 
-### Improved
+### Changed
 
 - Internal code quality and test coverage improvements.
-- Add automated dependency auditing and code analysis via GitHub Actions.
 
 ## [v0.1.0] - 2026-04-12
 
