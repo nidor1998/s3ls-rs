@@ -27,38 +27,38 @@ impl EntryFormatter for JsonFormatter {
                 let mut map = serde_json::Map::new();
                 map.insert(
                     "Key".to_string(),
-                    serde_json::Value::String(format_key_display(obj.key(), opts)),
+                    serde_json::Value::String(format_key_display(&obj.key, opts)),
                 );
                 map.insert(
                     "LastModified".to_string(),
                     serde_json::Value::String(format_rfc3339(
-                        obj.last_modified(),
+                        &obj.last_modified,
                         opts.show_local_time,
                     )),
                 );
                 map.insert(
                     "ETag".to_string(),
-                    serde_json::Value::String(obj.e_tag().to_string()),
+                    serde_json::Value::String(obj.e_tag.to_string()),
                 );
-                if !obj.checksum_algorithm().is_empty() {
+                if !obj.checksum_algorithm.is_empty() {
                     map.insert(
                         "ChecksumAlgorithm".to_string(),
                         serde_json::Value::Array(
-                            obj.checksum_algorithm()
+                            obj.checksum_algorithm
                                 .iter()
                                 .map(|a| serde_json::Value::String(a.clone()))
                                 .collect(),
                         ),
                     );
                 }
-                if let Some(ctype) = obj.checksum_type() {
+                if let Some(ctype) = obj.checksum_type.as_deref() {
                     map.insert(
                         "ChecksumType".to_string(),
                         serde_json::Value::String(ctype.to_string()),
                     );
                 }
-                map.insert("Size".to_string(), serde_json::json!(obj.size()));
-                if let Some(sc) = obj.storage_class() {
+                map.insert("Size".to_string(), serde_json::json!(obj.size));
+                if let Some(sc) = obj.storage_class.as_deref() {
                     map.insert(
                         "StorageClass".to_string(),
                         serde_json::Value::String(sc.to_string()),
@@ -71,8 +71,8 @@ impl EntryFormatter for JsonFormatter {
                     );
                     map.insert("IsLatest".to_string(), serde_json::json!(obj.is_latest()));
                 }
-                let owner_id = obj.owner_id();
-                let owner_name = obj.owner_display_name();
+                let owner_id = obj.owner_id.as_deref();
+                let owner_name = obj.owner_display_name.as_deref();
                 if owner_id.is_some() || owner_name.is_some() {
                     let mut owner = serde_json::Map::new();
                     if let Some(name) = owner_name {
@@ -86,13 +86,13 @@ impl EntryFormatter for JsonFormatter {
                     }
                     map.insert("Owner".to_string(), serde_json::Value::Object(owner));
                 }
-                if let Some(in_progress) = obj.is_restore_in_progress() {
+                if let Some(in_progress) = obj.is_restore_in_progress {
                     let mut restore = serde_json::Map::new();
                     restore.insert(
                         "IsRestoreInProgress".to_string(),
                         serde_json::json!(in_progress),
                     );
-                    if let Some(expiry) = obj.restore_expiry_date() {
+                    if let Some(expiry) = obj.restore_expiry_date.as_deref() {
                         restore.insert(
                             "RestoreExpiryDate".to_string(),
                             serde_json::Value::String(expiry.to_string()),
@@ -107,9 +107,8 @@ impl EntryFormatter for JsonFormatter {
             }
             ListEntry::DeleteMarker {
                 key,
-                version_id,
+                version_info,
                 last_modified,
-                is_latest,
                 owner_display_name,
                 owner_id,
             } => {
@@ -120,9 +119,12 @@ impl EntryFormatter for JsonFormatter {
                 );
                 map.insert(
                     "VersionId".to_string(),
-                    serde_json::Value::String(version_id.clone()),
+                    serde_json::Value::String(version_info.version_id.clone()),
                 );
-                map.insert("IsLatest".to_string(), serde_json::json!(*is_latest));
+                map.insert(
+                    "IsLatest".to_string(),
+                    serde_json::json!(version_info.is_latest),
+                );
                 map.insert(
                     "LastModified".to_string(),
                     serde_json::Value::String(format_rfc3339(last_modified, opts.show_local_time)),
@@ -173,11 +175,11 @@ impl EntryFormatter for JsonFormatter {
 mod tests {
     use super::*;
     use crate::display::FormatOptions;
-    use crate::types::{ListEntry, S3Object};
+    use crate::types::{ListEntry, S3Object, VersionInfo};
     use chrono::TimeZone;
 
     fn make_entry_dated(key: &str, size: u64, year: i32, month: u32) -> ListEntry {
-        ListEntry::Object(S3Object::NotVersioning {
+        ListEntry::Object(S3Object {
             key: key.to_string(),
             size,
             last_modified: chrono::Utc
@@ -191,11 +193,12 @@ mod tests {
             owner_id: None,
             is_restore_in_progress: None,
             restore_expiry_date: None,
+            version_info: None,
         })
     }
 
     fn make_entry_with_checksums(key: &str, checksums: Vec<&str>) -> ListEntry {
-        ListEntry::Object(S3Object::NotVersioning {
+        ListEntry::Object(S3Object {
             key: key.to_string(),
             size: 100,
             last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
@@ -207,6 +210,7 @@ mod tests {
             owner_id: None,
             is_restore_in_progress: None,
             restore_expiry_date: None,
+            version_info: None,
         })
     }
 
@@ -235,9 +239,11 @@ mod tests {
     fn format_ndjson_delete_marker() {
         let entry = ListEntry::DeleteMarker {
             key: "deleted.txt".to_string(),
-            version_id: "v1".to_string(),
+            version_info: VersionInfo {
+                version_id: "v1".to_string(),
+                is_latest: true,
+            },
             last_modified: chrono::Utc::now(),
-            is_latest: true,
             owner_display_name: None,
             owner_id: None,
         };
@@ -252,7 +258,7 @@ mod tests {
 
     #[test]
     fn format_json_preserves_control_chars() {
-        let entry = ListEntry::Object(S3Object::NotVersioning {
+        let entry = ListEntry::Object(S3Object {
             key: "evil\nkey".to_string(),
             size: 100,
             last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
@@ -264,6 +270,7 @@ mod tests {
             owner_id: None,
             is_restore_in_progress: None,
             restore_expiry_date: None,
+            version_info: None,
         });
         let opts = FormatOptions::default();
         let json = JsonFormatter::new(opts).format_entry(&entry);
@@ -331,9 +338,11 @@ mod tests {
     fn format_ndjson_delete_marker_relative_path() {
         let entry = ListEntry::DeleteMarker {
             key: "logs/2024/deleted.txt".to_string(),
-            version_id: "v1".to_string(),
+            version_info: VersionInfo {
+                version_id: "v1".to_string(),
+                is_latest: true,
+            },
             last_modified: chrono::Utc::now(),
-            is_latest: true,
             owner_display_name: None,
             owner_id: None,
         };
@@ -351,9 +360,11 @@ mod tests {
     fn format_ndjson_delete_marker_with_owner() {
         let entry = ListEntry::DeleteMarker {
             key: "deleted.txt".to_string(),
-            version_id: "v1".to_string(),
+            version_info: VersionInfo {
+                version_id: "v1".to_string(),
+                is_latest: true,
+            },
             last_modified: chrono::Utc::now(),
-            is_latest: true,
             owner_display_name: Some("alice".to_string()),
             owner_id: Some("id123".to_string()),
         };
@@ -380,7 +391,7 @@ mod tests {
 
     #[test]
     fn format_json_object_with_restore_status() {
-        let entry = ListEntry::Object(S3Object::NotVersioning {
+        let entry = ListEntry::Object(S3Object {
             key: "archived.dat".to_string(),
             size: 500,
             last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
@@ -392,6 +403,7 @@ mod tests {
             owner_id: None,
             is_restore_in_progress: Some(true),
             restore_expiry_date: Some("2024-02-01T00:00:00Z".to_string()),
+            version_info: None,
         });
         let opts = FormatOptions::default();
         let json_str = JsonFormatter::new(opts).format_entry(&entry);
@@ -403,7 +415,7 @@ mod tests {
 
     #[test]
     fn format_json_object_restore_in_progress_without_expiry() {
-        let entry = ListEntry::Object(S3Object::NotVersioning {
+        let entry = ListEntry::Object(S3Object {
             key: "k".to_string(),
             size: 0,
             last_modified: chrono::Utc::now(),
@@ -415,6 +427,7 @@ mod tests {
             owner_id: None,
             is_restore_in_progress: Some(false),
             restore_expiry_date: None,
+            version_info: None,
         });
         let opts = FormatOptions::default();
         let json_str = JsonFormatter::new(opts).format_entry(&entry);
@@ -428,9 +441,11 @@ mod tests {
     fn format_json_delete_marker_with_owner() {
         let entry = ListEntry::DeleteMarker {
             key: "deleted.txt".to_string(),
-            version_id: "v-dm".to_string(),
+            version_info: VersionInfo {
+                version_id: "v-dm".to_string(),
+                is_latest: true,
+            },
             last_modified: chrono::Utc.with_ymd_and_hms(2024, 6, 1, 0, 0, 0).unwrap(),
-            is_latest: true,
             owner_display_name: Some("bob".to_string()),
             owner_id: Some("id-bob".to_string()),
         };
@@ -447,7 +462,7 @@ mod tests {
 
     #[test]
     fn format_json_object_with_owner() {
-        let entry = ListEntry::Object(S3Object::NotVersioning {
+        let entry = ListEntry::Object(S3Object {
             key: "owned.txt".to_string(),
             size: 10,
             last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
@@ -459,6 +474,7 @@ mod tests {
             owner_id: Some("id-alice".to_string()),
             is_restore_in_progress: None,
             restore_expiry_date: None,
+            version_info: None,
         });
         let opts = FormatOptions::default();
         let json_str = JsonFormatter::new(opts).format_entry(&entry);
@@ -470,7 +486,7 @@ mod tests {
 
     #[test]
     fn format_json_object_with_owner_name_only() {
-        let entry = ListEntry::Object(S3Object::NotVersioning {
+        let entry = ListEntry::Object(S3Object {
             key: "k".to_string(),
             size: 0,
             last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
@@ -482,6 +498,7 @@ mod tests {
             owner_id: None,
             is_restore_in_progress: None,
             restore_expiry_date: None,
+            version_info: None,
         });
         let opts = FormatOptions::default();
         let json_str = JsonFormatter::new(opts).format_entry(&entry);

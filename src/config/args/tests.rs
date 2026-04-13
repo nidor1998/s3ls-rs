@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::Config;
 use proptest::prelude::*;
 
 // ===========================================================================
@@ -1767,4 +1768,27 @@ fn config_custom_files_with_profile() {
         crate::types::S3Credentials::Profile(p) => assert_eq!(p, "production"),
         other => panic!("expected Profile credential, got {other:?}"),
     }
+}
+
+// ===========================================================================
+// Direct CLIArgs construction (bypasses clap constraints)
+// ===========================================================================
+
+/// Build a baseline `CLIArgs` via clap, then apply overrides.
+/// This lets us test `Config::try_from` validation paths that clap's
+/// `requires` constraints would normally prevent us from reaching.
+fn base_cli_args() -> CLIArgs {
+    parse_from_args(args(&[])).expect("bare 's3ls' should parse")
+}
+
+#[test]
+fn bucket_listing_rejects_max_depth_directly() {
+    // clap enforces `--max-depth requires --recursive`, so we can never
+    // reach the max_depth validation in Config::try_from via normal
+    // argument parsing. Construct CLIArgs directly with max_depth set
+    // but recursive=false to exercise that branch.
+    let mut cli = base_cli_args();
+    cli.max_depth = Some(3);
+    let err = Config::try_from(cli).unwrap_err();
+    assert_eq!(err, "--max-depth is not valid for bucket listing");
 }

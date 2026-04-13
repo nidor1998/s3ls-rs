@@ -169,7 +169,7 @@ pub fn accumulate_statistics(entry: &ListEntry, stats: &mut ListingStatistics) {
     match entry {
         ListEntry::Object(obj) => {
             stats.total_objects += 1;
-            stats.total_size += obj.size();
+            stats.total_size += obj.size;
         }
         ListEntry::CommonPrefix(_) => {}
         ListEntry::DeleteMarker { .. } => {
@@ -187,7 +187,7 @@ pub fn compute_statistics(entries: &[ListEntry]) -> ListingStatistics {
         match entry {
             ListEntry::Object(obj) => {
                 total_objects += 1;
-                total_size += obj.size();
+                total_size += obj.size;
             }
             ListEntry::CommonPrefix(_) => {}
             ListEntry::DeleteMarker { .. } => {
@@ -210,7 +210,7 @@ mod tests {
     use chrono::TimeZone;
 
     fn make_entry_dated(key: &str, size: u64, year: i32, month: u32) -> ListEntry {
-        ListEntry::Object(S3Object::NotVersioning {
+        ListEntry::Object(S3Object {
             key: key.to_string(),
             size,
             last_modified: chrono::Utc
@@ -224,6 +224,7 @@ mod tests {
             owner_id: None,
             is_restore_in_progress: None,
             restore_expiry_date: None,
+            version_info: None,
         })
     }
 
@@ -308,9 +309,11 @@ mod tests {
             ListEntry::CommonPrefix("logs/".to_string()),
             ListEntry::DeleteMarker {
                 key: "c.txt".to_string(),
-                version_id: "v1".to_string(),
+                version_info: crate::types::VersionInfo {
+                    version_id: "v1".to_string(),
+                    is_latest: true,
+                },
                 last_modified: chrono::Utc::now(),
-                is_latest: true,
                 owner_display_name: None,
                 owner_id: None,
             },

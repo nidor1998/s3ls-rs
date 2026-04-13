@@ -87,12 +87,12 @@ pub fn build_filter_chain(filter_config: &FilterConfig) -> Result<FilterChain, S
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ListEntry, S3Object};
+    use crate::types::{ListEntry, S3Object, VersionInfo};
 
     #[test]
     fn empty_filter_chain_passes_all() {
         let chain = FilterChain::new(vec![]);
-        let entry = ListEntry::Object(S3Object::NotVersioning {
+        let entry = ListEntry::Object(S3Object {
             key: "test.txt".to_string(),
             size: 100,
             last_modified: chrono::Utc::now(),
@@ -104,6 +104,7 @@ mod tests {
             owner_id: None,
             is_restore_in_progress: None,
             restore_expiry_date: None,
+            version_info: None,
         });
         assert!(chain.matches(&entry).unwrap());
     }
@@ -118,7 +119,7 @@ mod tests {
     #[test]
     fn filter_error_propagates_through_chain() {
         let chain = FilterChain::new(vec![Box::new(ErrorFilter)]);
-        let entry = ListEntry::Object(S3Object::NotVersioning {
+        let entry = ListEntry::Object(S3Object {
             key: "test.txt".to_string(),
             size: 100,
             last_modified: chrono::Utc::now(),
@@ -130,6 +131,7 @@ mod tests {
             owner_id: None,
             is_restore_in_progress: None,
             restore_expiry_date: None,
+            version_info: None,
         });
         assert!(chain.matches(&entry).is_err());
     }
@@ -151,7 +153,7 @@ mod tests {
     #[test]
     fn filter_chain_rejects_non_matching_object() {
         let chain = FilterChain::new(vec![Box::new(RejectAllFilter)]);
-        let entry = ListEntry::Object(S3Object::NotVersioning {
+        let entry = ListEntry::Object(S3Object {
             key: "test.txt".to_string(),
             size: 100,
             last_modified: chrono::Utc::now(),
@@ -163,6 +165,7 @@ mod tests {
             owner_id: None,
             is_restore_in_progress: None,
             restore_expiry_date: None,
+            version_info: None,
         });
         assert!(!chain.matches(&entry).unwrap());
     }
@@ -181,9 +184,11 @@ mod tests {
         let chain = FilterChain::new(vec![Box::new(RejectAllFilter)]);
         let entry = ListEntry::DeleteMarker {
             key: "k".to_string(),
-            version_id: "v".to_string(),
+            version_info: VersionInfo {
+                version_id: "v".to_string(),
+                is_latest: true,
+            },
             last_modified: chrono::Utc::now(),
-            is_latest: true,
             owner_display_name: None,
             owner_id: None,
         };

@@ -59,19 +59,24 @@ impl EntryFormatter for TsvFormatter {
                 cols.push(maybe_escape(&format_key_display(entry.key(), opts), opts).into_owned());
             }
             ListEntry::Object(obj) => {
-                cols.push(format_rfc3339(obj.last_modified(), opts.show_local_time));
-                cols.push(format_size(obj.size(), opts.human));
+                cols.push(format_rfc3339(&obj.last_modified, opts.show_local_time));
+                cols.push(format_size(obj.size, opts.human));
                 if opts.show_storage_class {
-                    cols.push(obj.storage_class().unwrap_or("STANDARD").to_string());
+                    cols.push(
+                        obj.storage_class
+                            .as_deref()
+                            .unwrap_or("STANDARD")
+                            .to_string(),
+                    );
                 }
                 if opts.show_etag {
-                    cols.push(obj.e_tag().trim_matches('"').to_string());
+                    cols.push(obj.e_tag.trim_matches('"').to_string());
                 }
                 if opts.show_checksum_algorithm {
-                    cols.push(obj.checksum_algorithm().join(","));
+                    cols.push(obj.checksum_algorithm.join(","));
                 }
                 if opts.show_checksum_type {
-                    cols.push(obj.checksum_type().unwrap_or("").to_string());
+                    cols.push(obj.checksum_type.as_deref().unwrap_or("").to_string());
                 }
                 if let Some(vid) = obj.version_id() {
                     cols.push(vid.to_string());
@@ -85,25 +90,27 @@ impl EntryFormatter for TsvFormatter {
                 }
                 if opts.show_owner {
                     cols.push(
-                        maybe_escape(obj.owner_display_name().unwrap_or(""), opts).into_owned(),
+                        maybe_escape(obj.owner_display_name.as_deref().unwrap_or(""), opts)
+                            .into_owned(),
                     );
-                    cols.push(maybe_escape(obj.owner_id().unwrap_or(""), opts).into_owned());
+                    cols.push(
+                        maybe_escape(obj.owner_id.as_deref().unwrap_or(""), opts).into_owned(),
+                    );
                 }
                 if opts.show_restore_status {
                     cols.push(
-                        obj.is_restore_in_progress()
+                        obj.is_restore_in_progress
                             .map(|b| b.to_string())
                             .unwrap_or_default(),
                     );
-                    cols.push(obj.restore_expiry_date().unwrap_or("").to_string());
+                    cols.push(obj.restore_expiry_date.as_deref().unwrap_or("").to_string());
                 }
                 cols.push(maybe_escape(&format_key_display(entry.key(), opts), opts).into_owned());
             }
             ListEntry::DeleteMarker {
                 key,
-                version_id,
+                version_info,
                 last_modified,
-                is_latest,
                 owner_display_name,
                 owner_id,
             } => {
@@ -121,9 +128,9 @@ impl EntryFormatter for TsvFormatter {
                 if opts.show_checksum_type {
                     cols.push(String::new());
                 }
-                cols.push(version_id.clone());
+                cols.push(version_info.version_id.clone());
                 if opts.show_is_latest {
-                    cols.push(if *is_latest {
+                    cols.push(if version_info.is_latest {
                         "LATEST".to_string()
                     } else {
                         "NOT_LATEST".to_string()
@@ -203,11 +210,11 @@ impl EntryFormatter for TsvFormatter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::S3Object;
+    use crate::types::{S3Object, VersionInfo};
     use chrono::TimeZone;
 
     fn make_entry_dated(key: &str, size: u64, year: i32, month: u32) -> ListEntry {
-        ListEntry::Object(S3Object::NotVersioning {
+        ListEntry::Object(S3Object {
             key: key.to_string(),
             size,
             last_modified: chrono::Utc
@@ -221,11 +228,12 @@ mod tests {
             owner_id: None,
             is_restore_in_progress: None,
             restore_expiry_date: None,
+            version_info: None,
         })
     }
 
     fn make_entry_with_checksums(key: &str, checksums: Vec<&str>) -> ListEntry {
-        ListEntry::Object(S3Object::NotVersioning {
+        ListEntry::Object(S3Object {
             key: key.to_string(),
             size: 100,
             last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
@@ -237,6 +245,7 @@ mod tests {
             owner_id: None,
             is_restore_in_progress: None,
             restore_expiry_date: None,
+            version_info: None,
         })
     }
 
@@ -291,15 +300,13 @@ mod tests {
 
     #[test]
     fn format_text_versioned_object() {
-        let entry = ListEntry::Object(S3Object::Versioning {
+        let entry = ListEntry::Object(S3Object {
             key: "readme.txt".to_string(),
-            version_id: "abc123-version-id".to_string(),
             size: 1234,
             last_modified: chrono::Utc
                 .with_ymd_and_hms(2024, 1, 15, 10, 30, 0)
                 .unwrap(),
             e_tag: "\"e\"".to_string(),
-            is_latest: true,
             storage_class: Some("STANDARD".to_string()),
             checksum_algorithm: vec![],
             checksum_type: None,
@@ -307,6 +314,10 @@ mod tests {
             owner_id: None,
             is_restore_in_progress: None,
             restore_expiry_date: None,
+            version_info: Some(VersionInfo {
+                version_id: "abc123-version-id".to_string(),
+                is_latest: true,
+            }),
         });
         let fmt = TsvFormatter::new(FormatOptions::default());
         let line = fmt.format_entry(&entry);
@@ -319,13 +330,11 @@ mod tests {
 
     #[test]
     fn format_text_common_prefix_aligns_with_versioned_object() {
-        let obj = ListEntry::Object(S3Object::Versioning {
+        let obj = ListEntry::Object(S3Object {
             key: "logs/file.txt".to_string(),
-            version_id: "v1".to_string(),
             size: 100,
             last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
             e_tag: "\"e\"".to_string(),
-            is_latest: true,
             storage_class: Some("STANDARD".to_string()),
             checksum_algorithm: vec![],
             checksum_type: None,
@@ -333,6 +342,10 @@ mod tests {
             owner_id: None,
             is_restore_in_progress: None,
             restore_expiry_date: None,
+            version_info: Some(VersionInfo {
+                version_id: "v1".to_string(),
+                is_latest: true,
+            }),
         });
         let prefix = ListEntry::CommonPrefix("logs/".to_string());
 
@@ -371,9 +384,11 @@ mod tests {
     fn format_text_delete_marker() {
         let entry = ListEntry::DeleteMarker {
             key: "readme.txt".to_string(),
-            version_id: "def456-version-id".to_string(),
+            version_info: VersionInfo {
+                version_id: "def456-version-id".to_string(),
+                is_latest: false,
+            },
             last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 16, 9, 0, 0).unwrap(),
-            is_latest: false,
             owner_display_name: None,
             owner_id: None,
         };
@@ -393,9 +408,11 @@ mod tests {
     fn format_text_delete_marker_emits_owner_when_show_owner() {
         let entry = ListEntry::DeleteMarker {
             key: "readme.txt".to_string(),
-            version_id: "v1".to_string(),
+            version_info: VersionInfo {
+                version_id: "v1".to_string(),
+                is_latest: false,
+            },
             last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
-            is_latest: false,
             owner_display_name: Some("alice".to_string()),
             owner_id: Some("id-123".to_string()),
         };
@@ -418,7 +435,7 @@ mod tests {
     #[test]
     fn format_text_escapes_malicious_key_by_default() {
         let evil_key = "innocent.txt\n2024-01-01T00:00:00Z\t0\tphantom.txt";
-        let entry = ListEntry::Object(S3Object::NotVersioning {
+        let entry = ListEntry::Object(S3Object {
             key: evil_key.to_string(),
             size: 100,
             last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
@@ -430,6 +447,7 @@ mod tests {
             owner_id: None,
             is_restore_in_progress: None,
             restore_expiry_date: None,
+            version_info: None,
         });
         let fmt = TsvFormatter::new(FormatOptions::default());
         let line = fmt.format_entry(&entry);
@@ -443,7 +461,7 @@ mod tests {
     #[test]
     fn format_text_preserves_malicious_key_when_raw_output() {
         let evil_key = "evil\nkey";
-        let entry = ListEntry::Object(S3Object::NotVersioning {
+        let entry = ListEntry::Object(S3Object {
             key: evil_key.to_string(),
             size: 100,
             last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
@@ -455,6 +473,7 @@ mod tests {
             owner_id: None,
             is_restore_in_progress: None,
             restore_expiry_date: None,
+            version_info: None,
         });
         let fmt = TsvFormatter::new(FormatOptions {
             raw_output: true,
@@ -466,7 +485,7 @@ mod tests {
 
     #[test]
     fn format_text_escapes_owner_fields() {
-        let entry = ListEntry::Object(S3Object::NotVersioning {
+        let entry = ListEntry::Object(S3Object {
             key: "file.txt".to_string(),
             size: 100,
             last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
@@ -478,6 +497,7 @@ mod tests {
             owner_id: None,
             is_restore_in_progress: None,
             restore_expiry_date: None,
+            version_info: None,
         });
         let fmt = TsvFormatter::new(FormatOptions {
             show_owner: true,
@@ -492,9 +512,11 @@ mod tests {
     fn format_text_escapes_delete_marker_owner() {
         let entry = ListEntry::DeleteMarker {
             key: "file.txt".to_string(),
-            version_id: "v1".to_string(),
+            version_info: VersionInfo {
+                version_id: "v1".to_string(),
+                is_latest: false,
+            },
             last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
-            is_latest: false,
             owner_display_name: Some("alice\nbob".to_string()),
             owner_id: Some("id\tnext".to_string()),
         };
@@ -686,9 +708,11 @@ mod tests {
     fn make_delete_marker() -> ListEntry {
         ListEntry::DeleteMarker {
             key: "deleted.txt".to_string(),
-            version_id: "ver-123".to_string(),
+            version_info: VersionInfo {
+                version_id: "ver-123".to_string(),
+                is_latest: false,
+            },
             last_modified: chrono::Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap(),
-            is_latest: false,
             owner_display_name: Some("alice".to_string()),
             owner_id: Some("id-alice".to_string()),
         }
@@ -742,9 +766,11 @@ mod tests {
     fn format_text_delete_marker_is_latest() {
         let entry = ListEntry::DeleteMarker {
             key: "k".to_string(),
-            version_id: "v".to_string(),
+            version_info: VersionInfo {
+                version_id: "v".to_string(),
+                is_latest: true,
+            },
             last_modified: chrono::Utc::now(),
-            is_latest: true,
             owner_display_name: None,
             owner_id: None,
         };
@@ -759,7 +785,7 @@ mod tests {
 
     #[test]
     fn format_text_object_with_restore_status() {
-        let entry = ListEntry::Object(S3Object::NotVersioning {
+        let entry = ListEntry::Object(S3Object {
             key: "k.dat".to_string(),
             size: 100,
             last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
@@ -771,6 +797,7 @@ mod tests {
             owner_id: None,
             is_restore_in_progress: Some(true),
             restore_expiry_date: Some("2024-02-01T00:00:00Z".to_string()),
+            version_info: None,
         });
         let fmt = TsvFormatter::new(FormatOptions {
             show_restore_status: true,

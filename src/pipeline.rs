@@ -227,7 +227,7 @@ mod tests {
 
     fn mock_entries() -> Vec<ListEntry> {
         vec![
-            ListEntry::Object(S3Object::NotVersioning {
+            ListEntry::Object(S3Object {
                 key: "file1.txt".to_string(),
                 size: 100,
                 last_modified: Utc::now(),
@@ -239,6 +239,7 @@ mod tests {
                 owner_id: None,
                 is_restore_in_progress: None,
                 restore_expiry_date: None,
+                version_info: None,
             }),
             ListEntry::CommonPrefix("logs/".to_string()),
         ]

@@ -177,7 +177,7 @@ mod tests {
     use chrono::TimeZone;
 
     fn make_entry(key: &str, size: u64, year: i32, month: u32) -> ListEntry {
-        ListEntry::Object(S3Object::NotVersioning {
+        ListEntry::Object(S3Object {
             key: key.to_string(),
             size,
             last_modified: chrono::Utc
@@ -191,6 +191,7 @@ mod tests {
             owner_id: None,
             is_restore_in_progress: None,
             restore_expiry_date: None,
+            version_info: None,
         })
     }
 
@@ -565,9 +566,11 @@ mod tests {
         };
         let dm = ListEntry::DeleteMarker {
             key: "k".to_string(),
-            version_id: "v".to_string(),
+            version_info: crate::types::VersionInfo {
+                version_id: "v".to_string(),
+                is_latest: true,
+            },
             last_modified: chrono::Utc::now(),
-            is_latest: true,
             owner_display_name: None,
             owner_id: None,
         };
