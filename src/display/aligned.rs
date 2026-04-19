@@ -15,7 +15,10 @@ pub const W_SIZE_HUMAN: usize = 9;
 pub const W_STORAGE_CLASS: usize = 19;
 pub const W_ETAG: usize = 35;
 pub const W_CHECKSUM_ALGORITHM: usize = 34;
-pub const W_CHECKSUM_TYPE: usize = 11;
+// The longest data value is `FULL_OBJECT` (11 chars), but the header
+// label `CHECKSUM_TYPE` is 13 chars. Widen to 13 so the header fits
+// without overflowing and shifting columns to its right.
+pub const W_CHECKSUM_TYPE: usize = 13;
 pub const W_VERSION_ID: usize = 32;
 pub const W_IS_LATEST: usize = 10;
 pub const W_OWNER_DISPLAY_NAME: usize = 64;
