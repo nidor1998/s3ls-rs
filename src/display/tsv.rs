@@ -1,7 +1,5 @@
-use crate::display::{
-    EntryFormatter, FormatOptions, format_key_display, format_rfc3339, format_size,
-    format_size_split, maybe_escape,
-};
+use crate::display::columns::{build_entry_cols, build_header_cols};
+use crate::display::{EntryFormatter, FormatOptions, format_size_split};
 use crate::types::{ListEntry, ListingStatistics};
 
 pub struct TsvFormatter {
@@ -16,178 +14,17 @@ impl TsvFormatter {
 
 impl EntryFormatter for TsvFormatter {
     fn format_entry(&self, entry: &ListEntry) -> String {
-        let opts = &self.opts;
-        let mut cols: Vec<String> = Vec::new();
-
-        match entry {
-            ListEntry::CommonPrefix(_) => {
-                // date
-                cols.push(String::new());
-                // size
-                cols.push("PRE".to_string());
-                // optional columns
-                if opts.show_storage_class {
-                    cols.push(String::new());
-                }
-                if opts.show_etag {
-                    cols.push(String::new());
-                }
-                if opts.show_checksum_algorithm {
-                    cols.push(String::new());
-                }
-                if opts.show_checksum_type {
-                    cols.push(String::new());
-                }
-                // In --all-versions mode, Object and DeleteMarker rows include a
-                // version_id column (and is_latest if enabled). CommonPrefix has
-                // neither, so emit placeholders to keep columns aligned.
-                if opts.all_versions {
-                    cols.push(String::new());
-                    if opts.show_is_latest {
-                        cols.push(String::new());
-                    }
-                }
-                if opts.show_owner {
-                    cols.push(String::new());
-                    cols.push(String::new());
-                }
-                if opts.show_restore_status {
-                    cols.push(String::new());
-                    cols.push(String::new());
-                }
-                // key (escape control chars in text mode to avoid injection)
-                cols.push(maybe_escape(&format_key_display(entry.key(), opts), opts).into_owned());
-            }
-            ListEntry::Object(obj) => {
-                cols.push(format_rfc3339(&obj.last_modified, opts.show_local_time));
-                cols.push(format_size(obj.size, opts.human));
-                if opts.show_storage_class {
-                    cols.push(
-                        obj.storage_class
-                            .as_deref()
-                            .unwrap_or("STANDARD")
-                            .to_string(),
-                    );
-                }
-                if opts.show_etag {
-                    cols.push(obj.e_tag.trim_matches('"').to_string());
-                }
-                if opts.show_checksum_algorithm {
-                    cols.push(obj.checksum_algorithm.join(","));
-                }
-                if opts.show_checksum_type {
-                    cols.push(obj.checksum_type.as_deref().unwrap_or("").to_string());
-                }
-                if let Some(vid) = obj.version_id() {
-                    cols.push(vid.to_string());
-                }
-                if opts.show_is_latest && obj.version_id().is_some() {
-                    cols.push(if obj.is_latest() {
-                        "LATEST".to_string()
-                    } else {
-                        "NOT_LATEST".to_string()
-                    });
-                }
-                if opts.show_owner {
-                    cols.push(
-                        maybe_escape(obj.owner_display_name.as_deref().unwrap_or(""), opts)
-                            .into_owned(),
-                    );
-                    cols.push(
-                        maybe_escape(obj.owner_id.as_deref().unwrap_or(""), opts).into_owned(),
-                    );
-                }
-                if opts.show_restore_status {
-                    cols.push(
-                        obj.is_restore_in_progress
-                            .map(|b| b.to_string())
-                            .unwrap_or_default(),
-                    );
-                    cols.push(obj.restore_expiry_date.as_deref().unwrap_or("").to_string());
-                }
-                cols.push(maybe_escape(&format_key_display(entry.key(), opts), opts).into_owned());
-            }
-            ListEntry::DeleteMarker {
-                key,
-                version_info,
-                last_modified,
-                owner_display_name,
-                owner_id,
-            } => {
-                cols.push(format_rfc3339(last_modified, opts.show_local_time));
-                cols.push("DELETE".to_string());
-                if opts.show_storage_class {
-                    cols.push(String::new());
-                }
-                if opts.show_etag {
-                    cols.push(String::new());
-                }
-                if opts.show_checksum_algorithm {
-                    cols.push(String::new());
-                }
-                if opts.show_checksum_type {
-                    cols.push(String::new());
-                }
-                cols.push(version_info.version_id.clone());
-                if opts.show_is_latest {
-                    cols.push(if version_info.is_latest {
-                        "LATEST".to_string()
-                    } else {
-                        "NOT_LATEST".to_string()
-                    });
-                }
-                if opts.show_owner {
-                    cols.push(
-                        maybe_escape(owner_display_name.as_deref().unwrap_or(""), opts)
-                            .into_owned(),
-                    );
-                    cols.push(maybe_escape(owner_id.as_deref().unwrap_or(""), opts).into_owned());
-                }
-                if opts.show_restore_status {
-                    // Delete markers have no restore status — leave empty.
-                    cols.push(String::new());
-                    cols.push(String::new());
-                }
-                cols.push(maybe_escape(&format_key_display(key, opts), opts).into_owned());
-            }
-        }
-
-        cols.join("\t")
+        let (specs, key) = build_entry_cols(entry, &self.opts);
+        let mut parts: Vec<&str> = specs.iter().map(|c| c.value.as_str()).collect();
+        parts.push(&key);
+        parts.join("\t")
     }
 
     fn format_header(&self) -> Option<String> {
-        let opts = &self.opts;
-        let mut cols: Vec<&str> = Vec::new();
-        cols.push("DATE");
-        cols.push("SIZE");
-        if opts.show_storage_class {
-            cols.push("STORAGE_CLASS");
-        }
-        if opts.show_etag {
-            cols.push("ETAG");
-        }
-        if opts.show_checksum_algorithm {
-            cols.push("CHECKSUM_ALGORITHM");
-        }
-        if opts.show_checksum_type {
-            cols.push("CHECKSUM_TYPE");
-        }
-        if opts.all_versions {
-            cols.push("VERSION_ID");
-        }
-        if opts.show_is_latest {
-            cols.push("IS_LATEST");
-        }
-        if opts.show_owner {
-            cols.push("OWNER_DISPLAY_NAME");
-            cols.push("OWNER_ID");
-        }
-        if opts.show_restore_status {
-            cols.push("IS_RESTORE_IN_PROGRESS");
-            cols.push("RESTORE_EXPIRY_DATE");
-        }
-        cols.push("KEY");
-        Some(cols.join("\t"))
+        let specs = build_header_cols(&self.opts);
+        let mut parts: Vec<&str> = specs.iter().map(|c| c.value.as_str()).collect();
+        parts.push("KEY");
+        Some(parts.join("\t"))
     }
 
     fn format_summary(&self, stats: &ListingStatistics) -> String {

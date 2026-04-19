@@ -362,6 +362,45 @@ pub struct CLIArgs {
     )]
     pub raw_output: bool,
 
+    /// Display output with columns aligned using whitespace padding.
+    ///
+    /// By default, s3ls emits tab-separated text (TSV). TSV is
+    /// machine-friendly but columns don't line up visually in a
+    /// terminal because tabs align to tab stops, not to content.
+    /// `--aligned` pads each non-KEY column to a fixed width and
+    /// uses two spaces as the column separator, producing output
+    /// that's easy for a human to scan.
+    ///
+    /// Independent of `--human-readable`:
+    ///   - `--human-readable` makes individual values human-friendly
+    ///     (e.g., `1.2KiB` rather than raw bytes).
+    ///   - `--aligned` makes the layout human-friendly (columns line
+    ///     up on screen).
+    ///
+    /// The two can be combined.
+    #[arg(
+        long,
+        env,
+        default_value_t = false,
+        conflicts_with_all = ["json", "one_line"],
+        help_heading = "Display"
+    )]
+    pub aligned: bool,
+
+    /// Display only the key (or bucket name), one per line, with no
+    /// other columns. All `--show-*` options are ignored. For object
+    /// listings, common prefixes are emitted unless `--show-objects-only`
+    /// is set.
+    #[arg(
+        short = '1',
+        long = "one",
+        env,
+        default_value_t = false,
+        conflicts_with_all = ["json", "aligned"],
+        help_heading = "Display"
+    )]
+    pub one_line: bool,
+
     // -----------------------------------------------------------------------
     // Tracing/Logging options (reused from s3rm-rs)
     // -----------------------------------------------------------------------
@@ -431,6 +470,22 @@ pub struct CLIArgs {
     /// Enable requester-pays for the target bucket
     #[arg(long, env, default_value_t = false, help_heading = "AWS Configuration")]
     pub target_request_payer: bool,
+
+    /// Do not sign the request. If this argument is specified,
+    /// credentials will not be loaded.
+    #[arg(
+        long,
+        env,
+        default_value_t = false,
+        conflicts_with_all = [
+            "target_profile",
+            "target_access_key",
+            "target_secret_access_key",
+            "target_session_token",
+        ],
+        help_heading = "AWS Configuration"
+    )]
+    pub target_no_sign_request: bool,
 
     /// Disable stalled stream protection
     #[arg(long, env, default_value_t = false, help_heading = "AWS Configuration")]
@@ -569,7 +624,9 @@ impl CLIArgs {
     }
 
     fn build_client_config(&self) -> Option<crate::config::ClientConfig> {
-        let credential = if let Some(ref profile) = self.target_profile {
+        let credential = if self.target_no_sign_request {
+            crate::types::S3Credentials::NoSign
+        } else if let Some(ref profile) = self.target_profile {
             crate::types::S3Credentials::Profile(profile.clone())
         } else if let Some(ref access_key) = self.target_access_key {
             crate::types::S3Credentials::Credentials {
@@ -804,6 +861,8 @@ impl TryFrom<CLIArgs> for crate::config::Config {
                 header: args.header,
                 json: args.json,
                 raw_output: args.raw_output,
+                aligned: args.aligned,
+                one_line: args.one_line,
             },
             max_parallel_listings: args.max_parallel_listings,
             max_parallel_listing_max_depth: args.max_parallel_listing_max_depth,

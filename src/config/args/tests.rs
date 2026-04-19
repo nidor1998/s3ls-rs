@@ -1792,3 +1792,174 @@ fn bucket_listing_rejects_max_depth_directly() {
     let err = Config::try_from(cli).unwrap_err();
     assert_eq!(err, "--max-depth is not valid for bucket listing");
 }
+
+// ===========================================================================
+// --aligned
+// ===========================================================================
+
+#[test]
+fn aligned_default_false() {
+    let cli = parse_from_args(args(&["s3://bucket"])).unwrap();
+    assert!(!cli.aligned);
+}
+
+#[test]
+fn aligned_long_flag() {
+    let cli = parse_from_args(args(&["s3://bucket", "--aligned"])).unwrap();
+    assert!(cli.aligned);
+}
+
+#[test]
+fn aligned_conflicts_with_json() {
+    let result = parse_from_args(args(&["s3://bucket", "--aligned", "--json"]));
+    assert!(result.is_err());
+}
+
+#[test]
+fn aligned_composes_with_no_sort() {
+    let cli = parse_from_args(args(&[
+        "s3://bucket",
+        "--recursive",
+        "--aligned",
+        "--no-sort",
+    ]))
+    .unwrap();
+    assert!(cli.aligned);
+    assert!(cli.no_sort);
+}
+
+#[test]
+fn aligned_composes_with_human_readable() {
+    let cli = parse_from_args(args(&["s3://bucket", "--aligned", "--human-readable"])).unwrap();
+    assert!(cli.aligned);
+    assert!(cli.human);
+}
+
+#[test]
+fn aligned_conflicts_with_one_line() {
+    let result = parse_from_args(args(&["s3://bucket", "--aligned", "-1"]));
+    assert!(result.is_err());
+    let result = parse_from_args(args(&["s3://bucket", "--aligned", "--one"]));
+    assert!(result.is_err());
+}
+
+// ===========================================================================
+// --target-no-sign-request
+// ===========================================================================
+
+#[test]
+fn target_no_sign_request_default_false() {
+    let cli = parse_from_args(args(&["s3://bucket"])).unwrap();
+    assert!(!cli.target_no_sign_request);
+}
+
+#[test]
+fn target_no_sign_request_long_flag() {
+    let cli = parse_from_args(args(&["s3://bucket", "--target-no-sign-request"])).unwrap();
+    assert!(cli.target_no_sign_request);
+}
+
+#[test]
+fn target_no_sign_request_conflicts_with_target_profile() {
+    let result = parse_from_args(args(&[
+        "s3://bucket",
+        "--target-no-sign-request",
+        "--target-profile",
+        "myprofile",
+    ]));
+    assert!(result.is_err());
+}
+
+#[test]
+fn target_no_sign_request_conflicts_with_target_access_key() {
+    let result = parse_from_args(args(&[
+        "s3://bucket",
+        "--target-no-sign-request",
+        "--target-access-key",
+        "AKIAIOSFODNN7EXAMPLE",
+        "--target-secret-access-key",
+        "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+    ]));
+    assert!(result.is_err());
+}
+
+#[test]
+fn target_no_sign_request_produces_nosign_credential() {
+    use crate::types::S3Credentials;
+    let config: crate::config::Config =
+        build_config_from_args(args(&["s3://bucket", "--target-no-sign-request"])).unwrap();
+    let client_config = config
+        .target_client_config
+        .expect("client config should be built");
+    assert!(matches!(client_config.credential, S3Credentials::NoSign));
+}
+
+#[test]
+fn target_no_sign_request_composes_with_target_endpoint_url() {
+    let cli = parse_from_args(args(&[
+        "s3://bucket",
+        "--target-no-sign-request",
+        "--target-endpoint-url",
+        "https://s3.example.com",
+    ]))
+    .unwrap();
+    assert!(cli.target_no_sign_request);
+    assert_eq!(
+        cli.target_endpoint_url.as_deref(),
+        Some("https://s3.example.com")
+    );
+}
+
+// ===========================================================================
+// -1 (one_line)
+// ===========================================================================
+
+#[test]
+fn one_line_default_false() {
+    let cli = parse_from_args(args(&["s3://bucket"])).unwrap();
+    assert!(!cli.one_line);
+}
+
+#[test]
+fn one_line_short_flag() {
+    let cli = parse_from_args(args(&["s3://bucket", "-1"])).unwrap();
+    assert!(cli.one_line);
+}
+
+#[test]
+fn one_line_long_flag() {
+    let cli = parse_from_args(args(&["s3://bucket", "--one"])).unwrap();
+    assert!(cli.one_line);
+}
+
+#[test]
+fn one_line_conflicts_with_json() {
+    let result = parse_from_args(args(&["s3://bucket", "-1", "--json"]));
+    assert!(result.is_err());
+}
+
+#[test]
+fn one_line_composes_with_show_objects_only() {
+    let cli = parse_from_args(args(&["s3://bucket", "-1", "--show-objects-only"])).unwrap();
+    assert!(cli.one_line);
+    assert!(cli.show_objects_only);
+}
+
+#[test]
+fn one_line_composes_with_show_flags_even_though_they_are_ignored() {
+    // clap doesn't reject the combination; the formatter silently
+    // ignores --show-* flags when -1 is set. This test just
+    // confirms the flags parse together without error.
+    let cli = parse_from_args(args(&[
+        "s3://bucket",
+        "-1",
+        "--show-etag",
+        "--show-storage-class",
+        "--human-readable",
+    ]))
+    .unwrap();
+    assert!(cli.one_line);
+    assert!(cli.show_etag);
+    assert!(cli.show_storage_class);
+    assert!(cli.human);
+}

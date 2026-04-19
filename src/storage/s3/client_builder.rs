@@ -117,6 +117,10 @@ impl ClientConfig {
                 debug!("using environment credentials");
                 config_loader
             }
+            S3Credentials::NoSign => {
+                debug!("no-sign-request: disabling credential loading and request signing");
+                config_loader.no_credentials()
+            }
         }
     }
 
@@ -133,7 +137,7 @@ impl ClientConfig {
 
         let provider_region = if matches!(
             &self.credential,
-            crate::types::S3Credentials::FromEnvironment
+            crate::types::S3Credentials::FromEnvironment | crate::types::S3Credentials::NoSign
         ) {
             RegionProviderChain::first_try(self.region.clone().map(Region::new))
                 .or_default_provider()

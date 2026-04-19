@@ -51,12 +51,15 @@ This demo shows listing approximately 360,000 objects per second, listing 1,100,
     * [Combined filters](#combined-filters)
     * [Sort results](#sort-results)
     * [Display options](#display-options)
+    * [Aligned output](#aligned-output)
+    * [One-per-line output](#one-per-line-output)
     * [JSON output](#json-output)
     * [Version listing](#version-listing)
     * [Depth-limited recursive listing](#depth-limited-recursive-listing)
     * [Bucket listing](#bucket-listing)
     * [Custom endpoint](#custom-endpoint)
     * [Specify credentials](#specify-credentials)
+    * [Anonymous access](#anonymous-access)
     * [Specify region](#specify-region)
 - [Detailed information](#detailed-information)
     * [Parallel listing architecture](#parallel-listing-architecture)
@@ -74,6 +77,7 @@ This demo shows listing approximately 360,000 objects per second, listing 1,100,
     * [--max-parallel-listings](#--max-parallel-listings)
     * [--max-parallel-listing-max-depth](#--max-parallel-listing-max-depth)
     * [--no-sort](#--no-sort)
+    * [--aligned](#--aligned)
     * [--max-keys](#--max-keys)
     * [--filter-include-regex/--filter-exclude-regex](#--filter-include-regex--filter-exclude-regex)
     * [-v](#-v)
@@ -184,6 +188,10 @@ s3ls is designed from the ground up so that every byte of output is useful to a 
 
 **Tab-separated text** (default) — Each line is a single record. Fields are separated by tab characters, so `cut`, `awk`, `sort`, and other Unix tools can process the output directly without custom delimiters or quoting rules. At the same time, tabs align columns naturally in a terminal, making the output scannable at a glance. Control characters in S3 keys (`\x00`-`\x1f`, `\x7f`) are escaped as `\xNN` hex by default, so a maliciously-named object cannot inject newlines or ANSI sequences into terminal output or break downstream line-oriented parsing. Use `--raw-output` to disable escaping when trusting bucket contents. Add `--header` for a labeled header row that makes wide output self-documenting without interfering with `tail -n +2` workflows.
 
+For interactive terminal use, add `--aligned` to pad each column to a
+fixed width with spaces. This is a pure layout option and is
+independent of `--human-readable` (which formats individual values).
+
 **NDJSON** (`--json`) — One JSON object per line. Field names use PascalCase (`Key`, `Size`, `LastModified`, `ETag`, `StorageClass`) matching the S3 API response structure exactly. This means `jq`, Python scripts, and any tooling that already parses S3 API responses can consume s3ls output with zero translation. Every available metadata field is included in every JSON record regardless of `--show-*` flags, so downstream consumers always get the full picture. Each line is independently parseable, making the output compatible with streaming processors, log aggregation systems, and `jq` filters alike. Humans can read individual records, and machines can process millions of them without loading the entire output into memory.
 
 Both formats share the same design principle: one record per line, stable field order, no surprises.
@@ -255,6 +263,7 @@ s3ls works with any S3-compatible storage service:
 - Path-style access via `--target-force-path-style`
 - S3 Transfer Acceleration via `--target-accelerate`
 - Requester-pays via `--target-request-payer`
+- Anonymous (unsigned) requests via `--target-no-sign-request` for public buckets
 - HTTP/HTTPS proxy via standard environment variables (`HTTPS_PROXY`, `HTTP_PROXY`)
 
 s3ls is performance-tuned for Amazon S3, which supports high request rates. S3-compatible storage services may have lower rate limits. If you encounter throttling errors, use `--rate-limit-api` to cap the number of S3 API requests per second, or reduce concurrency with `--max-parallel-listings`:
@@ -278,12 +287,14 @@ s3ls --recursive \
 
 s3ls is distributed as a single binary with no dependencies (except glibc). Linux musl statically linked binary is also available.
 
-AWS credentials are required. s3ls supports all standard AWS credential mechanisms:
+AWS credentials are required for most buckets. s3ls supports all standard AWS credential mechanisms:
 - Environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`)
 - AWS credentials file (`~/.aws/credentials`)
 - AWS config file (`~/.aws/config`) with profiles
 - IAM instance roles (EC2, ECS, Lambda)
 - SSO/federated authentication
+
+Public (anonymous) buckets can be read with `--target-no-sign-request` — no credentials are loaded and requests are sent unsigned.
 
 For more information, see [SDK authentication with AWS](https://docs.aws.amazon.com/sdk-for-rust/latest/dg/credentials.html).
 
@@ -429,6 +440,69 @@ s3ls --recursive --header --show-storage-class s3://my-bucket/
 s3ls --recursive --show-relative-path s3://my-bucket/data/
 ```
 
+### Aligned output
+
+```
+# Default TSV — machine-friendly, tabs between columns
+$ s3ls --recursive s3://my-bucket/data/
+2024-01-15T10:30:00Z	1234	data/readme.txt
+2024-06-01T08:00:00Z	5678	data/2024/report.csv
+
+# Aligned — columns padded with spaces so the output scans well in a terminal
+$ s3ls --recursive --aligned s3://my-bucket/data/
+2024-01-15T10:30:00Z                 1234  data/readme.txt
+2024-06-01T08:00:00Z                 5678  data/2024/report.csv
+
+# Combined with --human-readable
+$ s3ls --recursive --aligned --human-readable s3://my-bucket/data/
+2024-01-15T10:30:00Z          1.2KiB  data/readme.txt
+2024-06-01T08:00:00Z          5.5KiB  data/2024/report.csv
+```
+
+`--aligned` pads each non-KEY column to a fixed width so rows line up
+on screen. It is independent of `--human-readable`:
+
+- `--human-readable` makes individual **values** human-friendly
+  (e.g., `1.2KiB` rather than raw bytes).
+- `--aligned` makes the **layout** human-friendly (columns line up).
+
+The default tab-separated output is preserved for `cut`, `awk`, and
+other Unix tools. `--aligned` composes with `--no-sort`, `--header`,
+`--summarize`, and every `--show-*` flag. It conflicts with `--json`
+(NDJSON is not columnar).
+
+### One-per-line output
+
+```bash
+# One key per line, no columns — good for piping into xargs, fzf, etc.
+$ s3ls --recursive -1 s3://my-bucket/data/
+data/readme.txt
+data/2024/report.csv
+data/2025/summary.json
+
+# Long form is equivalent
+$ s3ls --recursive --one s3://my-bucket/data/
+
+# List bucket names only
+$ s3ls -1
+bucket-a
+bucket-b
+
+# Suppress common prefixes (emit only objects)
+$ s3ls --recursive -1 --show-objects-only s3://my-bucket/data/
+
+# With --header, a single "KEY" (or "BUCKET") label is emitted
+$ s3ls --recursive --header -1 s3://my-bucket/data/
+KEY
+data/readme.txt
+data/2024/report.csv
+```
+
+`-1` (long form `--one`) prints just the key (or bucket name)
+per line, mimicking `ls -1`. All `--show-*` columns are ignored.
+Common prefixes are included by default; add `--show-objects-only`
+to drop them. Conflicts with `--json`.
+
 ### JSON output
 
 ```bash
@@ -520,6 +594,32 @@ s3ls --target-access-key AKIAIOSFODNN7EXAMPLE \
      --target-secret-access-key wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY \
      s3://my-bucket/
 ```
+
+### Anonymous access
+
+Use `--target-no-sign-request` to read a public S3 bucket without
+loading AWS credentials. Requests are sent unsigned (no SigV4), so no
+access key, profile, or IMDS lookup is required.
+
+```bash
+# List a public bucket (e.g. Common Crawl) anonymously
+s3ls --recursive --target-no-sign-request \
+     --target-region us-east-1 \
+     s3://commoncrawl/crawl-data/
+
+# Works with S3-compatible endpoints too
+s3ls --recursive --target-no-sign-request \
+     --target-endpoint-url https://s3.example.com \
+     --target-force-path-style \
+     s3://public-bucket/
+```
+
+`--target-no-sign-request` conflicts with `--target-profile`,
+`--target-access-key`, `--target-secret-access-key`, and
+`--target-session-token` — those flags imply a signing identity, so
+mixing them with anonymous mode is ambiguous. `--target-region` is
+still honored (and often required, since no profile is consulted to
+supply a default region).
 
 ### Specify region
 
@@ -763,6 +863,48 @@ Disables sorting and streams results directly to stdout. Reduces memory usage to
 s3ls --recursive --no-sort s3://huge-bucket/
 ```
 
+### --aligned
+
+Pads each non-KEY column to a fixed width with spaces and uses a
+two-space column separator, producing output that lines up visually
+in a terminal. The default TSV output uses tab characters, which
+align to tab stops rather than column content, so rows with varying
+field lengths don't line up on screen.
+
+`--aligned` is independent of `--human-readable`:
+
+- `--human-readable` changes individual **values** (`1.2KiB` instead
+  of `1234`).
+- `--aligned` changes the **layout** (columns line up on screen).
+
+The two can be combined.
+
+```bash
+s3ls --recursive --aligned s3://my-bucket/data/
+s3ls --recursive --aligned --human-readable --summarize s3://my-bucket/
+```
+
+**Zero buffering.** Every non-KEY column has a bounded maximum width
+derived from the S3 API contract (e.g., a single object is at most
+50 TiB = 14 digits, an ETag is at most 38 chars), and the KEY column
+is always emitted last with no trailing padding. So `--aligned`
+streams rows one-by-one just like the default TSV mode — it composes
+cleanly with `--no-sort` (constant memory for huge buckets).
+
+**Conflicts.** Only `--json` (NDJSON output is not columnar).
+
+**Overflow.** If a value exceeds its column width (e.g., an unusually
+long VersionId, or an OwnerDisplayName with CJK characters that
+render wider than the character count suggests), the value is
+emitted as-is without truncation. Subsequent columns on that row
+shift right, but no data is hidden. This mirrors `ls -l` behavior
+for long filenames.
+
+**`--raw-output` interaction.** Allowed. With `--raw-output`, control
+characters in keys or owner names are not re-escaped, so column
+widths may be disrupted on rows containing such bytes. This is a
+deliberate tradeoff implied by `--raw-output` itself.
+
 ### --max-keys
 
 Maximum number of objects returned per single `ListObjectsV2` API call. Default: 1000. Range: 1-1000.
@@ -823,6 +965,9 @@ s3ls --help
 ```
 
 ## All command line options
+
+<details>
+<summary>Click to expand to view all command line options</summary>
 
 ```
 $ s3ls -h
@@ -890,6 +1035,8 @@ Display:
       --json                     Output as NDJSON (one JSON object per line) [env: JSON=]
       --show-objects-only        Show only objects, hiding common prefixes (directory markers) from output [env: SHOW_OBJECTS_ONLY=]
       --raw-output               Emit raw S3 key/prefix bytes without escaping control characters [env: RAW_OUTPUT=]
+      --aligned                  Display output with columns aligned using whitespace padding [env: ALIGNED=]
+  -1, --one                      Display only the key (or bucket name), one per line, with no other columns. All `--show-*` options are ignored. For object listings, common prefixes are emitted unless `--show-objects-only` is set [env: ONE_LINE=]
 
 Tracing/Logging:
       --json-tracing           Output structured logs in JSON format [env: JSON_TRACING=]
@@ -920,6 +1067,8 @@ AWS Configuration:
           Enable S3 Transfer Acceleration [env: TARGET_ACCELERATE=]
       --target-request-payer
           Enable requester-pays for the target bucket [env: TARGET_REQUEST_PAYER=]
+      --target-no-sign-request
+          Do not sign the request. If this argument is specified, credentials will not be loaded [env: TARGET_NO_SIGN_REQUEST=]
       --disable-stalled-stream-protection
           Disable stalled stream protection [env: DISABLE_STALLED_STREAM_PROTECTION=]
 
@@ -959,6 +1108,8 @@ Advanced:
       --auto-complete-shell <AUTO_COMPLETE_SHELL>
           Generate shell completions for the given shell [env: AUTO_COMPLETE_SHELL=] [possible values: bash, elvish, fish, powershell, zsh]
 ```
+
+</details>
 
 ## CI/CD Integration
 

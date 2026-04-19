@@ -2,6 +2,7 @@ use crate::config::Config;
 use crate::config::args::SortField;
 use anyhow::Result;
 use aws_sdk_s3::Client;
+use aws_smithy_types::error::display::DisplayErrorContext;
 use chrono::{DateTime, Utc};
 use std::io::Write;
 
@@ -12,6 +13,151 @@ struct BucketEntry {
     bucket_arn: Option<String>,
     owner_display_name: Option<String>,
     owner_id: Option<String>,
+}
+
+pub(crate) struct BucketFormatOpts {
+    pub aligned: bool,
+    pub one_line: bool,
+    pub show_bucket_arn: bool,
+    pub show_owner: bool,
+    pub raw_output: bool,
+}
+
+fn bucket_escape(s: &str, raw_output: bool) -> String {
+    if raw_output {
+        s.to_string()
+    } else {
+        crate::display::escape_control_chars(s).into_owned()
+    }
+}
+
+fn format_bucket_entry(entry: &BucketEntry, opts: &BucketFormatOpts) -> String {
+    if opts.one_line {
+        return bucket_escape(&entry.name, opts.raw_output);
+    }
+    use crate::display::aligned::{
+        Align, ColumnSpec, W_BUCKET_ARN, W_BUCKET_NAME, W_BUCKET_REGION, W_DATE,
+        W_OWNER_DISPLAY_NAME, W_OWNER_ID, render_cols,
+    };
+
+    let date = entry
+        .creation_date
+        .map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        .unwrap_or_default();
+    let region = entry.region.as_deref().unwrap_or("").to_string();
+    let bucket = bucket_escape(&entry.name, opts.raw_output);
+
+    let mut specs: Vec<ColumnSpec> = vec![
+        ColumnSpec {
+            value: date,
+            width: W_DATE,
+            align: Align::Left,
+        },
+        ColumnSpec {
+            value: region,
+            width: W_BUCKET_REGION,
+            align: Align::Left,
+        },
+        ColumnSpec {
+            value: bucket,
+            width: W_BUCKET_NAME,
+            align: Align::Left,
+        },
+    ];
+    if opts.show_bucket_arn {
+        specs.push(ColumnSpec {
+            value: entry.bucket_arn.as_deref().unwrap_or("").to_string(),
+            width: W_BUCKET_ARN,
+            align: Align::Left,
+        });
+    }
+    if opts.show_owner {
+        specs.push(ColumnSpec {
+            value: bucket_escape(
+                entry.owner_display_name.as_deref().unwrap_or(""),
+                opts.raw_output,
+            ),
+            width: W_OWNER_DISPLAY_NAME,
+            align: Align::Left,
+        });
+        specs.push(ColumnSpec {
+            value: bucket_escape(entry.owner_id.as_deref().unwrap_or(""), opts.raw_output),
+            width: W_OWNER_ID,
+            align: Align::Left,
+        });
+    }
+
+    // Whichever column is last is emitted unpadded (no trailing width padding).
+    let last = specs
+        .pop()
+        .expect("at least DATE+REGION+BUCKET are always present");
+
+    if opts.aligned {
+        render_cols(&specs, &last.value)
+    } else {
+        let mut parts: Vec<&str> = specs.iter().map(|c| c.value.as_str()).collect();
+        parts.push(&last.value);
+        parts.join("\t")
+    }
+}
+
+fn format_bucket_header(opts: &BucketFormatOpts) -> String {
+    if opts.one_line {
+        return "BUCKET".to_string();
+    }
+    use crate::display::aligned::{
+        Align, ColumnSpec, W_BUCKET_ARN, W_BUCKET_NAME, W_BUCKET_REGION, W_DATE,
+        W_OWNER_DISPLAY_NAME, W_OWNER_ID, render_cols,
+    };
+
+    let mut specs: Vec<ColumnSpec> = vec![
+        ColumnSpec {
+            value: "DATE".to_string(),
+            width: W_DATE,
+            align: Align::Left,
+        },
+        ColumnSpec {
+            value: "REGION".to_string(),
+            width: W_BUCKET_REGION,
+            align: Align::Left,
+        },
+        ColumnSpec {
+            value: "BUCKET".to_string(),
+            width: W_BUCKET_NAME,
+            align: Align::Left,
+        },
+    ];
+    if opts.show_bucket_arn {
+        specs.push(ColumnSpec {
+            value: "BUCKET_ARN".to_string(),
+            width: W_BUCKET_ARN,
+            align: Align::Left,
+        });
+    }
+    if opts.show_owner {
+        specs.push(ColumnSpec {
+            value: "OWNER_DISPLAY_NAME".to_string(),
+            width: W_OWNER_DISPLAY_NAME,
+            align: Align::Left,
+        });
+        specs.push(ColumnSpec {
+            value: "OWNER_ID".to_string(),
+            width: W_OWNER_ID,
+            align: Align::Left,
+        });
+    }
+
+    let last = specs
+        .pop()
+        .expect("at least DATE+REGION+BUCKET are always present");
+
+    if opts.aligned {
+        render_cols(&specs, &last.value)
+    } else {
+        let mut parts: Vec<&str> = specs.iter().map(|c| c.value.as_str()).collect();
+        parts.push(&last.value);
+        parts.join("\t")
+    }
 }
 
 pub async fn list_buckets(config: &Config) -> Result<()> {
@@ -56,23 +202,21 @@ pub async fn list_buckets(config: &Config) -> Result<()> {
     let show_owner = config.display_config.show_owner;
     let show_bucket_arn = config.display_config.show_bucket_arn;
 
+    // Options for text-mode header + per-entry formatting. Constructed
+    // once because these flags are row-invariant.
+    let bopts = BucketFormatOpts {
+        aligned: config.display_config.aligned,
+        one_line: config.display_config.one_line,
+        show_bucket_arn,
+        show_owner,
+        raw_output: config.display_config.raw_output,
+    };
+
     if config.display_config.header && !config.display_config.json {
-        let mut header = "DATE\tREGION\tBUCKET".to_string();
-        if show_bucket_arn {
-            header.push_str("\tBUCKET_ARN");
-        }
-        if show_owner {
-            header.push_str("\tOWNER_DISPLAY_NAME\tOWNER_ID");
-        }
-        writeln!(writer, "{header}")?;
+        writeln!(writer, "{}", format_bucket_header(&bopts))?;
     }
 
     for entry in &entries {
-        let date = entry
-            .creation_date
-            .map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
-            .unwrap_or_default();
-        let region = entry.region.as_deref().unwrap_or("");
         if config.display_config.json {
             let mut map = serde_json::Map::new();
             map.insert(
@@ -120,27 +264,7 @@ pub async fn list_buckets(config: &Config) -> Result<()> {
             // injection of fake rows or terminal escape sequences via
             // maliciously-named buckets / owners. JSON output is handled
             // safely by serde_json above.
-            let escape = |s: &str| -> String {
-                if config.display_config.raw_output {
-                    s.to_string()
-                } else {
-                    crate::display::escape_control_chars(s).into_owned()
-                }
-            };
-
-            let name = escape(&entry.name);
-            let mut line = format!("{date}\t{region}\t{name}");
-            if show_bucket_arn {
-                line.push_str(&format!("\t{}", entry.bucket_arn.as_deref().unwrap_or("")));
-            }
-            if show_owner {
-                line.push_str(&format!(
-                    "\t{}\t{}",
-                    escape(entry.owner_display_name.as_deref().unwrap_or("")),
-                    escape(entry.owner_id.as_deref().unwrap_or(""))
-                ));
-            }
-            writeln!(writer, "{line}")?;
+            writeln!(writer, "{}", format_bucket_entry(entry, &bopts))?;
         }
     }
 
@@ -164,7 +288,7 @@ async fn list_general_buckets(client: &Client, prefix: Option<&str>) -> Result<V
         let resp = req
             .send()
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to list buckets: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("Failed to list buckets: {}", DisplayErrorContext(&e)))?;
 
         let owner_display_name = resp
             .owner()
@@ -204,10 +328,12 @@ async fn list_directory_buckets(client: &Client) -> Result<Vec<BucketEntry>> {
             req = req.continuation_token(token);
         }
 
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to list directory buckets: {e}"))?;
+        let resp = req.send().await.map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to list directory buckets: {}",
+                DisplayErrorContext(&e)
+            )
+        })?;
 
         for b in resp.buckets() {
             entries.push(BucketEntry {
@@ -233,4 +359,161 @@ async fn list_directory_buckets(client: &Client) -> Result<Vec<BucketEntry>> {
 fn aws_datetime_to_chrono(dt: &aws_smithy_types::DateTime) -> Option<DateTime<Utc>> {
     let epoch_secs = dt.secs();
     chrono::DateTime::from_timestamp(epoch_secs, dt.subsec_nanos())
+}
+
+#[cfg(test)]
+mod aligned_tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn entry() -> BucketEntry {
+        BucketEntry {
+            name: "mybucket".to_string(),
+            region: Some("us-east-1".to_string()),
+            creation_date: Some(chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap()),
+            bucket_arn: Some("arn:aws:s3:::mybucket".to_string()),
+            owner_display_name: Some("alice".to_string()),
+            owner_id: Some("id-alice".to_string()),
+        }
+    }
+
+    fn opts(aligned: bool, show_arn: bool, show_owner: bool) -> BucketFormatOpts {
+        BucketFormatOpts {
+            aligned,
+            one_line: false,
+            show_bucket_arn: show_arn,
+            show_owner,
+            raw_output: false,
+        }
+    }
+
+    #[test]
+    fn bucket_one_line_emits_only_name() {
+        let opts = BucketFormatOpts {
+            aligned: false,
+            one_line: true,
+            show_bucket_arn: true,
+            show_owner: true,
+            raw_output: false,
+        };
+        let line = format_bucket_entry(&entry(), &opts);
+        assert_eq!(line, "mybucket");
+    }
+
+    #[test]
+    fn bucket_one_line_ignores_show_flags_even_when_aligned() {
+        // one_line takes precedence over aligned in the formatter.
+        let opts = BucketFormatOpts {
+            aligned: true,
+            one_line: true,
+            show_bucket_arn: true,
+            show_owner: true,
+            raw_output: false,
+        };
+        let line = format_bucket_entry(&entry(), &opts);
+        assert_eq!(line, "mybucket");
+    }
+
+    #[test]
+    fn bucket_one_line_header_is_bucket_label() {
+        let opts = BucketFormatOpts {
+            aligned: false,
+            one_line: true,
+            show_bucket_arn: true,
+            show_owner: true,
+            raw_output: false,
+        };
+        assert_eq!(format_bucket_header(&opts), "BUCKET");
+    }
+
+    #[test]
+    fn bucket_tsv_unchanged_when_not_aligned() {
+        let line = format_bucket_entry(&entry(), &opts(false, false, false));
+        assert_eq!(line, "2024-01-01T00:00:00Z\tus-east-1\tmybucket");
+    }
+
+    #[test]
+    fn bucket_aligned_default_bucket_is_last_unpadded() {
+        use crate::display::aligned::{SEP, W_BUCKET_REGION, W_DATE};
+        let line = format_bucket_entry(&entry(), &opts(true, false, false));
+        let date = "2024-01-01T00:00:00Z";
+        let region = "us-east-1";
+        let expected = format!(
+            "{date}{}{SEP}{region}{}{SEP}mybucket",
+            " ".repeat(W_DATE - date.chars().count()),
+            " ".repeat(W_BUCKET_REGION - region.chars().count()),
+        );
+        assert_eq!(line, expected);
+    }
+
+    #[test]
+    fn bucket_aligned_with_show_bucket_arn_puts_arn_last() {
+        use crate::display::aligned::{SEP, W_BUCKET_NAME, W_BUCKET_REGION, W_DATE};
+        let line = format_bucket_entry(&entry(), &opts(true, true, false));
+        let date = "2024-01-01T00:00:00Z";
+        let region = "us-east-1";
+        let bucket = "mybucket";
+        let arn = "arn:aws:s3:::mybucket";
+        let expected = format!(
+            "{date}{}{SEP}{region}{}{SEP}{bucket}{}{SEP}{arn}",
+            " ".repeat(W_DATE - date.chars().count()),
+            " ".repeat(W_BUCKET_REGION - region.chars().count()),
+            " ".repeat(W_BUCKET_NAME - bucket.chars().count()),
+        );
+        assert_eq!(line, expected);
+    }
+
+    #[test]
+    fn bucket_aligned_with_show_owner_puts_owner_id_last() {
+        use crate::display::aligned::{
+            SEP, W_BUCKET_NAME, W_BUCKET_REGION, W_DATE, W_OWNER_DISPLAY_NAME,
+        };
+        let line = format_bucket_entry(&entry(), &opts(true, false, true));
+        let date = "2024-01-01T00:00:00Z";
+        let region = "us-east-1";
+        let bucket = "mybucket";
+        let owner_name = "alice";
+        let expected = format!(
+            "{date}{}{SEP}{region}{}{SEP}{bucket}{}{SEP}{owner_name}{}{SEP}id-alice",
+            " ".repeat(W_DATE - date.chars().count()),
+            " ".repeat(W_BUCKET_REGION - region.chars().count()),
+            " ".repeat(W_BUCKET_NAME - bucket.chars().count()),
+            " ".repeat(W_OWNER_DISPLAY_NAME - owner_name.chars().count()),
+        );
+        assert_eq!(line, expected);
+    }
+
+    #[test]
+    fn bucket_aligned_with_arn_and_owner_owner_id_is_last() {
+        use crate::display::aligned::{
+            SEP, W_BUCKET_ARN, W_BUCKET_NAME, W_BUCKET_REGION, W_DATE, W_OWNER_DISPLAY_NAME,
+        };
+        let line = format_bucket_entry(&entry(), &opts(true, true, true));
+        let date = "2024-01-01T00:00:00Z";
+        let region = "us-east-1";
+        let bucket = "mybucket";
+        let arn = "arn:aws:s3:::mybucket";
+        let owner_name = "alice";
+        let expected = format!(
+            "{date}{}{SEP}{region}{}{SEP}{bucket}{}{SEP}{arn}{}{SEP}{owner_name}{}{SEP}id-alice",
+            " ".repeat(W_DATE - date.chars().count()),
+            " ".repeat(W_BUCKET_REGION - region.chars().count()),
+            " ".repeat(W_BUCKET_NAME - bucket.chars().count()),
+            " ".repeat(W_BUCKET_ARN - arn.chars().count()),
+            " ".repeat(W_OWNER_DISPLAY_NAME - owner_name.chars().count()),
+        );
+        assert_eq!(line, expected);
+    }
+
+    #[test]
+    fn bucket_aligned_header_default() {
+        use crate::display::aligned::{SEP, W_BUCKET_REGION, W_DATE};
+        let h = format_bucket_header(&opts(true, false, false));
+        let expected = format!(
+            "DATE{}{SEP}REGION{}{SEP}BUCKET",
+            " ".repeat(W_DATE - "DATE".len()),
+            " ".repeat(W_BUCKET_REGION - "REGION".len()),
+        );
+        assert_eq!(h, expected);
+    }
 }

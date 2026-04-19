@@ -14,8 +14,14 @@ use std::path::PathBuf;
 #[derive(Clone)]
 pub enum S3Credentials {
     Profile(String),
-    Credentials { access_keys: AccessKeys },
+    Credentials {
+        access_keys: AccessKeys,
+    },
     FromEnvironment,
+    /// Disable request signing entirely and do not attempt to load
+    /// credentials from any source. Used for public (anonymous) S3
+    /// buckets and similar read-only public endpoints.
+    NoSign,
 }
 
 impl std::fmt::Debug for S3Credentials {
@@ -27,6 +33,7 @@ impl std::fmt::Debug for S3Credentials {
                 .field("access_keys", access_keys)
                 .finish(),
             S3Credentials::FromEnvironment => write!(f, "FromEnvironment"),
+            S3Credentials::NoSign => write!(f, "NoSign"),
         }
     }
 }
@@ -489,6 +496,13 @@ mod tests {
         let cred = S3Credentials::Profile("my-profile".to_string());
         let rendered = format!("{cred:?}");
         assert!(rendered.contains("my-profile"));
+    }
+
+    #[test]
+    fn s3_credentials_no_sign_debug() {
+        let cred = S3Credentials::NoSign;
+        let rendered = format!("{cred:?}");
+        assert_eq!(rendered, "NoSign");
     }
 
     #[test]

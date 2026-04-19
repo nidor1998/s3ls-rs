@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use aws_sdk_s3::Client;
 use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::types::RequestPayer;
+use aws_smithy_types::error::display::DisplayErrorContext;
 use aws_smithy_types::error::metadata::ProvideErrorMetadata;
 use chrono::{DateTime, Utc};
 use tokio::sync::mpsc::Sender;
@@ -811,7 +812,9 @@ impl StorageTrait for S3Storage {
 // ---------------------------------------------------------------------------
 
 /// Extract error code and message from an AWS SDK error.
-fn extract_sdk_error_details<E: std::fmt::Display + ProvideErrorMetadata>(
+fn extract_sdk_error_details<
+    E: std::fmt::Display + std::error::Error + ProvideErrorMetadata + 'static,
+>(
     e: &SdkError<E>,
 ) -> (String, String) {
     if let Some(service_err) = e.as_service_error() {
@@ -820,7 +823,7 @@ fn extract_sdk_error_details<E: std::fmt::Display + ProvideErrorMetadata>(
             service_err.message().unwrap_or("no message").to_string(),
         )
     } else {
-        ("N/A".to_string(), e.to_string())
+        ("N/A".to_string(), DisplayErrorContext(e).to_string())
     }
 }
 
