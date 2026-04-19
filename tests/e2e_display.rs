@@ -1991,3 +1991,281 @@ async fn e2e_display_bucket_listing_text_raw_output() {
 
     _guard.cleanup().await;
 }
+
+/// `--aligned` produces fixed-width space-separated columns so that KEY
+/// starts at the same character position on every object row.
+///
+/// The default column layout (DATE, SIZE, KEY) gives a prefix of
+/// `W_DATE + SEP + W_SIZE + SEP` = 25 + 2 + 20 + 2 = 49 characters
+/// before the KEY value on every data row. This test verifies that
+/// prefix length is identical across all rows.
+#[tokio::test]
+async fn e2e_aligned_object_listing() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+        // Three objects with different key lengths and different sizes so
+        // the SIZE column needs right-padding on all but the widest.
+        helper.put_object(&bucket, "a.txt", vec![0u8; 1]).await;
+        helper
+            .put_object(&bucket, "longer-name.txt", vec![0u8; 1000])
+            .await;
+        helper
+            .put_object(&bucket, "dir/nested.txt", vec![0u8; 123456])
+            .await;
+
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--aligned"]);
+        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
+
+        // Collect non-empty, non-summary data rows.
+        let data_rows: Vec<&str> = output
+            .stdout
+            .lines()
+            .filter(|l| {
+                !l.trim().is_empty() && !l.starts_with("\nTotal:") && !l.starts_with("Total:")
+            })
+            .collect();
+
+        assert!(
+            !data_rows.is_empty(),
+            "aligned object listing: no data rows in output:\n{}",
+            output.stdout
+        );
+
+        // In aligned mode every row is space-separated, not tab-separated.
+        // Verify no tabs appear in any data row.
+        for row in &data_rows {
+            assert!(
+                !row.contains('\t'),
+                "aligned object listing: row contains tab (aligned mode must use spaces): {row:?}"
+            );
+        }
+
+        // Measure where KEY starts on each row. With the default (DATE, SIZE)
+        // layout:  prefix_len = W_DATE + SEP_LEN + W_SIZE + SEP_LEN
+        //        = 25 + 2 + 20 + 2 = 49.
+        // The KEY value begins at byte offset 49.  All rows must agree.
+        let prefix_len: usize = 49;
+        for row in &data_rows {
+            let actual_prefix = row.chars().take(prefix_len).count();
+            assert!(
+                row.len() >= prefix_len,
+                "aligned object listing: row shorter than expected prefix of {prefix_len}: {row:?}"
+            );
+            // The character at `prefix_len` is the first char of the KEY —
+            // every position before it must be a non-newline printable.
+            // Verify by checking the byte-slice up to prefix_len contains no
+            // tabs and that all rows share the same prefix length.
+            let _ = actual_prefix; // counts == prefix_len by construction
+            let row_prefix = &row[..prefix_len];
+            assert!(
+                !row_prefix.contains('\t'),
+                "aligned object listing: tab found in column prefix area: {row:?}"
+            );
+            // The two-space SEP must be present at positions [25..27] and
+            // [47..49] (the two separator slots in the default layout).
+            assert_eq!(
+                &row[25..27],
+                "  ",
+                "aligned object listing: SEP missing after DATE column in row: {row:?}"
+            );
+            assert_eq!(
+                &row[47..49],
+                "  ",
+                "aligned object listing: SEP missing after SIZE column in row: {row:?}"
+            );
+        }
+
+        // Every row's KEY value (the part after the fixed prefix) must be
+        // one of the uploaded keys.
+        let expected_keys = ["a.txt", "longer-name.txt", "dir/nested.txt"];
+        for row in &data_rows {
+            let key_part = &row[prefix_len..];
+            assert!(
+                expected_keys.iter().any(|k| key_part == *k),
+                "aligned object listing: unexpected KEY value {key_part:?} in row: {row:?}"
+            );
+        }
+
+        // All three keys must appear.
+        for key in &expected_keys {
+            assert!(
+                output.stdout.contains(key),
+                "aligned object listing: key {key:?} missing from output"
+            );
+        }
+    });
+
+    _guard.cleanup().await;
+}
+
+/// `--recursive --aligned --no-sort` exits successfully, emits at least
+/// one row, and every row still follows the fixed-width aligned layout
+/// (alignment must not depend on pre-sorting or buffering).
+#[tokio::test]
+async fn e2e_aligned_with_no_sort() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+        helper.put_object(&bucket, "alpha.txt", vec![0u8; 10]).await;
+        helper
+            .put_object(&bucket, "beta/gamma.txt", vec![0u8; 20])
+            .await;
+        helper.put_object(&bucket, "zeta.txt", vec![0u8; 30]).await;
+
+        let target = format!("s3://{bucket}/");
+
+        let output =
+            TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--aligned", "--no-sort"]);
+        assert!(
+            output.status.success(),
+            "aligned --no-sort: s3ls failed: {}",
+            output.stderr
+        );
+
+        let data_rows: Vec<&str> = output
+            .stdout
+            .lines()
+            .filter(|l| {
+                !l.trim().is_empty() && !l.starts_with("\nTotal:") && !l.starts_with("Total:")
+            })
+            .collect();
+
+        assert!(
+            !data_rows.is_empty(),
+            "aligned --no-sort: no data rows emitted:\n{}",
+            output.stdout
+        );
+
+        // Every row must be space-separated (no tabs) and must have the
+        // aligned prefix structure: W_DATE=25 + SEP=2 + W_SIZE=20 + SEP=2.
+        let prefix_len: usize = 49;
+        for row in &data_rows {
+            assert!(
+                !row.contains('\t'),
+                "aligned --no-sort: row contains tab: {row:?}"
+            );
+            assert!(
+                row.len() >= prefix_len,
+                "aligned --no-sort: row shorter than fixed prefix ({prefix_len}): {row:?}"
+            );
+            assert_eq!(
+                &row[25..27],
+                "  ",
+                "aligned --no-sort: SEP missing after DATE in row: {row:?}"
+            );
+            assert_eq!(
+                &row[47..49],
+                "  ",
+                "aligned --no-sort: SEP missing after SIZE in row: {row:?}"
+            );
+        }
+    });
+
+    _guard.cleanup().await;
+}
+
+/// `--recursive --aligned --human-readable --summarize` exits
+/// successfully, data rows follow the human-readable aligned layout
+/// (W_SIZE_HUMAN=9 instead of W_SIZE=20), and the summary line uses
+/// spaces (not tabs) as separators.
+#[tokio::test]
+async fn e2e_aligned_with_human_and_summary() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+        // Three objects × 1000 bytes each = 3000 bytes total.
+        helper.put_object(&bucket, "x.bin", vec![0u8; 1000]).await;
+        helper.put_object(&bucket, "y.bin", vec![0u8; 1000]).await;
+        helper.put_object(&bucket, "z.bin", vec![0u8; 1000]).await;
+
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--recursive",
+            "--aligned",
+            "--human-readable",
+            "--summarize",
+        ]);
+        assert!(
+            output.status.success(),
+            "aligned human+summary: s3ls failed: {}",
+            output.stderr
+        );
+
+        // Data rows: W_DATE=25 + SEP=2 + W_SIZE_HUMAN=9 + SEP=2 = 38 chars
+        // before the KEY value.
+        let prefix_len: usize = 38;
+        let data_rows: Vec<&str> = output
+            .stdout
+            .lines()
+            .filter(|l| {
+                !l.trim().is_empty() && !l.starts_with("\nTotal:") && !l.starts_with("Total:")
+            })
+            .collect();
+
+        assert!(
+            !data_rows.is_empty(),
+            "aligned human+summary: no data rows:\n{}",
+            output.stdout
+        );
+
+        for row in &data_rows {
+            assert!(
+                !row.contains('\t'),
+                "aligned human+summary: row contains tab: {row:?}"
+            );
+            assert!(
+                row.len() >= prefix_len,
+                "aligned human+summary: row shorter than prefix ({prefix_len}): {row:?}"
+            );
+            // SEP after DATE (positions 25..27)
+            assert_eq!(
+                &row[25..27],
+                "  ",
+                "aligned human+summary: SEP missing after DATE in row: {row:?}"
+            );
+            // SEP after W_SIZE_HUMAN=9 (positions 36..38)
+            assert_eq!(
+                &row[36..38],
+                "  ",
+                "aligned human+summary: SEP missing after SIZE in row: {row:?}"
+            );
+        }
+
+        // Summary line: format is "\nTotal: {count} objects {size} {unit}"
+        // In aligned mode the separator is a single space, not a tab.
+        let summary_line = output
+            .stdout
+            .lines()
+            .find(|l| l.starts_with("Total:"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "aligned human+summary: no 'Total:' summary line in output:\n{}",
+                    output.stdout
+                )
+            });
+        assert!(
+            !summary_line.contains('\t'),
+            "aligned human+summary: summary line contains tab (should use spaces): {summary_line:?}"
+        );
+        assert!(
+            summary_line.contains("3") && summary_line.contains("objects"),
+            "aligned human+summary: expected '3 objects' in summary, got: {summary_line:?}"
+        );
+    });
+
+    _guard.cleanup().await;
+}
