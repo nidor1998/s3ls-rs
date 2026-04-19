@@ -57,6 +57,7 @@ This demo shows listing approximately 360,000 objects per second, listing 1,100,
     * [Bucket listing](#bucket-listing)
     * [Custom endpoint](#custom-endpoint)
     * [Specify credentials](#specify-credentials)
+    * [Anonymous access](#anonymous-access)
     * [Specify region](#specify-region)
 - [Detailed information](#detailed-information)
     * [Parallel listing architecture](#parallel-listing-architecture)
@@ -259,6 +260,7 @@ s3ls works with any S3-compatible storage service:
 - Path-style access via `--target-force-path-style`
 - S3 Transfer Acceleration via `--target-accelerate`
 - Requester-pays via `--target-request-payer`
+- Anonymous (unsigned) requests via `--target-no-sign-request` for public buckets
 - HTTP/HTTPS proxy via standard environment variables (`HTTPS_PROXY`, `HTTP_PROXY`)
 
 s3ls is performance-tuned for Amazon S3, which supports high request rates. S3-compatible storage services may have lower rate limits. If you encounter throttling errors, use `--rate-limit-api` to cap the number of S3 API requests per second, or reduce concurrency with `--max-parallel-listings`:
@@ -282,12 +284,14 @@ s3ls --recursive \
 
 s3ls is distributed as a single binary with no dependencies (except glibc). Linux musl statically linked binary is also available.
 
-AWS credentials are required. s3ls supports all standard AWS credential mechanisms:
+AWS credentials are required for most buckets. s3ls supports all standard AWS credential mechanisms:
 - Environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`)
 - AWS credentials file (`~/.aws/credentials`)
 - AWS config file (`~/.aws/config`) with profiles
 - IAM instance roles (EC2, ECS, Lambda)
 - SSO/federated authentication
+
+Public (anonymous) buckets can be read with `--target-no-sign-request` — no credentials are loaded and requests are sent unsigned.
 
 For more information, see [SDK authentication with AWS](https://docs.aws.amazon.com/sdk-for-rust/latest/dg/credentials.html).
 
@@ -555,6 +559,32 @@ s3ls --target-access-key AKIAIOSFODNN7EXAMPLE \
      --target-secret-access-key wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY \
      s3://my-bucket/
 ```
+
+### Anonymous access
+
+Use `--target-no-sign-request` to read a public S3 bucket without
+loading AWS credentials. Requests are sent unsigned (no SigV4), so no
+access key, profile, or IMDS lookup is required.
+
+```bash
+# List a public bucket (e.g. Common Crawl) anonymously
+s3ls --recursive --target-no-sign-request \
+     --target-region us-east-1 \
+     s3://commoncrawl/crawl-data/
+
+# Works with S3-compatible endpoints too
+s3ls --recursive --target-no-sign-request \
+     --target-endpoint-url https://s3.example.com \
+     --target-force-path-style \
+     s3://public-bucket/
+```
+
+`--target-no-sign-request` conflicts with `--target-profile`,
+`--target-access-key`, `--target-secret-access-key`, and
+`--target-session-token` — those flags imply a signing identity, so
+mixing them with anonymous mode is ambiguous. `--target-region` is
+still honored (and often required, since no profile is consulted to
+supply a default region).
 
 ### Specify region
 
