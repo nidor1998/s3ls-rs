@@ -194,13 +194,16 @@ pub async fn list_buckets(config: &Config) -> Result<()> {
     let show_owner = config.display_config.show_owner;
     let show_bucket_arn = config.display_config.show_bucket_arn;
 
+    // Options for text-mode header + per-entry formatting. Constructed
+    // once because these flags are row-invariant.
+    let bopts = BucketFormatOpts {
+        aligned: config.display_config.aligned,
+        show_bucket_arn,
+        show_owner,
+        raw_output: config.display_config.raw_output,
+    };
+
     if config.display_config.header && !config.display_config.json {
-        let bopts = BucketFormatOpts {
-            aligned: config.display_config.aligned,
-            show_bucket_arn,
-            show_owner,
-            raw_output: config.display_config.raw_output,
-        };
         writeln!(writer, "{}", format_bucket_header(&bopts))?;
     }
 
@@ -248,12 +251,10 @@ pub async fn list_buckets(config: &Config) -> Result<()> {
             }
             writeln!(writer, "{}", serde_json::to_string(&map).unwrap())?;
         } else {
-            let bopts = BucketFormatOpts {
-                aligned: config.display_config.aligned,
-                show_bucket_arn,
-                show_owner,
-                raw_output: config.display_config.raw_output,
-            };
+            // Escape control chars in S3-returned strings to prevent
+            // injection of fake rows or terminal escape sequences via
+            // maliciously-named buckets / owners. JSON output is handled
+            // safely by serde_json above.
             writeln!(writer, "{}", format_bucket_entry(entry, &bopts))?;
         }
     }
@@ -426,6 +427,28 @@ mod aligned_tests {
             " ".repeat(W_DATE - date.chars().count()),
             " ".repeat(W_BUCKET_REGION - region.chars().count()),
             " ".repeat(W_BUCKET_NAME - bucket.chars().count()),
+            " ".repeat(W_OWNER_DISPLAY_NAME - owner_name.chars().count()),
+        );
+        assert_eq!(line, expected);
+    }
+
+    #[test]
+    fn bucket_aligned_with_arn_and_owner_owner_id_is_last() {
+        use crate::display::aligned::{
+            SEP, W_BUCKET_ARN, W_BUCKET_NAME, W_BUCKET_REGION, W_DATE, W_OWNER_DISPLAY_NAME,
+        };
+        let line = format_bucket_entry(&entry(), &opts(true, true, true));
+        let date = "2024-01-01T00:00:00Z";
+        let region = "us-east-1";
+        let bucket = "mybucket";
+        let arn = "arn:aws:s3:::mybucket";
+        let owner_name = "alice";
+        let expected = format!(
+            "{date}{}{SEP}{region}{}{SEP}{bucket}{}{SEP}{arn}{}{SEP}{owner_name}{}{SEP}id-alice",
+            " ".repeat(W_DATE - date.chars().count()),
+            " ".repeat(W_BUCKET_REGION - region.chars().count()),
+            " ".repeat(W_BUCKET_NAME - bucket.chars().count()),
+            " ".repeat(W_BUCKET_ARN - arn.chars().count()),
             " ".repeat(W_OWNER_DISPLAY_NAME - owner_name.chars().count()),
         );
         assert_eq!(line, expected);
