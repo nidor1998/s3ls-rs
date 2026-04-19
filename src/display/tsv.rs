@@ -1032,7 +1032,7 @@ mod tests {
             ..Default::default()
         });
         let line = fmt.format_entry(&entry);
-        // The "42" should have 18 spaces left-padding, then "42", then 2-space SEP.
+        // "42" right-aligned in a 20-wide SIZE column: 18 leading spaces + "42" + 2-space SEP.
         // We look for: 18 spaces + "42" + 2 spaces = 22 chars substring.
         assert!(line.contains("                  42  "), "got: {line:?}");
     }
