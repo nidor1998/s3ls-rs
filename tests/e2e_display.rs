@@ -2278,3 +2278,151 @@ async fn e2e_aligned_with_human_and_summary() {
 
     _guard.cleanup().await;
 }
+
+/// `--all-versions --aligned --header` with every `--show-*` flag enabled.
+///
+/// Verifies that when all 12 non-KEY columns are present the byte offsets
+/// computed from the width constants in `s3ls_rs::display::aligned` match
+/// the actual character positions in the header and data rows.  This
+/// catches any future column-width change or column-order change that
+/// would silently break alignment.
+///
+/// A versioned bucket is required so that `--show-is-latest` (which
+/// requires `--all-versions`) has real version metadata to render.
+#[tokio::test]
+async fn e2e_aligned_all_columns() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        // Versioned bucket so VERSION_ID / IS_LATEST columns carry real data.
+        helper.create_versioned_bucket(&bucket).await;
+        helper
+            .put_object(&bucket, "test.txt", b"hello world".to_vec())
+            .await;
+
+        let target = format!("s3://{bucket}/");
+
+        let output = TestHelper::run_s3ls(&[
+            target.as_str(),
+            "--all-versions",
+            "--aligned",
+            "--header",
+            "--show-storage-class",
+            "--show-etag",
+            "--show-checksum-algorithm",
+            "--show-checksum-type",
+            "--show-is-latest",
+            "--show-owner",
+            "--show-restore-status",
+        ]);
+        assert!(
+            output.status.success(),
+            "aligned all-columns: s3ls failed: {}",
+            output.stderr
+        );
+
+        // Compute the expected prefix length from the width constants —
+        // the same arithmetic the unit test `format_text_aligned_with_all_optional_columns`
+        // uses in src/display/aligned_formatter.rs.
+        use s3ls_rs::display::aligned::{
+            SEP, W_CHECKSUM_ALGORITHM, W_CHECKSUM_TYPE, W_DATE, W_ETAG, W_IS_LATEST,
+            W_IS_RESTORE_IN_PROGRESS, W_OWNER_DISPLAY_NAME, W_OWNER_ID, W_RESTORE_EXPIRY_DATE,
+            W_SIZE, W_STORAGE_CLASS, W_VERSION_ID,
+        };
+        let sep = SEP.len();
+        // 12 non-KEY columns, each followed by SEP; KEY itself is unpadded at the end.
+        let expected_prefix_len = W_DATE
+            + sep
+            + W_SIZE
+            + sep
+            + W_STORAGE_CLASS
+            + sep
+            + W_ETAG
+            + sep
+            + W_CHECKSUM_ALGORITHM
+            + sep
+            + W_CHECKSUM_TYPE
+            + sep
+            + W_VERSION_ID
+            + sep
+            + W_IS_LATEST
+            + sep
+            + W_OWNER_DISPLAY_NAME
+            + sep
+            + W_OWNER_ID
+            + sep
+            + W_IS_RESTORE_IN_PROGRESS
+            + sep
+            + W_RESTORE_EXPIRY_DATE
+            + sep;
+
+        // Collect all non-empty lines.
+        let all_lines: Vec<&str> = output
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+
+        // Must have at least a header line and one data line.
+        assert!(
+            all_lines.len() >= 2,
+            "aligned all-columns: expected at least 2 lines (header + data), got {}:\n{}",
+            all_lines.len(),
+            output.stdout
+        );
+
+        // Header line: starts with "DATE", ends with "KEY", correct total length.
+        let header = all_lines[0];
+        assert!(
+            header.starts_with("DATE"),
+            "aligned all-columns: header should start with 'DATE', got: {header:?}"
+        );
+        let expected_header_len = expected_prefix_len + "KEY".len();
+        assert_eq!(
+            header.len(),
+            expected_header_len,
+            "aligned all-columns: header length mismatch (expected {expected_header_len}, got {}): {header:?}",
+            header.len()
+        );
+        assert!(
+            header.ends_with("KEY"),
+            "aligned all-columns: header should end with 'KEY', got: {header:?}"
+        );
+
+        // No row should contain a tab — aligned mode uses spaces only.
+        for line in &all_lines {
+            assert!(
+                !line.contains('\t'),
+                "aligned all-columns: row contains tab (aligned mode must not use tabs): {line:?}"
+            );
+        }
+
+        // Data rows (all lines except the header): KEY starts at expected_prefix_len.
+        let data_rows: Vec<&str> = all_lines
+            .iter()
+            .copied()
+            .filter(|l| !l.starts_with("DATE"))
+            .filter(|l| !l.starts_with("Total:"))
+            .collect();
+        assert!(
+            !data_rows.is_empty(),
+            "aligned all-columns: no data rows found in output:\n{}",
+            output.stdout
+        );
+        for row in &data_rows {
+            assert!(
+                row.len() >= expected_prefix_len,
+                "aligned all-columns: data row shorter than prefix ({expected_prefix_len}): {row:?}"
+            );
+            let key_part = &row[expected_prefix_len..];
+            assert_eq!(
+                key_part, "test.txt",
+                "aligned all-columns: KEY at offset {expected_prefix_len} should be 'test.txt', got {key_part:?} in row: {row:?}"
+            );
+        }
+    });
+
+    _guard.cleanup().await;
+}

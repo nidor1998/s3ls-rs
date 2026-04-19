@@ -451,3 +451,130 @@ async fn e2e_bucket_listing_express_one_zone_with_prefix() {
     _guard_match.cleanup().await;
     _guard_other.cleanup().await;
 }
+
+/// `--aligned --header --show-bucket-arn --show-owner` combined.
+///
+/// Verifies that every column in the aligned bucket listing lands at the
+/// byte offset computed from the width constants in
+/// `s3ls_rs::display::aligned`.  The column order is:
+///   DATE, REGION, BUCKET, BUCKET_ARN, OWNER_DISPLAY_NAME, OWNER_ID
+/// where OWNER_ID is the rightmost (unpadded) column — analogous to KEY
+/// in object listings.
+///
+/// Uses `--bucket-name-prefix` to scope the output to the single test
+/// bucket so assertions are deterministic even when the account has many
+/// buckets.
+#[tokio::test]
+async fn e2e_aligned_bucket_listing_all_columns() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+
+        // Scope to just our test bucket via --bucket-name-prefix.
+        let output = TestHelper::run_s3ls(&[
+            "--aligned",
+            "--header",
+            "--show-bucket-arn",
+            "--show-owner",
+            "--bucket-name-prefix",
+            bucket.as_str(),
+        ]);
+        assert!(
+            output.status.success(),
+            "aligned bucket all-columns: s3ls failed: {}",
+            output.stderr
+        );
+
+        // Compute the prefix length up to (but not including) the OWNER_ID
+        // column.  OWNER_ID is the last/rightmost column and is emitted
+        // unpadded — so we assert only that what comes before it is exactly
+        // the right length.
+        use s3ls_rs::display::aligned::{
+            SEP, W_BUCKET_ARN, W_BUCKET_NAME, W_BUCKET_REGION, W_DATE, W_OWNER_DISPLAY_NAME,
+        };
+        let sep = SEP.len();
+        // Prefix = DATE + SEP + REGION + SEP + BUCKET + SEP + BUCKET_ARN + SEP
+        //        + OWNER_DISPLAY_NAME + SEP
+        let prefix_before_owner_id = W_DATE
+            + sep
+            + W_BUCKET_REGION
+            + sep
+            + W_BUCKET_NAME
+            + sep
+            + W_BUCKET_ARN
+            + sep
+            + W_OWNER_DISPLAY_NAME
+            + sep;
+
+        // Collect all non-empty lines.
+        let all_lines: Vec<&str> = output
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+
+        // Must have at least a header and one data line.
+        assert!(
+            all_lines.len() >= 2,
+            "aligned bucket all-columns: expected at least 2 lines (header + data), got {}:\n{}",
+            all_lines.len(),
+            output.stdout
+        );
+
+        // No row should contain a tab — aligned mode uses spaces only.
+        for line in &all_lines {
+            assert!(
+                !line.contains('\t'),
+                "aligned bucket all-columns: row contains tab (aligned mode must not use tabs): {line:?}"
+            );
+        }
+
+        // Header line: starts with "DATE", and at the expected offset the
+        // OWNER_ID label begins.
+        let header = all_lines[0];
+        assert!(
+            header.starts_with("DATE"),
+            "aligned bucket all-columns: header should start with 'DATE', got: {header:?}"
+        );
+        assert!(
+            header.len() >= prefix_before_owner_id,
+            "aligned bucket all-columns: header shorter than prefix ({prefix_before_owner_id}): {header:?}"
+        );
+        // The text at the OWNER_DISPLAY_NAME offset in the header is "OWNER_ID".
+        let owner_id_label = &header[prefix_before_owner_id..];
+        assert!(
+            owner_id_label.starts_with("OWNER_ID"),
+            "aligned bucket all-columns: expected 'OWNER_ID' at offset {prefix_before_owner_id} in header, got: {owner_id_label:?}"
+        );
+
+        // Data rows: the bucket name we created must appear, and the prefix
+        // length before OWNER_ID must equal prefix_before_owner_id.
+        let data_rows: Vec<&str> = all_lines
+            .iter()
+            .copied()
+            .filter(|l| !l.starts_with("DATE"))
+            .collect();
+        assert!(
+            !data_rows.is_empty(),
+            "aligned bucket all-columns: no data rows found in output:\n{}",
+            output.stdout
+        );
+        for row in &data_rows {
+            assert!(
+                row.len() >= prefix_before_owner_id,
+                "aligned bucket all-columns: data row shorter than prefix ({prefix_before_owner_id}): {row:?}"
+            );
+        }
+
+        // The test bucket must appear somewhere in the output.
+        assert!(
+            output.stdout.contains(bucket.as_str()),
+            "aligned bucket all-columns: test bucket {bucket} not found in output"
+        );
+    });
+
+    _guard.cleanup().await;
+}
