@@ -51,6 +51,7 @@ This demo shows listing approximately 360,000 objects per second, listing 1,100,
     * [Combined filters](#combined-filters)
     * [Sort results](#sort-results)
     * [Display options](#display-options)
+    * [Aligned output](#aligned-output)
     * [JSON output](#json-output)
     * [Version listing](#version-listing)
     * [Depth-limited recursive listing](#depth-limited-recursive-listing)
