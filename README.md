@@ -184,6 +184,10 @@ s3ls is designed from the ground up so that every byte of output is useful to a 
 
 **Tab-separated text** (default) — Each line is a single record. Fields are separated by tab characters, so `cut`, `awk`, `sort`, and other Unix tools can process the output directly without custom delimiters or quoting rules. At the same time, tabs align columns naturally in a terminal, making the output scannable at a glance. Control characters in S3 keys (`\x00`-`\x1f`, `\x7f`) are escaped as `\xNN` hex by default, so a maliciously-named object cannot inject newlines or ANSI sequences into terminal output or break downstream line-oriented parsing. Use `--raw-output` to disable escaping when trusting bucket contents. Add `--header` for a labeled header row that makes wide output self-documenting without interfering with `tail -n +2` workflows.
 
+For interactive terminal use, add `--aligned` to pad each column to a
+fixed width with spaces. This is a pure layout option and is
+independent of `--human-readable` (which formats individual values).
+
 **NDJSON** (`--json`) — One JSON object per line. Field names use PascalCase (`Key`, `Size`, `LastModified`, `ETag`, `StorageClass`) matching the S3 API response structure exactly. This means `jq`, Python scripts, and any tooling that already parses S3 API responses can consume s3ls output with zero translation. Every available metadata field is included in every JSON record regardless of `--show-*` flags, so downstream consumers always get the full picture. Each line is independently parseable, making the output compatible with streaming processors, log aggregation systems, and `jq` filters alike. Humans can read individual records, and machines can process millions of them without loading the entire output into memory.
 
 Both formats share the same design principle: one record per line, stable field order, no surprises.
@@ -428,6 +432,37 @@ s3ls --recursive --header --show-storage-class s3://my-bucket/
 # Show relative paths instead of full keys
 s3ls --recursive --show-relative-path s3://my-bucket/data/
 ```
+
+### Aligned output
+
+```
+# Default TSV — machine-friendly, tabs between columns
+$ s3ls --recursive s3://my-bucket/data/
+2024-01-15T10:30:00Z	1234	data/readme.txt
+2024-06-01T08:00:00Z	5678	data/2024/report.csv
+
+# Aligned — columns padded with spaces so the output scans well in a terminal
+$ s3ls --recursive --aligned s3://my-bucket/data/
+2024-01-15T10:30:00Z                        1234  data/readme.txt
+2024-06-01T08:00:00Z                        5678  data/2024/report.csv
+
+# Combined with --human-readable
+$ s3ls --recursive --aligned --human-readable s3://my-bucket/data/
+2024-01-15T10:30:00Z          1.2KiB  data/readme.txt
+2024-06-01T08:00:00Z          5.5KiB  data/2024/report.csv
+```
+
+`--aligned` pads each non-KEY column to a fixed width so rows line up
+on screen. It is independent of `--human-readable`:
+
+- `--human-readable` makes individual **values** human-friendly
+  (e.g., `1.2KiB` rather than raw bytes).
+- `--aligned` makes the **layout** human-friendly (columns line up).
+
+The default tab-separated output is preserved for `cut`, `awk`, and
+other Unix tools. `--aligned` composes with `--no-sort`, `--header`,
+`--summarize`, and every `--show-*` flag. It conflicts with `--json`
+(NDJSON is not columnar).
 
 ### JSON output
 
@@ -890,6 +925,7 @@ Display:
       --json                     Output as NDJSON (one JSON object per line) [env: JSON=]
       --show-objects-only        Show only objects, hiding common prefixes (directory markers) from output [env: SHOW_OBJECTS_ONLY=]
       --raw-output               Emit raw S3 key/prefix bytes without escaping control characters [env: RAW_OUTPUT=]
+      --aligned                  Display output with columns aligned using whitespace padding [env: ALIGNED=]
 
 Tracing/Logging:
       --json-tracing           Output structured logs in JSON format [env: JSON_TRACING=]
