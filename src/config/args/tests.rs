@@ -1792,3 +1792,45 @@ fn bucket_listing_rejects_max_depth_directly() {
     let err = Config::try_from(cli).unwrap_err();
     assert_eq!(err, "--max-depth is not valid for bucket listing");
 }
+
+// ===========================================================================
+// --aligned
+// ===========================================================================
+
+#[test]
+fn aligned_default_false() {
+    let cli = parse_from_args(args(&["s3://bucket"])).unwrap();
+    assert!(!cli.aligned);
+}
+
+#[test]
+fn aligned_long_flag() {
+    let cli = parse_from_args(args(&["s3://bucket", "--aligned"])).unwrap();
+    assert!(cli.aligned);
+}
+
+#[test]
+fn aligned_conflicts_with_json() {
+    let result = parse_from_args(args(&["s3://bucket", "--aligned", "--json"]));
+    assert!(result.is_err());
+}
+
+#[test]
+fn aligned_composes_with_no_sort() {
+    let cli = parse_from_args(args(&[
+        "s3://bucket",
+        "--recursive",
+        "--aligned",
+        "--no-sort",
+    ]))
+    .unwrap();
+    assert!(cli.aligned);
+    assert!(cli.no_sort);
+}
+
+#[test]
+fn aligned_composes_with_human_readable() {
+    let cli = parse_from_args(args(&["s3://bucket", "--aligned", "--human-readable"])).unwrap();
+    assert!(cli.aligned);
+    assert!(cli.human);
+}

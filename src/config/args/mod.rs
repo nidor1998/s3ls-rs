@@ -362,6 +362,31 @@ pub struct CLIArgs {
     )]
     pub raw_output: bool,
 
+    /// Display output with columns aligned using whitespace padding.
+    ///
+    /// By default, s3ls emits tab-separated text (TSV). TSV is
+    /// machine-friendly but columns don't line up visually in a
+    /// terminal because tabs align to tab stops, not to content.
+    /// `--aligned` pads each non-KEY column to a fixed width and
+    /// uses two spaces as the column separator, producing output
+    /// that's easy for a human to scan.
+    ///
+    /// Independent of `--human-readable`:
+    ///   - `--human-readable` makes individual values human-friendly
+    ///     (e.g., `1.2KiB` rather than raw bytes).
+    ///   - `--aligned` makes the layout human-friendly (columns line
+    ///     up on screen).
+    ///
+    /// The two can be combined.
+    #[arg(
+        long,
+        env = "ALIGNED",
+        default_value_t = false,
+        conflicts_with = "json",
+        help_heading = "Display"
+    )]
+    pub aligned: bool,
+
     // -----------------------------------------------------------------------
     // Tracing/Logging options (reused from s3rm-rs)
     // -----------------------------------------------------------------------
@@ -804,6 +829,7 @@ impl TryFrom<CLIArgs> for crate::config::Config {
                 header: args.header,
                 json: args.json,
                 raw_output: args.raw_output,
+                aligned: args.aligned,
             },
             max_parallel_listings: args.max_parallel_listings,
             max_parallel_listing_max_depth: args.max_parallel_listing_max_depth,

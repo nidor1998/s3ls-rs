@@ -134,6 +134,9 @@ pub struct DisplayConfig {
     /// `\xNN` escapes to prevent injection of fake rows or terminal
     /// escape sequences by maliciously-named objects.
     pub raw_output: bool,
+    /// Display output with columns aligned using whitespace padding
+    /// (see `Args::aligned`).
+    pub aligned: bool,
 }
 
 /// AWS S3 client configuration.
@@ -220,6 +223,7 @@ mod tests {
         assert!(!config.display_config.header);
         assert!(!config.display_config.json);
         assert!(!config.display_config.raw_output);
+        assert!(!config.display_config.aligned);
 
         // Performance
         assert_eq!(config.max_parallel_listings, 64);

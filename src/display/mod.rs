@@ -36,6 +36,7 @@ pub struct FormatOptions {
     /// serde_json escapes them safely).
     pub raw_output: bool,
     pub show_local_time: bool,
+    pub aligned: bool,
 }
 
 impl FormatOptions {
@@ -58,6 +59,7 @@ impl FormatOptions {
             prefix,
             raw_output: display_config.raw_output,
             show_local_time: display_config.show_local_time,
+            aligned: display_config.aligned,
         }
     }
 }
