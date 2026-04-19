@@ -480,6 +480,9 @@ data/readme.txt
 data/2024/report.csv
 data/2025/summary.json
 
+# Long form is equivalent
+$ s3ls --recursive --one-line s3://my-bucket/data/
+
 # List bucket names only
 $ s3ls -1
 bucket-a
@@ -487,12 +490,18 @@ bucket-b
 
 # Suppress common prefixes (emit only objects)
 $ s3ls --recursive -1 --show-objects-only s3://my-bucket/data/
+
+# With --header, a single "KEY" (or "BUCKET") label is emitted
+$ s3ls --recursive --header -1 s3://my-bucket/data/
+KEY
+data/readme.txt
+data/2024/report.csv
 ```
 
-`-1` prints just the key (or bucket name) per line, mimicking `ls -1`.
-All `--show-*` columns are ignored. Common prefixes are included by
-default; add `--show-objects-only` to drop them. Conflicts with
-`--json`.
+`-1` (long form `--one-line`) prints just the key (or bucket name)
+per line, mimicking `ls -1`. All `--show-*` columns are ignored.
+Common prefixes are included by default; add `--show-objects-only`
+to drop them. Conflicts with `--json`.
 
 ### JSON output
 
