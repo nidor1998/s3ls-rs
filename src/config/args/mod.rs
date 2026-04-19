@@ -380,7 +380,7 @@ pub struct CLIArgs {
     /// The two can be combined.
     #[arg(
         long,
-        env = "ALIGNED",
+        env,
         default_value_t = false,
         conflicts_with = "json",
         help_heading = "Display"
