@@ -52,6 +52,7 @@ This demo shows listing approximately 360,000 objects per second, listing 1,100,
     * [Sort results](#sort-results)
     * [Display options](#display-options)
     * [Aligned output](#aligned-output)
+    * [One-per-line output](#one-per-line-output)
     * [JSON output](#json-output)
     * [Version listing](#version-listing)
     * [Depth-limited recursive listing](#depth-limited-recursive-listing)
@@ -469,6 +470,29 @@ The default tab-separated output is preserved for `cut`, `awk`, and
 other Unix tools. `--aligned` composes with `--no-sort`, `--header`,
 `--summarize`, and every `--show-*` flag. It conflicts with `--json`
 (NDJSON is not columnar).
+
+### One-per-line output
+
+```bash
+# One key per line, no columns — good for piping into xargs, fzf, etc.
+$ s3ls --recursive -1 s3://my-bucket/data/
+data/readme.txt
+data/2024/report.csv
+data/2025/summary.json
+
+# List bucket names only
+$ s3ls -1
+bucket-a
+bucket-b
+
+# Suppress common prefixes (emit only objects)
+$ s3ls --recursive -1 --show-objects-only s3://my-bucket/data/
+```
+
+`-1` prints just the key (or bucket name) per line, mimicking `ls -1`.
+All `--show-*` columns are ignored. Common prefixes are included by
+default; add `--show-objects-only` to drop them. Conflicts with
+`--json`.
 
 ### JSON output
 
@@ -1003,6 +1027,7 @@ Display:
       --show-objects-only        Show only objects, hiding common prefixes (directory markers) from output [env: SHOW_OBJECTS_ONLY=]
       --raw-output               Emit raw S3 key/prefix bytes without escaping control characters [env: RAW_OUTPUT=]
       --aligned                  Display output with columns aligned using whitespace padding [env: ALIGNED=]
+  -1                             Display only the key (or bucket name), one per line, with no other columns. All `--show-*` options are ignored. For object listings, common prefixes are emitted unless `--show-objects-only` is set [env: ONE_LINE=]
 
 Tracing/Logging:
       --json-tracing           Output structured logs in JSON format [env: JSON_TRACING=]

@@ -16,6 +16,7 @@ struct BucketEntry {
 
 pub(crate) struct BucketFormatOpts {
     pub aligned: bool,
+    pub one_line: bool,
     pub show_bucket_arn: bool,
     pub show_owner: bool,
     pub raw_output: bool,
@@ -30,6 +31,9 @@ fn bucket_escape(s: &str, raw_output: bool) -> String {
 }
 
 fn format_bucket_entry(entry: &BucketEntry, opts: &BucketFormatOpts) -> String {
+    if opts.one_line {
+        return bucket_escape(&entry.name, opts.raw_output);
+    }
     use crate::display::aligned::{
         Align, ColumnSpec, W_BUCKET_ARN, W_BUCKET_NAME, W_BUCKET_REGION, W_DATE,
         W_OWNER_DISPLAY_NAME, W_OWNER_ID, render_cols,
@@ -198,12 +202,16 @@ pub async fn list_buckets(config: &Config) -> Result<()> {
     // once because these flags are row-invariant.
     let bopts = BucketFormatOpts {
         aligned: config.display_config.aligned,
+        one_line: config.display_config.one_line,
         show_bucket_arn,
         show_owner,
         raw_output: config.display_config.raw_output,
     };
 
-    if config.display_config.header && !config.display_config.json {
+    if config.display_config.header
+        && !config.display_config.json
+        && !config.display_config.one_line
+    {
         writeln!(writer, "{}", format_bucket_header(&bopts))?;
     }
 
@@ -369,10 +377,38 @@ mod aligned_tests {
     fn opts(aligned: bool, show_arn: bool, show_owner: bool) -> BucketFormatOpts {
         BucketFormatOpts {
             aligned,
+            one_line: false,
             show_bucket_arn: show_arn,
             show_owner,
             raw_output: false,
         }
+    }
+
+    #[test]
+    fn bucket_one_line_emits_only_name() {
+        let opts = BucketFormatOpts {
+            aligned: false,
+            one_line: true,
+            show_bucket_arn: true,
+            show_owner: true,
+            raw_output: false,
+        };
+        let line = format_bucket_entry(&entry(), &opts);
+        assert_eq!(line, "mybucket");
+    }
+
+    #[test]
+    fn bucket_one_line_ignores_show_flags_even_when_aligned() {
+        // one_line takes precedence over aligned in the formatter.
+        let opts = BucketFormatOpts {
+            aligned: true,
+            one_line: true,
+            show_bucket_arn: true,
+            show_owner: true,
+            raw_output: false,
+        };
+        let line = format_bucket_entry(&entry(), &opts);
+        assert_eq!(line, "mybucket");
     }
 
     #[test]

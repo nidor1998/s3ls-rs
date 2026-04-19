@@ -387,6 +387,19 @@ pub struct CLIArgs {
     )]
     pub aligned: bool,
 
+    /// Display only the key (or bucket name), one per line, with no
+    /// other columns. All `--show-*` options are ignored. For object
+    /// listings, common prefixes are emitted unless `--show-objects-only`
+    /// is set.
+    #[arg(
+        short = '1',
+        env = "ONE_LINE",
+        default_value_t = false,
+        conflicts_with = "json",
+        help_heading = "Display"
+    )]
+    pub one_line: bool,
+
     // -----------------------------------------------------------------------
     // Tracing/Logging options (reused from s3rm-rs)
     // -----------------------------------------------------------------------
@@ -848,6 +861,7 @@ impl TryFrom<CLIArgs> for crate::config::Config {
                 json: args.json,
                 raw_output: args.raw_output,
                 aligned: args.aligned,
+                one_line: args.one_line,
             },
             max_parallel_listings: args.max_parallel_listings,
             max_parallel_listing_max_depth: args.max_parallel_listing_max_depth,

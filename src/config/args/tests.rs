@@ -1901,3 +1901,51 @@ fn target_no_sign_request_composes_with_target_endpoint_url() {
         Some("https://s3.example.com")
     );
 }
+
+// ===========================================================================
+// -1 (one_line)
+// ===========================================================================
+
+#[test]
+fn one_line_default_false() {
+    let cli = parse_from_args(args(&["s3://bucket"])).unwrap();
+    assert!(!cli.one_line);
+}
+
+#[test]
+fn one_line_short_flag() {
+    let cli = parse_from_args(args(&["s3://bucket", "-1"])).unwrap();
+    assert!(cli.one_line);
+}
+
+#[test]
+fn one_line_conflicts_with_json() {
+    let result = parse_from_args(args(&["s3://bucket", "-1", "--json"]));
+    assert!(result.is_err());
+}
+
+#[test]
+fn one_line_composes_with_show_objects_only() {
+    let cli = parse_from_args(args(&["s3://bucket", "-1", "--show-objects-only"])).unwrap();
+    assert!(cli.one_line);
+    assert!(cli.show_objects_only);
+}
+
+#[test]
+fn one_line_composes_with_show_flags_even_though_they_are_ignored() {
+    // clap doesn't reject the combination; the formatter silently
+    // ignores --show-* flags when -1 is set. This test just
+    // confirms the flags parse together without error.
+    let cli = parse_from_args(args(&[
+        "s3://bucket",
+        "-1",
+        "--show-etag",
+        "--show-storage-class",
+        "--human-readable",
+    ]))
+    .unwrap();
+    assert!(cli.one_line);
+    assert!(cli.show_etag);
+    assert!(cli.show_storage_class);
+    assert!(cli.human);
+}

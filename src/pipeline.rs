@@ -2,6 +2,7 @@ use crate::aggregate::{Aggregator, AggregatorConfig};
 use crate::config::Config;
 use crate::display::aligned_formatter::AlignedFormatter;
 use crate::display::json::JsonFormatter;
+use crate::display::one_line_formatter::OneLineFormatter;
 use crate::display::tsv::TsvFormatter;
 use crate::display::{EntryFormatter, FormatOptions};
 use crate::display_writer::{DisplayMessage, DisplayWriter, DisplayWriterConfig};
@@ -168,6 +169,8 @@ impl ListingPipeline {
 
         let formatter: Box<dyn EntryFormatter> = if self.config.display_config.json {
             Box::new(JsonFormatter::new(opts))
+        } else if self.config.display_config.one_line {
+            Box::new(OneLineFormatter::new(opts))
         } else if self.config.display_config.aligned {
             Box::new(AlignedFormatter::new(opts))
         } else {

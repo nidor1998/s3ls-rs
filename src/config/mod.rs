@@ -137,6 +137,9 @@ pub struct DisplayConfig {
     /// Display output with columns aligned using whitespace padding
     /// (see `Args::aligned`).
     pub aligned: bool,
+    /// Display only the key (or bucket name), one per line, with no
+    /// other columns (see `Args::one_line`).
+    pub one_line: bool,
 }
 
 /// AWS S3 client configuration.
@@ -224,6 +227,7 @@ mod tests {
         assert!(!config.display_config.json);
         assert!(!config.display_config.raw_output);
         assert!(!config.display_config.aligned);
+        assert!(!config.display_config.one_line);
 
         // Performance
         assert_eq!(config.max_parallel_listings, 64);

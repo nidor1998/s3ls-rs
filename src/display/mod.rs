@@ -2,6 +2,7 @@ pub mod aligned;
 pub mod aligned_formatter;
 pub mod columns;
 pub mod json;
+pub mod one_line_formatter;
 pub mod tsv;
 
 use byte_unit::Byte;
