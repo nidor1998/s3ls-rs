@@ -101,6 +101,9 @@ fn format_bucket_entry(entry: &BucketEntry, opts: &BucketFormatOpts) -> String {
 }
 
 fn format_bucket_header(opts: &BucketFormatOpts) -> String {
+    if opts.one_line {
+        return "BUCKET".to_string();
+    }
     use crate::display::aligned::{
         Align, ColumnSpec, W_BUCKET_ARN, W_BUCKET_NAME, W_BUCKET_REGION, W_DATE,
         W_OWNER_DISPLAY_NAME, W_OWNER_ID, render_cols,
@@ -208,10 +211,7 @@ pub async fn list_buckets(config: &Config) -> Result<()> {
         raw_output: config.display_config.raw_output,
     };
 
-    if config.display_config.header
-        && !config.display_config.json
-        && !config.display_config.one_line
-    {
+    if config.display_config.header && !config.display_config.json {
         writeln!(writer, "{}", format_bucket_header(&bopts))?;
     }
 
@@ -409,6 +409,18 @@ mod aligned_tests {
         };
         let line = format_bucket_entry(&entry(), &opts);
         assert_eq!(line, "mybucket");
+    }
+
+    #[test]
+    fn bucket_one_line_header_is_bucket_label() {
+        let opts = BucketFormatOpts {
+            aligned: false,
+            one_line: true,
+            show_bucket_arn: true,
+            show_owner: true,
+            raw_output: false,
+        };
+        assert_eq!(format_bucket_header(&opts), "BUCKET");
     }
 
     #[test]

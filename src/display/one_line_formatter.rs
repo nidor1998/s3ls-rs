@@ -28,7 +28,7 @@ impl EntryFormatter for OneLineFormatter {
     }
 
     fn format_header(&self) -> Option<String> {
-        None
+        Some("KEY".to_string())
     }
 
     fn format_summary(&self, stats: &ListingStatistics) -> String {
@@ -122,9 +122,9 @@ mod tests {
     }
 
     #[test]
-    fn one_line_header_is_none() {
+    fn one_line_header_is_key() {
         let fmt = OneLineFormatter::new(FormatOptions::default());
-        assert!(fmt.format_header().is_none());
+        assert_eq!(fmt.format_header().as_deref(), Some("KEY"));
     }
 
     #[test]
