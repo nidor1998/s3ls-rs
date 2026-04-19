@@ -1,3 +1,4 @@
+pub mod aligned;
 pub mod json;
 pub mod tsv;
 
