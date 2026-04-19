@@ -2046,37 +2046,37 @@ async fn e2e_aligned_object_listing() {
             );
         }
 
-        // Measure where KEY starts on each row. With the default (DATE, SIZE)
-        // layout:  prefix_len = W_DATE + SEP_LEN + W_SIZE + SEP_LEN
-        //        = 25 + 2 + 20 + 2 = 49.
-        // The KEY value begins at byte offset 49.  All rows must agree.
-        let prefix_len: usize = 49;
+        // The KEY value begins at byte offset
+        //   prefix_len = W_DATE + SEP + W_SIZE + SEP
+        // and the two SEP slots sit at [W_DATE..W_DATE+SEP.len()] and
+        // [W_DATE+SEP.len()+W_SIZE..prefix_len]. Derive all positions
+        // from the module constants so the assertions track any future
+        // width adjustment automatically.
+        use s3ls_rs::display::aligned::{SEP, W_DATE, W_SIZE};
+        let sep_len = SEP.len();
+        let date_sep_start = W_DATE;
+        let date_sep_end = date_sep_start + sep_len;
+        let size_sep_start = date_sep_end + W_SIZE;
+        let size_sep_end = size_sep_start + sep_len;
+        let prefix_len = size_sep_end;
         for row in &data_rows {
-            let actual_prefix = row.chars().take(prefix_len).count();
             assert!(
                 row.len() >= prefix_len,
                 "aligned object listing: row shorter than expected prefix of {prefix_len}: {row:?}"
             );
-            // The character at `prefix_len` is the first char of the KEY —
-            // every position before it must be a non-newline printable.
-            // Verify by checking the byte-slice up to prefix_len contains no
-            // tabs and that all rows share the same prefix length.
-            let _ = actual_prefix; // counts == prefix_len by construction
             let row_prefix = &row[..prefix_len];
             assert!(
                 !row_prefix.contains('\t'),
                 "aligned object listing: tab found in column prefix area: {row:?}"
             );
-            // The two-space SEP must be present at positions [25..27] and
-            // [47..49] (the two separator slots in the default layout).
             assert_eq!(
-                &row[25..27],
-                "  ",
+                &row[date_sep_start..date_sep_end],
+                SEP,
                 "aligned object listing: SEP missing after DATE column in row: {row:?}"
             );
             assert_eq!(
-                &row[47..49],
-                "  ",
+                &row[size_sep_start..size_sep_end],
+                SEP,
                 "aligned object listing: SEP missing after SIZE column in row: {row:?}"
             );
         }
@@ -2146,8 +2146,14 @@ async fn e2e_aligned_with_no_sort() {
         );
 
         // Every row must be space-separated (no tabs) and must have the
-        // aligned prefix structure: W_DATE=25 + SEP=2 + W_SIZE=20 + SEP=2.
-        let prefix_len: usize = 49;
+        // aligned prefix structure: W_DATE + SEP + W_SIZE + SEP.
+        use s3ls_rs::display::aligned::{SEP, W_DATE, W_SIZE};
+        let sep_len = SEP.len();
+        let date_sep_start = W_DATE;
+        let date_sep_end = date_sep_start + sep_len;
+        let size_sep_start = date_sep_end + W_SIZE;
+        let size_sep_end = size_sep_start + sep_len;
+        let prefix_len = size_sep_end;
         for row in &data_rows {
             assert!(
                 !row.contains('\t'),
@@ -2158,13 +2164,13 @@ async fn e2e_aligned_with_no_sort() {
                 "aligned --no-sort: row shorter than fixed prefix ({prefix_len}): {row:?}"
             );
             assert_eq!(
-                &row[25..27],
-                "  ",
+                &row[date_sep_start..date_sep_end],
+                SEP,
                 "aligned --no-sort: SEP missing after DATE in row: {row:?}"
             );
             assert_eq!(
-                &row[47..49],
-                "  ",
+                &row[size_sep_start..size_sep_end],
+                SEP,
                 "aligned --no-sort: SEP missing after SIZE in row: {row:?}"
             );
         }
@@ -2205,9 +2211,14 @@ async fn e2e_aligned_with_human_and_summary() {
             output.stderr
         );
 
-        // Data rows: W_DATE=25 + SEP=2 + W_SIZE_HUMAN=9 + SEP=2 = 38 chars
-        // before the KEY value.
-        let prefix_len: usize = 38;
+        // Data rows: W_DATE + SEP + W_SIZE_HUMAN + SEP before the KEY value.
+        use s3ls_rs::display::aligned::{SEP, W_DATE, W_SIZE_HUMAN};
+        let sep_len = SEP.len();
+        let date_sep_start = W_DATE;
+        let date_sep_end = date_sep_start + sep_len;
+        let size_sep_start = date_sep_end + W_SIZE_HUMAN;
+        let size_sep_end = size_sep_start + sep_len;
+        let prefix_len = size_sep_end;
         let data_rows: Vec<&str> = output
             .stdout
             .lines()
@@ -2231,16 +2242,14 @@ async fn e2e_aligned_with_human_and_summary() {
                 row.len() >= prefix_len,
                 "aligned human+summary: row shorter than prefix ({prefix_len}): {row:?}"
             );
-            // SEP after DATE (positions 25..27)
             assert_eq!(
-                &row[25..27],
-                "  ",
+                &row[date_sep_start..date_sep_end],
+                SEP,
                 "aligned human+summary: SEP missing after DATE in row: {row:?}"
             );
-            // SEP after W_SIZE_HUMAN=9 (positions 36..38)
             assert_eq!(
-                &row[36..38],
-                "  ",
+                &row[size_sep_start..size_sep_end],
+                SEP,
                 "aligned human+summary: SEP missing after SIZE in row: {row:?}"
             );
         }
