@@ -15,7 +15,10 @@ pub const W_DATE: usize = 25;
 pub const W_SIZE: usize = 14;
 pub const W_SIZE_HUMAN: usize = 9;
 pub const W_STORAGE_CLASS: usize = 19;
-pub const W_ETAG: usize = 35;
+// 32 hex chars for the MD5-style digest, plus a `-<part-count>`
+// suffix for multipart uploads. S3 allows up to 10,000 parts, so the
+// suffix can be 6 chars (`-10000`): 32 + 6 = 38.
+pub const W_ETAG: usize = 38;
 pub const W_CHECKSUM_ALGORITHM: usize = 34;
 // The longest data value is `FULL_OBJECT` (11 chars), but the header
 // label `CHECKSUM_TYPE` is 13 chars. Widen to 13 so the header fits
