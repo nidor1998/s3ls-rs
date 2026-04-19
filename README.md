@@ -443,8 +443,8 @@ $ s3ls --recursive s3://my-bucket/data/
 
 # Aligned — columns padded with spaces so the output scans well in a terminal
 $ s3ls --recursive --aligned s3://my-bucket/data/
-2024-01-15T10:30:00Z                        1234  data/readme.txt
-2024-06-01T08:00:00Z                        5678  data/2024/report.csv
+2024-01-15T10:30:00Z                       1234  data/readme.txt
+2024-06-01T08:00:00Z                       5678  data/2024/report.csv
 
 # Combined with --human-readable
 $ s3ls --recursive --aligned --human-readable s3://my-bucket/data/

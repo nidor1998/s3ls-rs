@@ -23,6 +23,12 @@ pub const W_VERSION_ID: usize = 32;
 pub const W_IS_LATEST: usize = 10;
 pub const W_OWNER_DISPLAY_NAME: usize = 64;
 pub const W_OWNER_ID: usize = 64;
+// Sized for the longest data value (`false`, 5 chars). The header
+// label `IS_RESTORE_IN_PROGRESS` (22 chars) is longer and overflows
+// this width, shifting the `RESTORE_EXPIRY_DATE` label and `KEY` to
+// the right on the header row only. Data rows are unaffected. This
+// is an intentional spec tradeoff — widening to 22 would waste a lot
+// of horizontal space on every data row to tidy a single header line.
 pub const W_IS_RESTORE_IN_PROGRESS: usize = 5;
 pub const W_RESTORE_EXPIRY_DATE: usize = 25;
 
