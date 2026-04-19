@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated dependencies to latest compatible versions.
 - Internal refactor of the display layer and expanded test coverage.
 
+### Fixed
+
+- Bucket and object listing errors now include the underlying cause from the AWS SDK error source chain, replacing terse top-level messages such as `dispatch failure` (e.g. surfacing the missing-profile detail behind a `--target-profile` typo).
+
+### Security
+
+- Removed transitive dependency on the vulnerable `rustls 0.21` / `rustls-webpki 0.101.x` (RUSTSEC-2026-0098) by disabling the legacy `rustls` default feature on `aws-config` and `aws-sdk-s3`. TLS now goes through the modern `default-https-client` path (`rustls 0.23`).
+
 ## [v0.2.0] - 2026-04-13
 
 ### Added

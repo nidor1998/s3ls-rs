@@ -382,7 +382,7 @@ pub struct CLIArgs {
         long,
         env,
         default_value_t = false,
-        conflicts_with = "json",
+        conflicts_with_all = ["json", "one_line"],
         help_heading = "Display"
     )]
     pub aligned: bool,
@@ -396,7 +396,7 @@ pub struct CLIArgs {
         long = "one",
         env,
         default_value_t = false,
-        conflicts_with = "json",
+        conflicts_with_all = ["json", "aligned"],
         help_heading = "Display"
     )]
     pub one_line: bool,

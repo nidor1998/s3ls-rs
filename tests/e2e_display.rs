@@ -2379,12 +2379,11 @@ async fn e2e_aligned_all_columns() {
             header.starts_with("DATE"),
             "aligned all-columns: header should start with 'DATE', got: {header:?}"
         );
-        let expected_header_len = expected_prefix_len + "KEY".len();
+        let expected_header_len = expected_prefix_len + "KEY".chars().count();
+        let header_chars = header.chars().count();
         assert_eq!(
-            header.len(),
-            expected_header_len,
-            "aligned all-columns: header length mismatch (expected {expected_header_len}, got {}): {header:?}",
-            header.len()
+            header_chars, expected_header_len,
+            "aligned all-columns: header length mismatch (expected {expected_header_len} chars, got {header_chars}): {header:?}"
         );
         assert!(
             header.ends_with("KEY"),
@@ -2411,15 +2410,19 @@ async fn e2e_aligned_all_columns() {
             "aligned all-columns: no data rows found in output:\n{}",
             output.stdout
         );
+        // Use character (not byte) indexing — column widths are character
+        // counts (see `pad` in src/display/aligned.rs), and owner data may
+        // contain non-ASCII characters that would make byte offsets invalid.
         for row in &data_rows {
+            let row_chars = row.chars().count();
             assert!(
-                row.len() >= expected_prefix_len,
-                "aligned all-columns: data row shorter than prefix ({expected_prefix_len}): {row:?}"
+                row_chars >= expected_prefix_len,
+                "aligned all-columns: data row shorter than prefix ({expected_prefix_len} chars): {row:?}"
             );
-            let key_part = &row[expected_prefix_len..];
+            let key_part: String = row.chars().skip(expected_prefix_len).collect();
             assert_eq!(
                 key_part, "test.txt",
-                "aligned all-columns: KEY at offset {expected_prefix_len} should be 'test.txt', got {key_part:?} in row: {row:?}"
+                "aligned all-columns: KEY at char offset {expected_prefix_len} should be 'test.txt', got {key_part:?} in row: {row:?}"
             );
         }
     });

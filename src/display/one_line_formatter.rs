@@ -1,10 +1,12 @@
 //! `EntryFormatter` that emits just the key (or prefix) per line.
 //!
 //! Selected by the pipeline when `-1` is set. Produces output
-//! reminiscent of `ls -1` — one key per line, no columns, no header.
-//! All `--show-*` flags are ignored. Common prefixes are emitted
-//! alongside objects by default; combine with `--show-objects-only`
-//! to suppress them.
+//! reminiscent of `ls -1` — one key per line, no columns. All
+//! `--show-*` flags are ignored. When `--header` is set, a single
+//! `KEY` (or `BUCKET`) label is emitted before the entries; otherwise
+//! no header line is printed. Common prefixes are emitted alongside
+//! objects by default; combine with `--show-objects-only` to suppress
+//! them.
 
 use crate::display::{
     EntryFormatter, FormatOptions, format_key_display, format_size_split, maybe_escape,

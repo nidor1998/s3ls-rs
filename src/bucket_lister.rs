@@ -2,6 +2,7 @@ use crate::config::Config;
 use crate::config::args::SortField;
 use anyhow::Result;
 use aws_sdk_s3::Client;
+use aws_smithy_types::error::display::DisplayErrorContext;
 use chrono::{DateTime, Utc};
 use std::io::Write;
 
@@ -287,7 +288,7 @@ async fn list_general_buckets(client: &Client, prefix: Option<&str>) -> Result<V
         let resp = req
             .send()
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to list buckets: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("Failed to list buckets: {}", DisplayErrorContext(&e)))?;
 
         let owner_display_name = resp
             .owner()
@@ -327,10 +328,12 @@ async fn list_directory_buckets(client: &Client) -> Result<Vec<BucketEntry>> {
             req = req.continuation_token(token);
         }
 
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to list directory buckets: {e}"))?;
+        let resp = req.send().await.map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to list directory buckets: {}",
+                DisplayErrorContext(&e)
+            )
+        })?;
 
         for b in resp.buckets() {
             entries.push(BucketEntry {

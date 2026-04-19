@@ -1835,6 +1835,14 @@ fn aligned_composes_with_human_readable() {
     assert!(cli.human);
 }
 
+#[test]
+fn aligned_conflicts_with_one_line() {
+    let result = parse_from_args(args(&["s3://bucket", "--aligned", "-1"]));
+    assert!(result.is_err());
+    let result = parse_from_args(args(&["s3://bucket", "--aligned", "--one"]));
+    assert!(result.is_err());
+}
+
 // ===========================================================================
 // --target-no-sign-request
 // ===========================================================================
