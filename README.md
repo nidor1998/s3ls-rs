@@ -956,6 +956,8 @@ AWS Configuration:
           Enable S3 Transfer Acceleration [env: TARGET_ACCELERATE=]
       --target-request-payer
           Enable requester-pays for the target bucket [env: TARGET_REQUEST_PAYER=]
+      --target-no-sign-request
+          Do not sign the request. If this argument is specified, credentials will not be loaded [env: TARGET_NO_SIGN_REQUEST=]
       --disable-stalled-stream-protection
           Disable stalled stream protection [env: DISABLE_STALLED_STREAM_PROTECTION=]
 
