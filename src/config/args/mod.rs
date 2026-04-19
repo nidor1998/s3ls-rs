@@ -393,7 +393,8 @@ pub struct CLIArgs {
     /// is set.
     #[arg(
         short = '1',
-        env = "ONE_LINE",
+        long = "one-line",
+        env,
         default_value_t = false,
         conflicts_with = "json",
         help_heading = "Display"

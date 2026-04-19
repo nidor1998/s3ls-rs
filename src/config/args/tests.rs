@@ -1919,6 +1919,12 @@ fn one_line_short_flag() {
 }
 
 #[test]
+fn one_line_long_flag() {
+    let cli = parse_from_args(args(&["s3://bucket", "--one-line"])).unwrap();
+    assert!(cli.one_line);
+}
+
+#[test]
 fn one_line_conflicts_with_json() {
     let result = parse_from_args(args(&["s3://bucket", "-1", "--json"]));
     assert!(result.is_err());

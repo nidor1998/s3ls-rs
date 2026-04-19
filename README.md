@@ -1027,7 +1027,7 @@ Display:
       --show-objects-only        Show only objects, hiding common prefixes (directory markers) from output [env: SHOW_OBJECTS_ONLY=]
       --raw-output               Emit raw S3 key/prefix bytes without escaping control characters [env: RAW_OUTPUT=]
       --aligned                  Display output with columns aligned using whitespace padding [env: ALIGNED=]
-  -1                             Display only the key (or bucket name), one per line, with no other columns. All `--show-*` options are ignored. For object listings, common prefixes are emitted unless `--show-objects-only` is set [env: ONE_LINE=]
+  -1, --one-line                 Display only the key (or bucket name), one per line, with no other columns. All `--show-*` options are ignored. For object listings, common prefixes are emitted unless `--show-objects-only` is set [env: ONE_LINE=]
 
 Tracing/Logging:
       --json-tracing           Output structured logs in JSON format [env: JSON_TRACING=]
