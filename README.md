@@ -481,7 +481,7 @@ data/2024/report.csv
 data/2025/summary.json
 
 # Long form is equivalent
-$ s3ls --recursive --one-line s3://my-bucket/data/
+$ s3ls --recursive --one s3://my-bucket/data/
 
 # List bucket names only
 $ s3ls -1
@@ -498,7 +498,7 @@ data/readme.txt
 data/2024/report.csv
 ```
 
-`-1` (long form `--one-line`) prints just the key (or bucket name)
+`-1` (long form `--one`) prints just the key (or bucket name)
 per line, mimicking `ls -1`. All `--show-*` columns are ignored.
 Common prefixes are included by default; add `--show-objects-only`
 to drop them. Conflicts with `--json`.
@@ -1036,7 +1036,7 @@ Display:
       --show-objects-only        Show only objects, hiding common prefixes (directory markers) from output [env: SHOW_OBJECTS_ONLY=]
       --raw-output               Emit raw S3 key/prefix bytes without escaping control characters [env: RAW_OUTPUT=]
       --aligned                  Display output with columns aligned using whitespace padding [env: ALIGNED=]
-  -1, --one-line                 Display only the key (or bucket name), one per line, with no other columns. All `--show-*` options are ignored. For object listings, common prefixes are emitted unless `--show-objects-only` is set [env: ONE_LINE=]
+  -1, --one                      Display only the key (or bucket name), one per line, with no other columns. All `--show-*` options are ignored. For object listings, common prefixes are emitted unless `--show-objects-only` is set [env: ONE_LINE=]
 
 Tracing/Logging:
       --json-tracing           Output structured logs in JSON format [env: JSON_TRACING=]

@@ -1920,7 +1920,7 @@ fn one_line_short_flag() {
 
 #[test]
 fn one_line_long_flag() {
-    let cli = parse_from_args(args(&["s3://bucket", "--one-line"])).unwrap();
+    let cli = parse_from_args(args(&["s3://bucket", "--one"])).unwrap();
     assert!(cli.one_line);
 }
 
