@@ -10,7 +10,9 @@
 // ---- Object listing column widths -----------------------------------
 
 pub const W_DATE: usize = 25;
-pub const W_SIZE: usize = 20;
+// S3 caps a single object at 50 TiB, which is 54_975_581_388_800 bytes
+// — 14 digits. 14 therefore fits every well-formed object size.
+pub const W_SIZE: usize = 14;
 pub const W_SIZE_HUMAN: usize = 9;
 pub const W_STORAGE_CLASS: usize = 19;
 pub const W_ETAG: usize = 35;

@@ -1086,32 +1086,39 @@ mod tests {
 
     #[test]
     fn format_text_aligned_right_aligns_size_number() {
+        use crate::display::aligned::{SEP, W_SIZE};
         let entry = make_entry_dated("f.txt", 42, 2024, 1);
         let fmt = TsvFormatter::new(FormatOptions {
             aligned: true,
             ..Default::default()
         });
         let line = fmt.format_entry(&entry);
-        // "42" right-aligned in a 20-wide SIZE column: 18 leading spaces + "42" + 2-space SEP.
-        // We look for: 18 spaces + "42" + 2 spaces = 22 chars substring.
-        assert!(line.contains("                  42  "), "got: {line:?}");
+        // "42" right-aligned in the SIZE column followed by SEP. Build
+        // the exact expected slot from the module's width constant so
+        // the assertion tracks any future change.
+        let value = "42";
+        let slot = format!("{}{value}{SEP}", " ".repeat(W_SIZE - value.chars().count()),);
+        assert!(line.contains(&slot), "got: {line:?}");
     }
 
     #[test]
     fn format_text_aligned_pre_marker_right_aligned() {
+        use crate::display::aligned::{SEP, W_SIZE};
         let entry = crate::types::ListEntry::CommonPrefix("logs/".to_string());
         let fmt = TsvFormatter::new(FormatOptions {
             aligned: true,
             ..Default::default()
         });
         let line = fmt.format_entry(&entry);
-        // PRE is right-aligned in a 20-wide SIZE column: 17 spaces + "PRE" + 2-space SEP.
-        assert!(line.contains("                 PRE  "), "got: {line:?}");
+        let value = "PRE";
+        let slot = format!("{}{value}{SEP}", " ".repeat(W_SIZE - value.chars().count()),);
+        assert!(line.contains(&slot), "got: {line:?}");
         assert!(line.ends_with("logs/"));
     }
 
     #[test]
     fn format_text_aligned_delete_marker_right_aligned() {
+        use crate::display::aligned::{SEP, W_SIZE};
         let entry = crate::types::ListEntry::DeleteMarker {
             key: "k.txt".to_string(),
             version_info: crate::types::VersionInfo {
@@ -1127,8 +1134,9 @@ mod tests {
             ..Default::default()
         });
         let line = fmt.format_entry(&entry);
-        // DELETE is right-aligned in a 20-wide SIZE column: 14 spaces + "DELETE" + 2-space SEP.
-        assert!(line.contains("              DELETE  "), "got: {line:?}");
+        let value = "DELETE";
+        let slot = format!("{}{value}{SEP}", " ".repeat(W_SIZE - value.chars().count()),);
+        assert!(line.contains(&slot), "got: {line:?}");
         assert!(line.ends_with("k.txt"));
     }
 
