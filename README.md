@@ -76,6 +76,7 @@ This demo shows listing approximately 360,000 objects per second, listing 1,100,
     * [--max-parallel-listings](#--max-parallel-listings)
     * [--max-parallel-listing-max-depth](#--max-parallel-listing-max-depth)
     * [--no-sort](#--no-sort)
+    * [--aligned](#--aligned)
     * [--max-keys](#--max-keys)
     * [--filter-include-regex/--filter-exclude-regex](#--filter-include-regex--filter-exclude-regex)
     * [-v](#-v)
@@ -828,6 +829,48 @@ Disables sorting and streams results directly to stdout. Reduces memory usage to
 ```bash
 s3ls --recursive --no-sort s3://huge-bucket/
 ```
+
+### --aligned
+
+Pads each non-KEY column to a fixed width with spaces and uses a
+two-space column separator, producing output that lines up visually
+in a terminal. The default TSV output uses tab characters, which
+align to tab stops rather than column content, so rows with varying
+field lengths don't line up on screen.
+
+`--aligned` is independent of `--human-readable`:
+
+- `--human-readable` changes individual **values** (`1.2KiB` instead
+  of `1234`).
+- `--aligned` changes the **layout** (columns line up on screen).
+
+The two can be combined.
+
+```bash
+s3ls --recursive --aligned s3://my-bucket/data/
+s3ls --recursive --aligned --human-readable --summarize s3://my-bucket/
+```
+
+**Zero buffering.** Every non-KEY column has a bounded maximum width
+derived from the S3 API contract (e.g., a single object is at most
+50 TiB = 14 digits, an ETag is at most 38 chars), and the KEY column
+is always emitted last with no trailing padding. So `--aligned`
+streams rows one-by-one just like the default TSV mode — it composes
+cleanly with `--no-sort` (constant memory for huge buckets).
+
+**Conflicts.** Only `--json` (NDJSON output is not columnar).
+
+**Overflow.** If a value exceeds its column width (e.g., an unusually
+long VersionId, or an OwnerDisplayName with CJK characters that
+render wider than the character count suggests), the value is
+emitted as-is without truncation. Subsequent columns on that row
+shift right, but no data is hidden. This mirrors `ls -l` behavior
+for long filenames.
+
+**`--raw-output` interaction.** Allowed. With `--raw-output`, control
+characters in keys or owner names are not re-escaped, so column
+widths may be disrupted on rows containing such bytes. This is a
+deliberate tradeoff implied by `--raw-output` itself.
 
 ### --max-keys
 
