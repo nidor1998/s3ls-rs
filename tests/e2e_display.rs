@@ -2426,3 +2426,165 @@ async fn e2e_aligned_all_columns() {
 
     _guard.cleanup().await;
 }
+
+/// `-1` / `--one` object-listing: verifies that the one-line formatter
+/// emits exactly one key per line (no tabs, no extra columns), that the
+/// long form `--one` is equivalent to the short form `-1`, that
+/// `--header` prepends exactly `KEY`, that non-recursive listing includes
+/// common-prefix lines for `dir/`, and that `--show-objects-only`
+/// suppresses those common-prefix lines.
+#[tokio::test]
+async fn e2e_one_line_object_listing() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+        helper.put_object(&bucket, "a.txt", vec![0u8; 10]).await;
+        helper.put_object(&bucket, "dir/b.txt", vec![0u8; 10]).await;
+        helper.put_object(&bucket, "dir/c.txt", vec![0u8; 10]).await;
+
+        let target = format!("s3://{bucket}/");
+        let expected_keys = ["a.txt", "dir/b.txt", "dir/c.txt"];
+
+        // Sub-assertion 1: -1 short form, recursive, no header
+        let output = TestHelper::run_s3ls(&[target.as_str(), "--recursive", "-1"]);
+        assert!(
+            output.status.success(),
+            "one-line -1: s3ls failed: {}",
+            output.stderr
+        );
+        // No tabs anywhere.
+        assert!(
+            !output.stdout.contains('\t'),
+            "one-line -1: output contains tab character"
+        );
+        // All three keys present.
+        for key in &expected_keys {
+            assert!(
+                output.stdout.contains(key),
+                "one-line -1: key {key:?} missing from output"
+            );
+        }
+        // Exactly one non-empty line per key (no header line by default).
+        let data_lines: Vec<&str> = output
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+        assert_eq!(
+            data_lines.len(),
+            3,
+            "one-line -1: expected 3 lines, got {}: {:?}",
+            data_lines.len(),
+            data_lines
+        );
+        // No header: no line is exactly "KEY".
+        assert!(
+            !data_lines.iter().any(|l| *l == "KEY"),
+            "one-line -1: unexpected KEY header line without --header"
+        );
+
+        // Sub-assertion 2: --one long form produces same output
+        let output2 = TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--one"]);
+        assert!(
+            output2.status.success(),
+            "one-line --one: s3ls failed: {}",
+            output2.stderr
+        );
+        assert!(
+            !output2.stdout.contains('\t'),
+            "one-line --one: output contains tab character"
+        );
+        for key in &expected_keys {
+            assert!(
+                output2.stdout.contains(key),
+                "one-line --one: key {key:?} missing from output"
+            );
+        }
+        let data_lines2: Vec<&str> = output2
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+        assert_eq!(
+            data_lines2.len(),
+            3,
+            "one-line --one: expected 3 lines, got {}: {:?}",
+            data_lines2.len(),
+            data_lines2
+        );
+
+        // Sub-assertion 3: --header prepends exactly "KEY"
+        let output3 = TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--header", "-1"]);
+        assert!(
+            output3.status.success(),
+            "one-line --header: s3ls failed: {}",
+            output3.stderr
+        );
+        assert!(
+            !output3.stdout.contains('\t'),
+            "one-line --header: output contains tab character"
+        );
+        let all_lines3: Vec<&str> = output3
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+        // First non-blank line must be exactly "KEY".
+        assert_eq!(
+            all_lines3.first().copied().unwrap_or(""),
+            "KEY",
+            "one-line --header: first non-blank line should be 'KEY', got: {:?}",
+            all_lines3.first()
+        );
+        // Remaining lines are the three keys.
+        let header_data: Vec<&str> = all_lines3.iter().copied().skip(1).collect();
+        assert_eq!(
+            header_data.len(),
+            3,
+            "one-line --header: expected 3 data lines after header, got {}: {:?}",
+            header_data.len(),
+            header_data
+        );
+        for key in &expected_keys {
+            assert!(
+                header_data.contains(key),
+                "one-line --header: key {key:?} missing from data lines"
+            );
+        }
+
+        // Sub-assertion 4: non-recursive listing includes "dir/" as a common-prefix line
+        let output4 = TestHelper::run_s3ls(&[target.as_str(), "-1"]);
+        assert!(
+            output4.status.success(),
+            "one-line non-recursive: s3ls failed: {}",
+            output4.stderr
+        );
+        assert!(
+            output4.stdout.contains("dir/"),
+            "one-line non-recursive: expected 'dir/' common-prefix line in output"
+        );
+
+        // Sub-assertion 5: --show-objects-only suppresses the "dir/" common-prefix line
+        let output5 = TestHelper::run_s3ls(&[target.as_str(), "-1", "--show-objects-only"]);
+        assert!(
+            output5.status.success(),
+            "one-line --show-objects-only: s3ls failed: {}",
+            output5.stderr
+        );
+        assert!(
+            !output5.stdout.contains("dir/"),
+            "one-line --show-objects-only: 'dir/' common-prefix should be suppressed"
+        );
+        // Only "a.txt" at the top level; dir/b.txt and dir/c.txt are under a prefix
+        // and are not returned by the non-recursive listing.
+        assert!(
+            output5.stdout.contains("a.txt"),
+            "one-line --show-objects-only: key 'a.txt' missing from output"
+        );
+    });
+
+    _guard.cleanup().await;
+}
