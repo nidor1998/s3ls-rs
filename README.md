@@ -933,6 +933,9 @@ s3ls --help
 
 ## All command line options
 
+<details>
+<summary>Click to expand to view all command line options</summary>
+
 ```
 $ s3ls -h
 Fast S3 object listing tool
@@ -1071,6 +1074,8 @@ Advanced:
       --auto-complete-shell <AUTO_COMPLETE_SHELL>
           Generate shell completions for the given shell [env: AUTO_COMPLETE_SHELL=] [possible values: bash, elvish, fish, powershell, zsh]
 ```
+
+</details>
 
 ## CI/CD Integration
 
