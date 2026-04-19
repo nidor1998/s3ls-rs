@@ -1,3 +1,8 @@
+use crate::display::aligned::{
+    Align, ColumnSpec, W_CHECKSUM_ALGORITHM, W_CHECKSUM_TYPE, W_DATE, W_ETAG, W_IS_LATEST,
+    W_IS_RESTORE_IN_PROGRESS, W_OWNER_DISPLAY_NAME, W_OWNER_ID, W_RESTORE_EXPIRY_DATE, W_SIZE,
+    W_SIZE_HUMAN, W_STORAGE_CLASS, W_VERSION_ID, render_cols,
+};
 use crate::display::{
     EntryFormatter, FormatOptions, format_key_display, format_rfc3339, format_size,
     format_size_split, maybe_escape,
@@ -17,95 +22,184 @@ impl TsvFormatter {
 impl EntryFormatter for TsvFormatter {
     fn format_entry(&self, entry: &ListEntry) -> String {
         let opts = &self.opts;
-        let mut cols: Vec<String> = Vec::new();
+        let mut specs: Vec<ColumnSpec> = Vec::new();
 
-        match entry {
+        let size_width = if opts.human { W_SIZE_HUMAN } else { W_SIZE };
+
+        let key_col: String = match entry {
             ListEntry::CommonPrefix(_) => {
-                // date
-                cols.push(String::new());
-                // size
-                cols.push("PRE".to_string());
-                // optional columns
+                specs.push(ColumnSpec {
+                    value: String::new(),
+                    width: W_DATE,
+                    align: Align::Left,
+                });
+                specs.push(ColumnSpec {
+                    value: "PRE".to_string(),
+                    width: size_width,
+                    align: Align::Right,
+                });
                 if opts.show_storage_class {
-                    cols.push(String::new());
+                    specs.push(ColumnSpec {
+                        value: String::new(),
+                        width: W_STORAGE_CLASS,
+                        align: Align::Left,
+                    });
                 }
                 if opts.show_etag {
-                    cols.push(String::new());
+                    specs.push(ColumnSpec {
+                        value: String::new(),
+                        width: W_ETAG,
+                        align: Align::Left,
+                    });
                 }
                 if opts.show_checksum_algorithm {
-                    cols.push(String::new());
+                    specs.push(ColumnSpec {
+                        value: String::new(),
+                        width: W_CHECKSUM_ALGORITHM,
+                        align: Align::Left,
+                    });
                 }
                 if opts.show_checksum_type {
-                    cols.push(String::new());
+                    specs.push(ColumnSpec {
+                        value: String::new(),
+                        width: W_CHECKSUM_TYPE,
+                        align: Align::Left,
+                    });
                 }
                 // In --all-versions mode, Object and DeleteMarker rows include a
                 // version_id column (and is_latest if enabled). CommonPrefix has
                 // neither, so emit placeholders to keep columns aligned.
                 if opts.all_versions {
-                    cols.push(String::new());
+                    specs.push(ColumnSpec {
+                        value: String::new(),
+                        width: W_VERSION_ID,
+                        align: Align::Left,
+                    });
                     if opts.show_is_latest {
-                        cols.push(String::new());
+                        specs.push(ColumnSpec {
+                            value: String::new(),
+                            width: W_IS_LATEST,
+                            align: Align::Left,
+                        });
                     }
                 }
                 if opts.show_owner {
-                    cols.push(String::new());
-                    cols.push(String::new());
+                    specs.push(ColumnSpec {
+                        value: String::new(),
+                        width: W_OWNER_DISPLAY_NAME,
+                        align: Align::Left,
+                    });
+                    specs.push(ColumnSpec {
+                        value: String::new(),
+                        width: W_OWNER_ID,
+                        align: Align::Left,
+                    });
                 }
                 if opts.show_restore_status {
-                    cols.push(String::new());
-                    cols.push(String::new());
+                    specs.push(ColumnSpec {
+                        value: String::new(),
+                        width: W_IS_RESTORE_IN_PROGRESS,
+                        align: Align::Left,
+                    });
+                    specs.push(ColumnSpec {
+                        value: String::new(),
+                        width: W_RESTORE_EXPIRY_DATE,
+                        align: Align::Left,
+                    });
                 }
-                // key (escape control chars in text mode to avoid injection)
-                cols.push(maybe_escape(&format_key_display(entry.key(), opts), opts).into_owned());
+                maybe_escape(&format_key_display(entry.key(), opts), opts).into_owned()
             }
             ListEntry::Object(obj) => {
-                cols.push(format_rfc3339(&obj.last_modified, opts.show_local_time));
-                cols.push(format_size(obj.size, opts.human));
+                specs.push(ColumnSpec {
+                    value: format_rfc3339(&obj.last_modified, opts.show_local_time),
+                    width: W_DATE,
+                    align: Align::Left,
+                });
+                specs.push(ColumnSpec {
+                    value: format_size(obj.size, opts.human),
+                    width: size_width,
+                    align: Align::Right,
+                });
                 if opts.show_storage_class {
-                    cols.push(
-                        obj.storage_class
+                    specs.push(ColumnSpec {
+                        value: obj
+                            .storage_class
                             .as_deref()
                             .unwrap_or("STANDARD")
                             .to_string(),
-                    );
+                        width: W_STORAGE_CLASS,
+                        align: Align::Left,
+                    });
                 }
                 if opts.show_etag {
-                    cols.push(obj.e_tag.trim_matches('"').to_string());
+                    specs.push(ColumnSpec {
+                        value: obj.e_tag.trim_matches('"').to_string(),
+                        width: W_ETAG,
+                        align: Align::Left,
+                    });
                 }
                 if opts.show_checksum_algorithm {
-                    cols.push(obj.checksum_algorithm.join(","));
+                    specs.push(ColumnSpec {
+                        value: obj.checksum_algorithm.join(","),
+                        width: W_CHECKSUM_ALGORITHM,
+                        align: Align::Left,
+                    });
                 }
                 if opts.show_checksum_type {
-                    cols.push(obj.checksum_type.as_deref().unwrap_or("").to_string());
+                    specs.push(ColumnSpec {
+                        value: obj.checksum_type.as_deref().unwrap_or("").to_string(),
+                        width: W_CHECKSUM_TYPE,
+                        align: Align::Left,
+                    });
                 }
                 if let Some(vid) = obj.version_id() {
-                    cols.push(vid.to_string());
+                    specs.push(ColumnSpec {
+                        value: vid.to_string(),
+                        width: W_VERSION_ID,
+                        align: Align::Left,
+                    });
                 }
                 if opts.show_is_latest && obj.version_id().is_some() {
-                    cols.push(if obj.is_latest() {
-                        "LATEST".to_string()
-                    } else {
-                        "NOT_LATEST".to_string()
+                    specs.push(ColumnSpec {
+                        value: if obj.is_latest() {
+                            "LATEST".to_string()
+                        } else {
+                            "NOT_LATEST".to_string()
+                        },
+                        width: W_IS_LATEST,
+                        align: Align::Left,
                     });
                 }
                 if opts.show_owner {
-                    cols.push(
-                        maybe_escape(obj.owner_display_name.as_deref().unwrap_or(""), opts)
+                    specs.push(ColumnSpec {
+                        value: maybe_escape(obj.owner_display_name.as_deref().unwrap_or(""), opts)
                             .into_owned(),
-                    );
-                    cols.push(
-                        maybe_escape(obj.owner_id.as_deref().unwrap_or(""), opts).into_owned(),
-                    );
+                        width: W_OWNER_DISPLAY_NAME,
+                        align: Align::Left,
+                    });
+                    specs.push(ColumnSpec {
+                        value: maybe_escape(obj.owner_id.as_deref().unwrap_or(""), opts)
+                            .into_owned(),
+                        width: W_OWNER_ID,
+                        align: Align::Left,
+                    });
                 }
                 if opts.show_restore_status {
-                    cols.push(
-                        obj.is_restore_in_progress
+                    specs.push(ColumnSpec {
+                        value: obj
+                            .is_restore_in_progress
                             .map(|b| b.to_string())
                             .unwrap_or_default(),
-                    );
-                    cols.push(obj.restore_expiry_date.as_deref().unwrap_or("").to_string());
+                        width: W_IS_RESTORE_IN_PROGRESS,
+                        align: Align::Right,
+                    });
+                    specs.push(ColumnSpec {
+                        value: obj.restore_expiry_date.as_deref().unwrap_or("").to_string(),
+                        width: W_RESTORE_EXPIRY_DATE,
+                        align: Align::Left,
+                    });
                 }
-                cols.push(maybe_escape(&format_key_display(entry.key(), opts), opts).into_owned());
+                maybe_escape(&format_key_display(entry.key(), opts), opts).into_owned()
             }
             ListEntry::DeleteMarker {
                 key,
@@ -114,45 +208,97 @@ impl EntryFormatter for TsvFormatter {
                 owner_display_name,
                 owner_id,
             } => {
-                cols.push(format_rfc3339(last_modified, opts.show_local_time));
-                cols.push("DELETE".to_string());
+                specs.push(ColumnSpec {
+                    value: format_rfc3339(last_modified, opts.show_local_time),
+                    width: W_DATE,
+                    align: Align::Left,
+                });
+                specs.push(ColumnSpec {
+                    value: "DELETE".to_string(),
+                    width: size_width,
+                    align: Align::Right,
+                });
                 if opts.show_storage_class {
-                    cols.push(String::new());
+                    specs.push(ColumnSpec {
+                        value: String::new(),
+                        width: W_STORAGE_CLASS,
+                        align: Align::Left,
+                    });
                 }
                 if opts.show_etag {
-                    cols.push(String::new());
+                    specs.push(ColumnSpec {
+                        value: String::new(),
+                        width: W_ETAG,
+                        align: Align::Left,
+                    });
                 }
                 if opts.show_checksum_algorithm {
-                    cols.push(String::new());
+                    specs.push(ColumnSpec {
+                        value: String::new(),
+                        width: W_CHECKSUM_ALGORITHM,
+                        align: Align::Left,
+                    });
                 }
                 if opts.show_checksum_type {
-                    cols.push(String::new());
+                    specs.push(ColumnSpec {
+                        value: String::new(),
+                        width: W_CHECKSUM_TYPE,
+                        align: Align::Left,
+                    });
                 }
-                cols.push(version_info.version_id.clone());
+                specs.push(ColumnSpec {
+                    value: version_info.version_id.clone(),
+                    width: W_VERSION_ID,
+                    align: Align::Left,
+                });
                 if opts.show_is_latest {
-                    cols.push(if version_info.is_latest {
-                        "LATEST".to_string()
-                    } else {
-                        "NOT_LATEST".to_string()
+                    specs.push(ColumnSpec {
+                        value: if version_info.is_latest {
+                            "LATEST".to_string()
+                        } else {
+                            "NOT_LATEST".to_string()
+                        },
+                        width: W_IS_LATEST,
+                        align: Align::Left,
                     });
                 }
                 if opts.show_owner {
-                    cols.push(
-                        maybe_escape(owner_display_name.as_deref().unwrap_or(""), opts)
+                    specs.push(ColumnSpec {
+                        value: maybe_escape(owner_display_name.as_deref().unwrap_or(""), opts)
                             .into_owned(),
-                    );
-                    cols.push(maybe_escape(owner_id.as_deref().unwrap_or(""), opts).into_owned());
+                        width: W_OWNER_DISPLAY_NAME,
+                        align: Align::Left,
+                    });
+                    specs.push(ColumnSpec {
+                        value: maybe_escape(owner_id.as_deref().unwrap_or(""), opts).into_owned(),
+                        width: W_OWNER_ID,
+                        align: Align::Left,
+                    });
                 }
                 if opts.show_restore_status {
                     // Delete markers have no restore status — leave empty.
-                    cols.push(String::new());
-                    cols.push(String::new());
+                    specs.push(ColumnSpec {
+                        value: String::new(),
+                        width: W_IS_RESTORE_IN_PROGRESS,
+                        align: Align::Right,
+                    });
+                    specs.push(ColumnSpec {
+                        value: String::new(),
+                        width: W_RESTORE_EXPIRY_DATE,
+                        align: Align::Left,
+                    });
                 }
-                cols.push(maybe_escape(&format_key_display(key, opts), opts).into_owned());
+                maybe_escape(&format_key_display(key, opts), opts).into_owned()
             }
-        }
+        };
 
-        cols.join("\t")
+        if opts.aligned {
+            render_cols(&specs, &key_col)
+        } else {
+            let mut parts: Vec<&str> = specs.iter().map(|c| c.value.as_str()).collect();
+            parts.push(&key_col);
+            parts.join("\t")
+        }
     }
 
     fn format_header(&self) -> Option<String> {
@@ -856,5 +1002,198 @@ mod tests {
         });
         let summary = fmt.format_summary(&stats);
         assert!(summary.contains("\t3\tdelete markers"));
+    }
+
+    // ===========================================================================
+    // --aligned: object row layout
+    // ===========================================================================
+
+    #[test]
+    fn format_text_aligned_basic_object() {
+        use crate::display::aligned::{SEP, W_DATE, W_SIZE};
+        let entry = make_entry_dated("readme.txt", 1234, 2024, 1);
+        let fmt = TsvFormatter::new(FormatOptions {
+            aligned: true,
+            ..Default::default()
+        });
+        let line = fmt.format_entry(&entry);
+        let date = "2024-01-01T00:00:00Z";
+        let date_padded = format!("{date}{}", " ".repeat(W_DATE - date.chars().count()));
+        let size_padded = format!("{}1234", " ".repeat(W_SIZE - 4));
+        let expected = format!("{date_padded}{SEP}{size_padded}{SEP}readme.txt");
+        assert_eq!(line, expected);
+    }
+
+    #[test]
+    fn format_text_aligned_right_aligns_size_number() {
+        let entry = make_entry_dated("f.txt", 42, 2024, 1);
+        let fmt = TsvFormatter::new(FormatOptions {
+            aligned: true,
+            ..Default::default()
+        });
+        let line = fmt.format_entry(&entry);
+        // The "42" should have 18 spaces left-padding, then "42", then 2-space SEP.
+        // We look for: 18 spaces + "42" + 2 spaces = 22 chars substring.
+        assert!(line.contains("                  42  "), "got: {line:?}");
+    }
+
+    #[test]
+    fn format_text_aligned_pre_marker_right_aligned() {
+        let entry = crate::types::ListEntry::CommonPrefix("logs/".to_string());
+        let fmt = TsvFormatter::new(FormatOptions {
+            aligned: true,
+            ..Default::default()
+        });
+        let line = fmt.format_entry(&entry);
+        // PRE is right-aligned in a 20-wide SIZE column: 17 spaces + "PRE" + 2-space SEP.
+        assert!(line.contains("                 PRE  "), "got: {line:?}");
+        assert!(line.ends_with("logs/"));
+    }
+
+    #[test]
+    fn format_text_aligned_delete_marker_right_aligned() {
+        let entry = crate::types::ListEntry::DeleteMarker {
+            key: "k.txt".to_string(),
+            version_info: crate::types::VersionInfo {
+                version_id: "v1".to_string(),
+                is_latest: false,
+            },
+            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            owner_display_name: None,
+            owner_id: None,
+        };
+        let fmt = TsvFormatter::new(FormatOptions {
+            aligned: true,
+            ..Default::default()
+        });
+        let line = fmt.format_entry(&entry);
+        // DELETE is right-aligned in a 20-wide SIZE column: 14 spaces + "DELETE" + 2-space SEP.
+        assert!(line.contains("              DELETE  "), "got: {line:?}");
+        assert!(line.ends_with("k.txt"));
+    }
+
+    #[test]
+    fn format_text_aligned_overflow_preserves_value() {
+        // An OwnerDisplayName longer than W_OWNER_DISPLAY_NAME (64) should not be truncated.
+        let big_name = "a".repeat(80);
+        let entry = crate::types::ListEntry::Object(crate::types::S3Object {
+            key: "f.txt".to_string(),
+            size: 1,
+            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            e_tag: "\"e\"".to_string(),
+            storage_class: Some("STANDARD".to_string()),
+            checksum_algorithm: vec![],
+            checksum_type: None,
+            owner_display_name: Some(big_name.clone()),
+            owner_id: Some("z".to_string()),
+            is_restore_in_progress: None,
+            restore_expiry_date: None,
+            version_info: None,
+        });
+        let fmt = TsvFormatter::new(FormatOptions {
+            aligned: true,
+            show_owner: true,
+            ..Default::default()
+        });
+        let line = fmt.format_entry(&entry);
+        assert!(line.contains(&big_name), "got: {line:?}");
+        assert!(line.ends_with("f.txt"));
+    }
+
+    #[test]
+    fn format_text_aligned_escapes_before_padding() {
+        let entry = crate::types::ListEntry::Object(crate::types::S3Object {
+            key: "evil\nkey".to_string(),
+            size: 1,
+            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            e_tag: "\"e\"".to_string(),
+            storage_class: Some("STANDARD".to_string()),
+            checksum_algorithm: vec![],
+            checksum_type: None,
+            owner_display_name: None,
+            owner_id: None,
+            is_restore_in_progress: None,
+            restore_expiry_date: None,
+            version_info: None,
+        });
+        let fmt = TsvFormatter::new(FormatOptions {
+            aligned: true,
+            ..Default::default()
+        });
+        let line = fmt.format_entry(&entry);
+        assert!(!line.contains('\n'));
+        assert!(line.ends_with("evil\\x0akey"));
+    }
+
+    #[test]
+    fn format_text_aligned_with_all_optional_columns() {
+        use crate::display::aligned::{
+            W_CHECKSUM_ALGORITHM, W_CHECKSUM_TYPE, W_DATE, W_ETAG, W_IS_LATEST,
+            W_IS_RESTORE_IN_PROGRESS, W_OWNER_DISPLAY_NAME, W_OWNER_ID, W_RESTORE_EXPIRY_DATE,
+            W_SIZE, W_STORAGE_CLASS, W_VERSION_ID,
+        };
+        let entry = crate::types::ListEntry::Object(crate::types::S3Object {
+            key: "f.txt".to_string(),
+            size: 10,
+            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            e_tag: "\"abc\"".to_string(),
+            storage_class: Some("STANDARD".to_string()),
+            checksum_algorithm: vec!["CRC32".to_string()],
+            checksum_type: Some("FULL_OBJECT".to_string()),
+            owner_display_name: Some("alice".to_string()),
+            owner_id: Some("id-a".to_string()),
+            is_restore_in_progress: Some(true),
+            restore_expiry_date: Some("2024-02-01T00:00:00Z".to_string()),
+            version_info: Some(crate::types::VersionInfo {
+                version_id: "v1".to_string(),
+                is_latest: true,
+            }),
+        });
+        let fmt = TsvFormatter::new(FormatOptions {
+            aligned: true,
+            all_versions: true,
+            show_storage_class: true,
+            show_etag: true,
+            show_checksum_algorithm: true,
+            show_checksum_type: true,
+            show_is_latest: true,
+            show_owner: true,
+            show_restore_status: true,
+            ..Default::default()
+        });
+        let line = fmt.format_entry(&entry);
+        // 12 columns (DATE, SIZE, STORAGE_CLASS, ETAG, CHECKSUM_ALGORITHM,
+        //   CHECKSUM_TYPE, VERSION_ID, IS_LATEST, OWNER_DISPLAY_NAME, OWNER_ID,
+        //   IS_RESTORE_IN_PROGRESS, RESTORE_EXPIRY_DATE), each followed by 2-space SEP,
+        // then KEY unpadded.
+        let expected_prefix_len = W_DATE
+            + 2
+            + W_SIZE
+            + 2
+            + W_STORAGE_CLASS
+            + 2
+            + W_ETAG
+            + 2
+            + W_CHECKSUM_ALGORITHM
+            + 2
+            + W_CHECKSUM_TYPE
+            + 2
+            + W_VERSION_ID
+            + 2
+            + W_IS_LATEST
+            + 2
+            + W_OWNER_DISPLAY_NAME
+            + 2
+            + W_OWNER_ID
+            + 2
+            + W_IS_RESTORE_IN_PROGRESS
+            + 2
+            + W_RESTORE_EXPIRY_DATE
+            + 2;
+        assert!(line.ends_with("f.txt"));
+        assert_eq!(
+            line.chars().count(),
+            expected_prefix_len + "f.txt".chars().count()
+        );
     }
 }
