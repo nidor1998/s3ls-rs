@@ -303,37 +303,93 @@ impl EntryFormatter for TsvFormatter {
 
     fn format_header(&self) -> Option<String> {
         let opts = &self.opts;
-        let mut cols: Vec<&str> = Vec::new();
-        cols.push("DATE");
-        cols.push("SIZE");
+        let size_width = if opts.human { W_SIZE_HUMAN } else { W_SIZE };
+
+        let mut specs: Vec<ColumnSpec> = Vec::new();
+        specs.push(ColumnSpec {
+            value: "DATE".to_string(),
+            width: W_DATE,
+            align: Align::Left,
+        });
+        specs.push(ColumnSpec {
+            value: "SIZE".to_string(),
+            width: size_width,
+            align: Align::Left,
+        });
         if opts.show_storage_class {
-            cols.push("STORAGE_CLASS");
+            specs.push(ColumnSpec {
+                value: "STORAGE_CLASS".to_string(),
+                width: W_STORAGE_CLASS,
+                align: Align::Left,
+            });
         }
         if opts.show_etag {
-            cols.push("ETAG");
+            specs.push(ColumnSpec {
+                value: "ETAG".to_string(),
+                width: W_ETAG,
+                align: Align::Left,
+            });
         }
         if opts.show_checksum_algorithm {
-            cols.push("CHECKSUM_ALGORITHM");
+            specs.push(ColumnSpec {
+                value: "CHECKSUM_ALGORITHM".to_string(),
+                width: W_CHECKSUM_ALGORITHM,
+                align: Align::Left,
+            });
         }
         if opts.show_checksum_type {
-            cols.push("CHECKSUM_TYPE");
+            specs.push(ColumnSpec {
+                value: "CHECKSUM_TYPE".to_string(),
+                width: W_CHECKSUM_TYPE,
+                align: Align::Left,
+            });
         }
         if opts.all_versions {
-            cols.push("VERSION_ID");
+            specs.push(ColumnSpec {
+                value: "VERSION_ID".to_string(),
+                width: W_VERSION_ID,
+                align: Align::Left,
+            });
         }
         if opts.show_is_latest {
-            cols.push("IS_LATEST");
+            specs.push(ColumnSpec {
+                value: "IS_LATEST".to_string(),
+                width: W_IS_LATEST,
+                align: Align::Left,
+            });
         }
         if opts.show_owner {
-            cols.push("OWNER_DISPLAY_NAME");
-            cols.push("OWNER_ID");
+            specs.push(ColumnSpec {
+                value: "OWNER_DISPLAY_NAME".to_string(),
+                width: W_OWNER_DISPLAY_NAME,
+                align: Align::Left,
+            });
+            specs.push(ColumnSpec {
+                value: "OWNER_ID".to_string(),
+                width: W_OWNER_ID,
+                align: Align::Left,
+            });
         }
         if opts.show_restore_status {
-            cols.push("IS_RESTORE_IN_PROGRESS");
-            cols.push("RESTORE_EXPIRY_DATE");
+            specs.push(ColumnSpec {
+                value: "IS_RESTORE_IN_PROGRESS".to_string(),
+                width: W_IS_RESTORE_IN_PROGRESS,
+                align: Align::Left,
+            });
+            specs.push(ColumnSpec {
+                value: "RESTORE_EXPIRY_DATE".to_string(),
+                width: W_RESTORE_EXPIRY_DATE,
+                align: Align::Left,
+            });
         }
-        cols.push("KEY");
-        Some(cols.join("\t"))
+
+        if opts.aligned {
+            Some(render_cols(&specs, "KEY"))
+        } else {
+            let mut parts: Vec<&str> = specs.iter().map(|c| c.value.as_str()).collect();
+            parts.push("KEY");
+            Some(parts.join("\t"))
+        }
     }
 
     fn format_summary(&self, stats: &ListingStatistics) -> String {
@@ -1123,6 +1179,20 @@ mod tests {
         let line = fmt.format_entry(&entry);
         assert!(!line.contains('\n'));
         assert!(line.ends_with("evil\\x0akey"));
+    }
+
+    #[test]
+    fn format_text_aligned_header_padded() {
+        use crate::display::aligned::{SEP, W_DATE, W_SIZE};
+        let fmt = TsvFormatter::new(FormatOptions {
+            aligned: true,
+            ..Default::default()
+        });
+        let header = fmt.format_header().unwrap();
+        let date_label = format!("DATE{}", " ".repeat(W_DATE - "DATE".len()));
+        let size_label = format!("SIZE{}", " ".repeat(W_SIZE - "SIZE".len()));
+        let expected = format!("{date_label}{SEP}{size_label}{SEP}KEY");
+        assert_eq!(header, expected);
     }
 
     #[test]
