@@ -1834,3 +1834,70 @@ fn aligned_composes_with_human_readable() {
     assert!(cli.aligned);
     assert!(cli.human);
 }
+
+// ===========================================================================
+// --target-no-sign-request
+// ===========================================================================
+
+#[test]
+fn target_no_sign_request_default_false() {
+    let cli = parse_from_args(args(&["s3://bucket"])).unwrap();
+    assert!(!cli.target_no_sign_request);
+}
+
+#[test]
+fn target_no_sign_request_long_flag() {
+    let cli = parse_from_args(args(&["s3://bucket", "--target-no-sign-request"])).unwrap();
+    assert!(cli.target_no_sign_request);
+}
+
+#[test]
+fn target_no_sign_request_conflicts_with_target_profile() {
+    let result = parse_from_args(args(&[
+        "s3://bucket",
+        "--target-no-sign-request",
+        "--target-profile",
+        "myprofile",
+    ]));
+    assert!(result.is_err());
+}
+
+#[test]
+fn target_no_sign_request_conflicts_with_target_access_key() {
+    let result = parse_from_args(args(&[
+        "s3://bucket",
+        "--target-no-sign-request",
+        "--target-access-key",
+        "AKIAIOSFODNN7EXAMPLE",
+        "--target-secret-access-key",
+        "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+    ]));
+    assert!(result.is_err());
+}
+
+#[test]
+fn target_no_sign_request_produces_nosign_credential() {
+    use crate::types::S3Credentials;
+    let config: crate::config::Config =
+        build_config_from_args(args(&["s3://bucket", "--target-no-sign-request"])).unwrap();
+    let client_config = config
+        .target_client_config
+        .expect("client config should be built");
+    assert!(matches!(client_config.credential, S3Credentials::NoSign));
+}
+
+#[test]
+fn target_no_sign_request_composes_with_target_endpoint_url() {
+    let cli = parse_from_args(args(&[
+        "s3://bucket",
+        "--target-no-sign-request",
+        "--target-endpoint-url",
+        "https://s3.example.com",
+    ]))
+    .unwrap();
+    assert!(cli.target_no_sign_request);
+    assert_eq!(
+        cli.target_endpoint_url.as_deref(),
+        Some("https://s3.example.com")
+    );
+}

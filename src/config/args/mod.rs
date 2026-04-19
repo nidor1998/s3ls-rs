@@ -457,6 +457,22 @@ pub struct CLIArgs {
     #[arg(long, env, default_value_t = false, help_heading = "AWS Configuration")]
     pub target_request_payer: bool,
 
+    /// Do not sign the request. If this argument is specified,
+    /// credentials will not be loaded.
+    #[arg(
+        long,
+        env,
+        default_value_t = false,
+        conflicts_with_all = [
+            "target_profile",
+            "target_access_key",
+            "target_secret_access_key",
+            "target_session_token",
+        ],
+        help_heading = "AWS Configuration"
+    )]
+    pub target_no_sign_request: bool,
+
     /// Disable stalled stream protection
     #[arg(long, env, default_value_t = false, help_heading = "AWS Configuration")]
     pub disable_stalled_stream_protection: bool,
@@ -594,7 +610,9 @@ impl CLIArgs {
     }
 
     fn build_client_config(&self) -> Option<crate::config::ClientConfig> {
-        let credential = if let Some(ref profile) = self.target_profile {
+        let credential = if self.target_no_sign_request {
+            crate::types::S3Credentials::NoSign
+        } else if let Some(ref profile) = self.target_profile {
             crate::types::S3Credentials::Profile(profile.clone())
         } else if let Some(ref access_key) = self.target_access_key {
             crate::types::S3Credentials::Credentials {
