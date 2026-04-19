@@ -74,31 +74,32 @@ the combination.
 ## Config plumbing
 
 - `DisplayConfig.aligned: bool` (default `false`) in `src/config/mod.rs`.
-- `FormatOptions.aligned: bool` in `src/display/mod.rs`, wired up by
-  `FormatOptions::from_display_config`.
 - `args.aligned` → `config.display_config.aligned` in the `Args → Config`
   conversion in `src/config/args/mod.rs`.
+- The pipeline reads `config.display_config.aligned` to pick between
+  `TsvFormatter` and `AlignedFormatter`; `FormatOptions` itself does not
+  carry an `aligned` field (the dispatch happens once, not per row).
 
 ## Column widths & alignment rules
 
 ### Object listing
 
-| Column                   | Width | Align | Source of bound                                     |
-| ------------------------ | ----: | :---: | --------------------------------------------------- |
-| DATE                     |    25 |   L   | RFC 3339 UTC (20) or local with offset (25)         |
-| SIZE (digits)            |    20 | **R** | `u64::MAX` = 20 digits; also holds `PRE` / `DELETE` |
-| SIZE (human)             |     9 | **R** | `1023.9EiB` worst case                              |
-| STORAGE_CLASS            |    19 |   L   | `INTELLIGENT_TIERING`                               |
-| ETAG                     |    35 |   L   | 32 hex + optional `-NN` multipart suffix            |
-| CHECKSUM_ALGORITHM       |    34 |   L   | `CRC32,CRC32C,SHA1,SHA256,CRC64NVME`                |
-| CHECKSUM_TYPE            |    11 |   L   | `FULL_OBJECT`                                       |
-| VERSION_ID               |    32 |   L   | Typical S3 VersionId                                |
-| IS_LATEST                |    10 |   L   | `NOT_LATEST`                                        |
-| OWNER_DISPLAY_NAME       |    64 |   L   | Conservative                                        |
-| OWNER_ID                 |    64 |   L   | Canonical user ID (fixed 64 hex)                    |
-| IS_RESTORE_IN_PROGRESS   |     5 | **R** | `false`                                             |
-| RESTORE_EXPIRY_DATE      |    25 |   L   | RFC 3339 with offset                                |
-| KEY                      |     — |   L   | Rightmost, no trailing padding                      |
+| Column                   | Width | Align | Source of bound                                                     |
+| ------------------------ | ----: | :---: | ------------------------------------------------------------------- |
+| DATE                     |    25 |   L   | RFC 3339 UTC (20) or local with offset (25)                         |
+| SIZE (digits)            |    14 | **R** | S3's 50 TiB single-object max (54,975,581,388,800 bytes = 14 digits); also holds `PRE` / `DELETE` |
+| SIZE (human)             |     9 | **R** | `1023.9EiB` worst case                                              |
+| STORAGE_CLASS            |    19 |   L   | `INTELLIGENT_TIERING`                                               |
+| ETAG                     |    38 |   L   | 32 hex + `-` + up-to-5-digit part count (S3 allows up to 10,000 parts) |
+| CHECKSUM_ALGORITHM       |    34 |   L   | `CRC32,CRC32C,SHA1,SHA256,CRC64NVME`                                |
+| CHECKSUM_TYPE            |    13 |   L   | Sized to the header label (`FULL_OBJECT` is 11, but `CHECKSUM_TYPE` is 13) |
+| VERSION_ID               |    32 |   L   | Typical S3 VersionId                                                |
+| IS_LATEST                |    10 |   L   | `NOT_LATEST`                                                        |
+| OWNER_DISPLAY_NAME       |    64 |   L   | Conservative                                                        |
+| OWNER_ID                 |    64 |   L   | Canonical user ID (fixed 64 hex)                                    |
+| IS_RESTORE_IN_PROGRESS   |    22 | **R** | Sized to the header label (`true`/`false` is 5, but `IS_RESTORE_IN_PROGRESS` is 22) |
+| RESTORE_EXPIRY_DATE      |    25 |   L   | RFC 3339 with offset                                                |
+| KEY                      |     — |   L   | Rightmost, no trailing padding                                      |
 
 ### Bucket listing
 
@@ -135,27 +136,44 @@ This mirrors `ls -l` behavior for long filenames.
 
 ## Implementation
 
-### New module `src/display/aligned.rs`
+Four modules in `src/display/` collaborate:
 
-Single location for all width constants plus helper functions:
+1. **`aligned.rs`** — pure data + helpers. Width constants, `Align`
+   enum, `ColumnSpec` struct, `pad`, `render_cols`. No opinion about
+   which rows to render or when.
+2. **`columns.rs`** — `build_entry_cols(entry, opts) -> (Vec<ColumnSpec>, String)`
+   and `build_header_cols(opts) -> Vec<ColumnSpec>`. This is where the
+   per-`ListEntry`-variant column shapes live. Both the TSV and
+   aligned formatters share this builder.
+3. **`tsv.rs`** — `TsvFormatter` implements `EntryFormatter`. Each
+   method is a thin wrapper: call the builder, tab-join values, push
+   the KEY.
+4. **`aligned_formatter.rs`** — `AlignedFormatter` implements
+   `EntryFormatter`. Each method calls the builder and then
+   `render_cols` to produce padded, two-space-separated output.
+
+The pipeline selects which formatter to instantiate based on
+`config.display_config.aligned`; neither formatter branches per row.
+
+### Width constants (`src/display/aligned.rs`)
 
 ```rust
-// Widths for object listing columns
+// Object listing columns
 pub const W_DATE: usize = 25;
-pub const W_SIZE: usize = 20;
+pub const W_SIZE: usize = 14;                  // S3 max object = 50 TiB = 14 digits
 pub const W_SIZE_HUMAN: usize = 9;
 pub const W_STORAGE_CLASS: usize = 19;
-pub const W_ETAG: usize = 35;
+pub const W_ETAG: usize = 38;                  // 32 hex + '-' + up-to-5-digit parts
 pub const W_CHECKSUM_ALGORITHM: usize = 34;
-pub const W_CHECKSUM_TYPE: usize = 11;
+pub const W_CHECKSUM_TYPE: usize = 13;         // sized to header label
 pub const W_VERSION_ID: usize = 32;
 pub const W_IS_LATEST: usize = 10;
 pub const W_OWNER_DISPLAY_NAME: usize = 64;
 pub const W_OWNER_ID: usize = 64;
-pub const W_IS_RESTORE_IN_PROGRESS: usize = 5;
+pub const W_IS_RESTORE_IN_PROGRESS: usize = 22; // sized to header label
 pub const W_RESTORE_EXPIRY_DATE: usize = 25;
 
-// Widths for bucket listing columns
+// Bucket listing columns
 pub const W_BUCKET_REGION: usize = 20;
 pub const W_BUCKET_NAME: usize = 63;
 pub const W_BUCKET_ARN: usize = 100;
@@ -177,84 +195,115 @@ pub fn render_cols(cols: &[ColumnSpec], last_key: &str) -> String;
 `render_cols` joins the non-KEY columns with `SEP` (after padding) and
 appends `last_key` unpadded.
 
-### `TsvFormatter` changes (`src/display/tsv.rs`)
+### Formatter methods
 
-The current `format_entry` builds a `Vec<String>` and joins with `\t`.
-Replace the terminal `cols.join("\t")` with a branch:
+Each formatter has a ~5-line `format_entry`, `format_header`, and
+`format_summary`. Example — `AlignedFormatter`:
 
-- `if !opts.aligned`: current behavior, unchanged.
-- `if opts.aligned`: build a `Vec<ColumnSpec>` describing each non-KEY
-  column's width and alignment, call `render_cols(&specs, &key_str)`.
+```rust
+fn format_entry(&self, entry: &ListEntry) -> String {
+    let (specs, key) = build_entry_cols(entry, &self.opts);
+    render_cols(&specs, &key)
+}
 
-Same split for `format_header` — labels padded left to their column
-widths, trailing `KEY` label unpadded.
+fn format_header(&self) -> Option<String> {
+    let specs = build_header_cols(&self.opts);
+    Some(render_cols(&specs, "KEY"))
+}
+```
 
-`format_summary` becomes:
+`TsvFormatter` uses the same builders and replaces `render_cols` with
+`specs.iter().map(|c| c.value.as_str()).collect::<Vec<_>>() +
+push(&key); parts.join("\t")`.
 
-- `if !opts.aligned`: current tab-separated form, unchanged.
-- `if opts.aligned`: join the same parts with single spaces:
-  - `\nTotal: 42 objects 5.4 MiB`
-  - `\nTotal: 42 objects 100 bytes 3 delete markers` (when
-    `all_versions`)
+**Summary lines.** `TsvFormatter::format_summary` joins with `\t`
+(existing behavior preserved). `AlignedFormatter::format_summary`
+joins with single spaces:
+
+- `\nTotal: 42 objects 5.4 MiB`
+- `\nTotal: 10 objects 1024 bytes 3 delete markers` (when `all_versions`)
 
 Control character escaping happens before padding, so `\x0a` takes 4
 visible characters and the column width accounts for that.
 
-### `bucket_lister.rs` changes
+### `bucket_lister.rs`
 
-`list_buckets()` currently formats lines inline. Extract:
+`list_buckets()` used to format lines inline. Extracted into:
 
 ```rust
-fn format_bucket_entry(
-    entry: &BucketEntry,
-    opts: &BucketFormatOpts,
+struct BucketFormatOpts {
     aligned: bool,
-) -> String;
+    show_bucket_arn: bool,
+    show_owner: bool,
+    raw_output: bool,
+}
 
-fn format_bucket_header(opts: &BucketFormatOpts, aligned: bool) -> String;
+fn format_bucket_entry(entry: &BucketEntry, opts: &BucketFormatOpts) -> String;
+fn format_bucket_header(opts: &BucketFormatOpts) -> String;
 ```
 
-Both helpers use `render_cols` from `src/display/aligned.rs` so the
-alignment logic stays in one place. The last column (BUCKET, BUCKET_ARN,
-or OWNER_ID depending on flags) is emitted unpadded.
+Both helpers build a `Vec<ColumnSpec>`, pop the last column (whichever
+is rightmost based on the `--show-*` flags), and either call
+`render_cols` or tab-join based on `opts.aligned`. The rightmost column
+is emitted unpadded — same contract as the KEY column for object
+listings.
 
 JSON output path is unchanged (conflicts with `--aligned`). No summary
 for bucket listing.
 
+### Pipeline dispatch (`src/pipeline.rs`)
+
+```rust
+let formatter: Box<dyn EntryFormatter> = if config.display_config.json {
+    Box::new(JsonFormatter::new(opts))
+} else if config.display_config.aligned {
+    Box::new(AlignedFormatter::new(opts))
+} else {
+    Box::new(TsvFormatter::new(opts))
+};
+```
+
 ## Tests
 
-### Unit tests (in `src/display/tsv.rs` and `src/bucket_lister.rs`)
+### Unit tests
 
-1. `format_text_aligned_basic_object` — object row, aligned: columns
-   have expected widths; key is unpadded; exactly two spaces between
-   columns.
-2. `format_text_aligned_right_aligns_size` — `12` padded with 18 leading
-   spaces in a 20-wide SIZE column.
-3. `format_text_aligned_pre_marker_right_aligned` — `PRE` and `DELETE`
-   sentinels right-aligned.
-4. `format_text_aligned_overflow_preserves_value` — value longer than
-   its width is emitted as-is; subsequent columns shift; no data lost.
-5. `format_text_aligned_header_padded` — header labels left-padded,
-   trailing `KEY` unpadded.
-6. `format_summary_aligned_uses_spaces` — summary uses single-space
-   separators, not tabs.
-7. `format_text_aligned_with_all_optional_columns` — every optional
-   column has correct width and alignment.
-8. `format_text_aligned_escapes_before_padding` — `\n` → `\x0a` and
-   padding computed on the escaped string.
-9. `bucket_aligned_basic` — bucket row padded; correct rightmost column
-   left unpadded depending on `--show-*` flags.
-10. `aligned_conflicts_with_json` — arg parsing rejects
-    `--aligned --json` with a clear error.
+- In `src/display/aligned.rs`: `pad` (left/right, exact-length,
+  overflow, char-count-not-bytes), `render_cols` (empty, two-column,
+  trailing SEP before key).
+- In `src/display/aligned_formatter.rs`: object/prefix/delete-marker
+  rows aligned correctly, right-aligned SIZE / PRE / DELETE, overflow
+  preserves value, escape-before-pad, header padding, summary uses
+  spaces, full column count via `format_text_aligned_with_all_optional_columns`.
+- In `src/display/tsv.rs`: unchanged pre-existing TSV behavior
+  (confirms the non-aligned path is byte-identical to the original
+  implementation).
+- In `src/bucket_lister.rs`: the four `(show_bucket_arn, show_owner)`
+  combinations for aligned bucket rows + header; `bucket_tsv_unchanged_when_not_aligned`
+  guards the non-aligned path.
+- In `src/config/args/tests.rs`: `aligned_conflicts_with_json`,
+  default-false, composition with `--no-sort` and `--human-readable`.
 
-### E2E tests (in `tests/e2e_display.rs`, gated by `#[cfg(e2e_test)]`)
+### E2E tests (gated by `#[cfg(e2e_test)]`)
 
-1. `e2e_aligned_object_listing` — list a small prefix with `--aligned`;
-   each non-last column position is consistent across rows.
+In `tests/e2e_display.rs`:
+
+1. `e2e_aligned_object_listing` — basic aligned object listing; SEP
+   positions derived from `W_DATE + SEP.len() + W_SIZE + SEP.len()`.
 2. `e2e_aligned_with_no_sort` — `--aligned --no-sort` streams aligned
-   output without buffering (verifies the architectural property).
-3. `e2e_aligned_with_human_and_summary` — `--aligned --human-readable
-   --summarize` composes correctly.
+   output without buffering.
+3. `e2e_aligned_with_human_and_summary` — composition with
+   `--human-readable --summarize`.
+4. `e2e_aligned_all_columns` — every `--show-*` flag + `--header
+   --all-versions`; asserts the total char count matches `sum(W_*) +
+   12*SEP + 3` (12 non-KEY columns + `KEY`).
+
+In `tests/e2e_bucket_listing.rs`:
+
+5. `e2e_aligned_bucket_listing_all_columns` — aligned bucket listing
+   with every `--show-*` flag + `--header`; asserts `OWNER_ID` sits at
+   byte offset `W_DATE + SEP + W_BUCKET_REGION + SEP + W_BUCKET_NAME +
+   SEP + W_BUCKET_ARN + SEP + W_OWNER_DISPLAY_NAME + SEP` as the
+   rightmost unpadded column.
 
 ## README updates
 
@@ -279,3 +328,41 @@ for bucket listing.
    correctly.
 5. `cargo fmt` and `cargo clippy --all-features` pass with zero
    warnings.
+
+## Revisions since the initial spec
+
+As the feature landed, a handful of specifics diverged from the
+original plan. This section captures the current-truth values — the
+rest of the doc has already been updated inline; this list is just
+the "what changed and why" for reviewers reading the git history.
+
+- **`W_SIZE` 20 → 14.** The original 20 was sized for `u64::MAX`
+  digits. S3 caps a single object at 50 TiB = 14 digits, so 14 fits
+  every well-formed size and saves 6 chars of horizontal space on
+  every data row.
+- **`W_ETAG` 35 → 38.** Original assumed 32 hex + `-NN` multipart
+  suffix. S3 actually allows up to 10,000 parts, so the suffix is up
+  to `-10000` (6 chars) → 38 total.
+- **`W_CHECKSUM_TYPE` 11 → 13.** Original sized for the longest data
+  value (`FULL_OBJECT`). Header label `CHECKSUM_TYPE` is 13 chars and
+  would otherwise overflow the column on the header row, shifting
+  every column to its right.
+- **`W_IS_RESTORE_IN_PROGRESS` 5 → 22.** Originally left at the data-
+  value max (`false`) with the 22-char header label accepted as
+  overflow. Later widened to 22 so the header fits flush.
+- **Formatters split.** The initial spec put the aligned branch
+  inside `TsvFormatter::format_entry/_header/_summary`. The split
+  into a dedicated `AlignedFormatter` (plus the shared `columns.rs`
+  builders) kept each formatter short and removed per-row branching.
+  `FormatOptions.aligned` was dropped — dispatch happens once in the
+  pipeline, not on every row.
+- **Bucket-listing helper signatures.** Original
+  `format_bucket_entry(entry, opts, aligned)` was collapsed to
+  `format_bucket_entry(entry, &BucketFormatOpts)` since `opts`
+  already carries the `aligned` flag and three other row-invariant
+  bools — keeping them together makes the call site one line.
+- **E2E test coverage expanded.** Two additional all-columns tests
+  (`e2e_aligned_all_columns` for objects, `e2e_aligned_bucket_listing_all_columns`
+  for buckets) were added beyond the three tests in the initial
+  spec, to catch regressions where a new column is introduced but
+  the layout math wasn't updated.
