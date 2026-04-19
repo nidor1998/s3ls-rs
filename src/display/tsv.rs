@@ -99,7 +99,7 @@ impl EntryFormatter for TsvFormatter {
                     specs.push(ColumnSpec {
                         value: String::new(),
                         width: W_IS_RESTORE_IN_PROGRESS,
-                        align: Align::Left,
+                        align: Align::Right,
                     });
                     specs.push(ColumnSpec {
                         value: String::new(),
