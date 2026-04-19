@@ -398,12 +398,16 @@ impl EntryFormatter for TsvFormatter {
         } else {
             (stats.total_size.to_string(), "bytes".to_string())
         };
+        let sep = if self.opts.aligned { " " } else { "\t" };
         let mut line = format!(
-            "\nTotal:\t{}\tobjects\t{}\t{}",
+            "\nTotal:{sep}{}{sep}objects{sep}{}{sep}{}",
             stats.total_objects, size_num, size_unit
         );
         if self.opts.all_versions {
-            line.push_str(&format!("\t{}\tdelete markers", stats.total_delete_markers));
+            line.push_str(&format!(
+                "{sep}{}{sep}delete markers",
+                stats.total_delete_markers
+            ));
         }
         line
     }
@@ -1265,5 +1269,56 @@ mod tests {
             line.chars().count(),
             expected_prefix_len + "f.txt".chars().count()
         );
+    }
+
+    // ===========================================================================
+    // --aligned: summary line
+    // ===========================================================================
+
+    #[test]
+    fn format_summary_aligned_uses_spaces() {
+        let stats = crate::types::ListingStatistics {
+            total_objects: 42,
+            total_size: 5678901,
+            total_delete_markers: 0,
+        };
+        let fmt = TsvFormatter::new(FormatOptions {
+            human: true,
+            aligned: true,
+            ..Default::default()
+        });
+        let summary = fmt.format_summary(&stats);
+        assert_eq!(summary, "\nTotal: 42 objects 5.4 MiB");
+    }
+
+    #[test]
+    fn format_summary_aligned_non_human() {
+        let stats = crate::types::ListingStatistics {
+            total_objects: 3,
+            total_size: 100,
+            total_delete_markers: 0,
+        };
+        let fmt = TsvFormatter::new(FormatOptions {
+            aligned: true,
+            ..Default::default()
+        });
+        let summary = fmt.format_summary(&stats);
+        assert_eq!(summary, "\nTotal: 3 objects 100 bytes");
+    }
+
+    #[test]
+    fn format_summary_aligned_with_versions() {
+        let stats = crate::types::ListingStatistics {
+            total_objects: 10,
+            total_size: 1024,
+            total_delete_markers: 3,
+        };
+        let fmt = TsvFormatter::new(FormatOptions {
+            aligned: true,
+            all_versions: true,
+            ..Default::default()
+        });
+        let summary = fmt.format_summary(&stats);
+        assert_eq!(summary, "\nTotal: 10 objects 1024 bytes 3 delete markers");
     }
 }
