@@ -26,6 +26,7 @@ This demo shows listing approximately 360,000 objects per second, listing 1,100,
     * [How it works](#how-it-works)
     * [Why it's fast](#why-its-fast)
     * [Why it's flexible](#why-its-flexible)
+    * [Scope](#scope)
 - [Features](#features)
     * [High performance](#high-performance)
     * [Powerful filtering](#powerful-filtering)
@@ -125,6 +126,10 @@ Rust contributes low per-object overhead (no garbage collector pauses, small str
 ### Why it's flexible
 
 The pipeline stages are decoupled through channels and trait abstractions. Filters are composed as a chain within the lister. Sorting and display are separated — the aggregator handles ordering while the display writer handles aligned-text, TSV, one-per-line, and NDJSON formatting through a common `EntryFormatter` trait. Adding a new filter, sort field, or output column does not require changes to the pipeline coordination — each concern is isolated.
+
+### Scope
+
+s3ls is a listing-only tool. It is **not** intended to be a drop-in replacement for, or behaviorally compatible with, the AWS CLI (`aws s3 ls`) or `s5cmd`. Its command-line flags, output columns, sort/filter semantics, and exit codes are designed around fast parallel listing and stable machine-readable output — not interoperability with those tools' interfaces. Output formats and flag names will not be adjusted to match `aws s3 ls` or `s5cmd`, and scripts written against either tool should not be expected to work with s3ls unmodified. If you need full S3 functionality (copy, sync, presign, multipart upload, etc.) or compatibility with the AWS CLI flag set, use those tools.
 
 ## Features
 
