@@ -1794,52 +1794,46 @@ fn bucket_listing_rejects_max_depth_directly() {
 }
 
 // ===========================================================================
-// --aligned
+// --tsv
 // ===========================================================================
 
 #[test]
-fn aligned_default_false() {
+fn tsv_default_false() {
     let cli = parse_from_args(args(&["s3://bucket"])).unwrap();
-    assert!(!cli.aligned);
+    assert!(!cli.tsv);
 }
 
 #[test]
-fn aligned_long_flag() {
-    let cli = parse_from_args(args(&["s3://bucket", "--aligned"])).unwrap();
-    assert!(cli.aligned);
+fn tsv_long_flag() {
+    let cli = parse_from_args(args(&["s3://bucket", "--tsv"])).unwrap();
+    assert!(cli.tsv);
 }
 
 #[test]
-fn aligned_conflicts_with_json() {
-    let result = parse_from_args(args(&["s3://bucket", "--aligned", "--json"]));
+fn tsv_conflicts_with_json() {
+    let result = parse_from_args(args(&["s3://bucket", "--tsv", "--json"]));
     assert!(result.is_err());
 }
 
 #[test]
-fn aligned_composes_with_no_sort() {
-    let cli = parse_from_args(args(&[
-        "s3://bucket",
-        "--recursive",
-        "--aligned",
-        "--no-sort",
-    ]))
-    .unwrap();
-    assert!(cli.aligned);
+fn tsv_composes_with_no_sort() {
+    let cli = parse_from_args(args(&["s3://bucket", "--recursive", "--tsv", "--no-sort"])).unwrap();
+    assert!(cli.tsv);
     assert!(cli.no_sort);
 }
 
 #[test]
-fn aligned_composes_with_human_readable() {
-    let cli = parse_from_args(args(&["s3://bucket", "--aligned", "--human-readable"])).unwrap();
-    assert!(cli.aligned);
+fn tsv_composes_with_human_readable() {
+    let cli = parse_from_args(args(&["s3://bucket", "--tsv", "--human-readable"])).unwrap();
+    assert!(cli.tsv);
     assert!(cli.human);
 }
 
 #[test]
-fn aligned_conflicts_with_one_line() {
-    let result = parse_from_args(args(&["s3://bucket", "--aligned", "-1"]));
-    assert!(result.is_err());
-    let result = parse_from_args(args(&["s3://bucket", "--aligned", "--one"]));
+fn aligned_flag_removed() {
+    // The legacy `--aligned` flag has been removed; aligned columns are
+    // now the default and must not be re-introduced as a CLI flag.
+    let result = parse_from_args(args(&["s3://bucket", "--aligned"]));
     assert!(result.is_err());
 }
 

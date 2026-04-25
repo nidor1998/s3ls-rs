@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **BREAKING:** Whitespace-aligned columns are now the default object/bucket listing format. The previous default (tab-separated text) is now opt-in via `--tsv`. Scripts that parsed the default output with `cut`, `awk`, or `IFS=$'\t'` must add `--tsv`.
+
+### Added
+
+- `--tsv` — emit tab-separated text instead of the default whitespace-aligned columns. Composes with `--no-sort`, `--header`, `--summarize`, and every `--show-*` flag. Cannot be combined with `--json`.
+
+### Removed
+
+- `--aligned` — replaced by the new default. The flag is rejected with an error to fail fast on existing scripts; remove it (and add `--tsv` if tab-separated output is required).
+
 ## [v0.3.0] - 2026-04-19
 
 ### Added

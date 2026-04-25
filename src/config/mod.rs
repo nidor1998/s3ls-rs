@@ -134,9 +134,9 @@ pub struct DisplayConfig {
     /// `\xNN` escapes to prevent injection of fake rows or terminal
     /// escape sequences by maliciously-named objects.
     pub raw_output: bool,
-    /// Display output with columns aligned using whitespace padding
-    /// (see `Args::aligned`).
-    pub aligned: bool,
+    /// Emit tab-separated text instead of the default whitespace-aligned
+    /// columns (see `Args::tsv`).
+    pub tsv: bool,
     /// Display only the key (or bucket name), one per line, with no
     /// other columns (see `Args::one_line`).
     pub one_line: bool,
@@ -226,7 +226,7 @@ mod tests {
         assert!(!config.display_config.header);
         assert!(!config.display_config.json);
         assert!(!config.display_config.raw_output);
-        assert!(!config.display_config.aligned);
+        assert!(!config.display_config.tsv);
         assert!(!config.display_config.one_line);
 
         // Performance

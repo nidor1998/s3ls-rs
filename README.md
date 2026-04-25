@@ -51,7 +51,7 @@ This demo shows listing approximately 360,000 objects per second, listing 1,100,
     * [Combined filters](#combined-filters)
     * [Sort results](#sort-results)
     * [Display options](#display-options)
-    * [Aligned output](#aligned-output)
+    * [TSV output](#tsv-output)
     * [One-per-line output](#one-per-line-output)
     * [JSON output](#json-output)
     * [Version listing](#version-listing)
@@ -77,7 +77,7 @@ This demo shows listing approximately 360,000 objects per second, listing 1,100,
     * [--max-parallel-listings](#--max-parallel-listings)
     * [--max-parallel-listing-max-depth](#--max-parallel-listing-max-depth)
     * [--no-sort](#--no-sort)
-    * [--aligned](#--aligned)
+    * [--tsv](#--tsv)
     * [--max-keys](#--max-keys)
     * [--filter-include-regex/--filter-exclude-regex](#--filter-include-regex--filter-exclude-regex)
     * [-v](#-v)
@@ -186,11 +186,13 @@ s3ls --recursive --allow-parallel-listings-in-express-one-zone s3://my-bucket--u
 
 s3ls is designed from the ground up so that every byte of output is useful to a human reading a terminal and to a program parsing a pipe — in both of its output formats.
 
-**Tab-separated text** (default) — Each line is a single record. Fields are separated by tab characters, so `cut`, `awk`, `sort`, and other Unix tools can process the output directly without custom delimiters or quoting rules. At the same time, tabs align columns naturally in a terminal, making the output scannable at a glance. Control characters in S3 keys (`\x00`-`\x1f`, `\x7f`) are escaped as `\xNN` hex by default, so a maliciously-named object cannot inject newlines or ANSI sequences into terminal output or break downstream line-oriented parsing. Use `--raw-output` to disable escaping when trusting bucket contents. Add `--header` for a labeled header row that makes wide output self-documenting without interfering with `tail -n +2` workflows.
+**Whitespace-aligned text** (default) — Each line is a single record. Each non-KEY column is padded to a fixed width and rows are separated by two spaces, so columns line up visually in a terminal and the output is easy for a human to scan. Control characters in S3 keys (`\x00`-`\x1f`, `\x7f`) are escaped as `\xNN` hex by default, so a maliciously-named object cannot inject newlines or ANSI sequences into terminal output or break downstream line-oriented parsing. Use `--raw-output` to disable escaping when trusting bucket contents. Add `--header` for a labeled header row that makes wide output self-documenting without interfering with `tail -n +2` workflows.
 
-For interactive terminal use, add `--aligned` to pad each column to a
-fixed width with spaces. This is a pure layout option and is
-independent of `--human-readable` (which formats individual values).
+For pipelines and Unix tooling, add `--tsv` to emit tab-separated
+output instead. `cut`, `awk`, `sort`, and friends can then process
+the output directly without custom delimiters or quoting rules. The
+choice of layout is independent of `--human-readable` (which formats
+individual values).
 
 **NDJSON** (`--json`) — One JSON object per line. Field names use PascalCase (`Key`, `Size`, `LastModified`, `ETag`, `StorageClass`) matching the S3 API response structure exactly. This means `jq`, Python scripts, and any tooling that already parses S3 API responses can consume s3ls output with zero translation. Every available metadata field is included in every JSON record regardless of `--show-*` flags, so downstream consumers always get the full picture. Each line is independently parseable, making the output compatible with streaming processors, log aggregation systems, and `jq` filters alike. Humans can read individual records, and machines can process millions of them without loading the entire output into memory.
 
@@ -440,34 +442,35 @@ s3ls --recursive --header --show-storage-class s3://my-bucket/
 s3ls --recursive --show-relative-path s3://my-bucket/data/
 ```
 
-### Aligned output
+### TSV output
 
 ```
-# Default TSV — machine-friendly, tabs between columns
+# Default — columns padded with spaces so the output scans well in a terminal
 $ s3ls --recursive s3://my-bucket/data/
-2024-01-15T10:30:00Z	1234	data/readme.txt
-2024-06-01T08:00:00Z	5678	data/2024/report.csv
-
-# Aligned — columns padded with spaces so the output scans well in a terminal
-$ s3ls --recursive --aligned s3://my-bucket/data/
 2024-01-15T10:30:00Z                 1234  data/readme.txt
 2024-06-01T08:00:00Z                 5678  data/2024/report.csv
 
-# Combined with --human-readable
-$ s3ls --recursive --aligned --human-readable s3://my-bucket/data/
+# TSV — machine-friendly, tab character between columns
+$ s3ls --recursive --tsv s3://my-bucket/data/
+2024-01-15T10:30:00Z	1234	data/readme.txt
+2024-06-01T08:00:00Z	5678	data/2024/report.csv
+
+# Default aligned, combined with --human-readable
+$ s3ls --recursive --human-readable s3://my-bucket/data/
 2024-01-15T10:30:00Z          1.2KiB  data/readme.txt
 2024-06-01T08:00:00Z          5.5KiB  data/2024/report.csv
 ```
 
-`--aligned` pads each non-KEY column to a fixed width so rows line up
-on screen. It is independent of `--human-readable`:
+The default aligned layout pads each non-KEY column to a fixed width
+so rows line up on screen. It is independent of `--human-readable`:
 
 - `--human-readable` makes individual **values** human-friendly
   (e.g., `1.2KiB` rather than raw bytes).
-- `--aligned` makes the **layout** human-friendly (columns line up).
+- The default aligned layout makes the **layout** human-friendly
+  (columns line up).
 
-The default tab-separated output is preserved for `cut`, `awk`, and
-other Unix tools. `--aligned` composes with `--no-sort`, `--header`,
+For `cut`, `awk`, and other Unix tools that prefer tab-separated
+input, opt into `--tsv`. `--tsv` composes with `--no-sort`, `--header`,
 `--summarize`, and every `--show-*` flag. It conflicts with `--json`
 (NDJSON is not columnar).
 
@@ -863,47 +866,51 @@ Disables sorting and streams results directly to stdout. Reduces memory usage to
 s3ls --recursive --no-sort s3://huge-bucket/
 ```
 
-### --aligned
+### --tsv
 
-Pads each non-KEY column to a fixed width with spaces and uses a
-two-space column separator, producing output that lines up visually
-in a terminal. The default TSV output uses tab characters, which
-align to tab stops rather than column content, so rows with varying
-field lengths don't line up on screen.
+Switches the output from the default whitespace-aligned columns to
+tab-separated text (TSV). TSV is machine-friendly: `cut`, `awk`,
+`sort`, and other Unix tools can process it directly without custom
+delimiters or quoting rules. Columns won't line up visually in a
+terminal because tabs align to tab stops, not to content.
 
-`--aligned` is independent of `--human-readable`:
+`--tsv` is independent of `--human-readable`:
 
 - `--human-readable` changes individual **values** (`1.2KiB` instead
   of `1234`).
-- `--aligned` changes the **layout** (columns line up on screen).
+- `--tsv` changes the **layout** (tabs between columns instead of
+  fixed-width spaces).
 
 The two can be combined.
 
 ```bash
-s3ls --recursive --aligned s3://my-bucket/data/
-s3ls --recursive --aligned --human-readable --summarize s3://my-bucket/
+s3ls --recursive --tsv s3://my-bucket/data/
+s3ls --recursive --tsv --human-readable --summarize s3://my-bucket/
 ```
 
-**Zero buffering.** Every non-KEY column has a bounded maximum width
-derived from the S3 API contract (e.g., a single object is at most
-50 TiB = 14 digits, an ETag is at most 38 chars), and the KEY column
-is always emitted last with no trailing padding. So `--aligned`
-streams rows one-by-one just like the default TSV mode — it composes
-cleanly with `--no-sort` (constant memory for huge buckets).
+**Zero buffering.** Both layouts stream rows one-by-one — neither
+requires buffering the full result set. The default aligned layout
+relies on bounded maximum widths derived from the S3 API contract
+(e.g., a single object is at most 50 TiB = 14 digits, an ETag is at
+most 38 chars), with the KEY column emitted last unpadded — so
+aligned output composes cleanly with `--no-sort` (constant memory
+for huge buckets) just like `--tsv`.
 
-**Conflicts.** Only `--json` (NDJSON output is not columnar).
+**Conflicts.** `--tsv` cannot be combined with `--json` (NDJSON
+output is not columnar).
 
-**Overflow.** If a value exceeds its column width (e.g., an unusually
-long VersionId, or an OwnerDisplayName with CJK characters that
-render wider than the character count suggests), the value is
-emitted as-is without truncation. Subsequent columns on that row
-shift right, but no data is hidden. This mirrors `ls -l` behavior
+**Overflow (aligned mode only).** If a value exceeds its column width
+(e.g., an unusually long VersionId, or an OwnerDisplayName with CJK
+characters that render wider than the character count suggests), the
+value is emitted as-is without truncation. Subsequent columns on that
+row shift right, but no data is hidden. This mirrors `ls -l` behavior
 for long filenames.
 
-**`--raw-output` interaction.** Allowed. With `--raw-output`, control
-characters in keys or owner names are not re-escaped, so column
-widths may be disrupted on rows containing such bytes. This is a
-deliberate tradeoff implied by `--raw-output` itself.
+**`--raw-output` interaction.** Allowed in both layouts. With
+`--raw-output`, control characters in keys or owner names are not
+re-escaped, so in aligned mode column widths may be disrupted on rows
+containing such bytes. This is a deliberate tradeoff implied by
+`--raw-output` itself.
 
 ### --max-keys
 
@@ -1035,7 +1042,7 @@ Display:
       --json                     Output as NDJSON (one JSON object per line) [env: JSON=]
       --show-objects-only        Show only objects, hiding common prefixes (directory markers) from output [env: SHOW_OBJECTS_ONLY=]
       --raw-output               Emit raw S3 key/prefix bytes without escaping control characters [env: RAW_OUTPUT=]
-      --aligned                  Display output with columns aligned using whitespace padding [env: ALIGNED=]
+      --tsv                      Emit tab-separated text instead of the default whitespace-aligned columns [env: TSV=]
   -1, --one                      Display only the key (or bucket name), one per line, with no other columns. All `--show-*` options are ignored. For object listings, common prefixes are emitted unless `--show-objects-only` is set [env: ONE_LINE=]
 
 Tracing/Logging:
