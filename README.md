@@ -114,7 +114,7 @@ s3ls uses a three-stage streaming pipeline connected by bounded async channels:
 
 1. **Lister + Filter Chain** — Sends concurrent S3 API calls using parallel prefix discovery. Uses the S3 delimiter feature to discover "virtual directories" (common prefixes) at the top levels of the hierarchy, then lists each prefix independently and concurrently, with up to 64 parallel operations by default. A semaphore prevents overwhelming S3 while maximizing throughput. Filters (regex, time range, size range, storage class) are applied inline as entries arrive — objects that don't match are discarded immediately without being forwarded to the aggregator.
 2. **Aggregator** — In default mode, buffers all entries and sorts them. In streaming mode (`--no-sort`), passes each entry through immediately with no buffering. Computes statistics when summary output is requested.
-3. **DisplayWriter** — Receives sorted (or streamed) entries and formats them as tab-delimited text or NDJSON, writing the result to stdout.
+3. **DisplayWriter** — Receives sorted (or streamed) entries and formats them as whitespace-aligned text (default), TSV (`--tsv`), one-per-line keys (`-1`), or NDJSON (`--json`), writing the result to stdout.
 
 ### Why it's fast
 
@@ -124,7 +124,7 @@ Rust contributes low per-object overhead (no garbage collector pauses, small str
 
 ### Why it's flexible
 
-The pipeline stages are decoupled through channels and trait abstractions. Filters are composed as a chain within the lister. Sorting and display are separated — the aggregator handles ordering while the display writer handles both tab-delimited text and JSON formatting. Adding a new filter, sort field, or output column does not require changes to the pipeline coordination — each concern is isolated.
+The pipeline stages are decoupled through channels and trait abstractions. Filters are composed as a chain within the lister. Sorting and display are separated — the aggregator handles ordering while the display writer handles aligned-text, TSV, one-per-line, and NDJSON formatting through a common `EntryFormatter` trait. Adding a new filter, sort field, or output column does not require changes to the pipeline coordination — each concern is isolated.
 
 ## Features
 
@@ -144,8 +144,8 @@ Parallel listing relies on the S3 delimiter feature to discover common prefixes 
 Multiple filter types can be combined with AND logic:
 
 - **Regex include/exclude** — Filter object keys using regular expressions (`--filter-include-regex`, `--filter-exclude-regex`)
-- **Modified time range** — Filter by modification time (`--filter-mtime-before`, `--filter-mtime-after`) using RFC 3339 format
-- **Size range** — Filter by object size (`--filter-smaller-size`, `--filter-larger-size`) with human-readable suffixes (KB, KiB, MB, MiB, GB, GiB, TB, TiB)
+- **Modified time range** — Filter by modification time using RFC 3339 format. `--filter-mtime-before` matches strictly before the given time; `--filter-mtime-after` matches at or after the given time
+- **Size range** — Filter by object size with human-readable suffixes (KB, KiB, MB, MiB, GB, GiB, TB, TiB). `--filter-smaller-size` matches objects strictly smaller than the threshold; `--filter-larger-size` matches objects greater than or equal to the threshold
 - **Storage class** — Filter by storage class (`--storage-class STANDARD,GLACIER,DEEP_ARCHIVE`)
 
 ### S3 versioning
@@ -163,12 +163,11 @@ s3ls supports S3 Express One Zone directory buckets:
 - `--list-express-one-zone-buckets` — List only Express One Zone directory buckets
 - `--allow-parallel-listings-in-express-one-zone` — Enable parallel listing in Express One Zone buckets
 
-Parallel listing is disabled by default for Express One Zone directory buckets due to two ListObjectsV2 API limitations specific to directory buckets:
+Parallel listing is disabled by default for Express One Zone directory buckets due to a `ListObjectsV2` behavior specific to directory buckets:
 
-1. **Prefix restriction** — Directory buckets only support prefixes that end in a delimiter (`/`). The prefix discovery that drives parallel listing splits the key space using single-character prefixes (e.g., `a`, `b`, `c`), which are not delimiter-terminated and therefore not supported.
-2. **CommonPrefixes pollution** — When querying with a delimiter during in-progress multipart uploads, the `CommonPrefixes` response includes prefixes associated with those uploads. This can produce spurious prefixes that don't correspond to actual object key hierarchies, making prefix-based parallelization unreliable.
+**CommonPrefixes pollution** — When querying with a delimiter during in-progress multipart uploads, the `CommonPrefixes` response includes prefixes associated with those uploads. This can produce spurious prefixes that don't correspond to actual object key hierarchies, making prefix-based parallelization unreliable.
 
-s3ls detects Express One Zone buckets by their `--x-s3` name suffix and falls back to sequential listing as a conservative default.
+s3ls detects Express One Zone buckets by their `--x-s3` name suffix and falls back to sequential listing as a conservative default. Pass `--allow-parallel-listings-in-express-one-zone` to opt in.
 
 To enable parallel listing on Express One Zone buckets:
 
@@ -195,7 +194,7 @@ the output directly without custom delimiters or quoting rules. The
 choice of layout is independent of `--human-readable` (which formats
 individual values).
 
-**NDJSON** (`--json`) — One JSON object per line. Field names use PascalCase (`Key`, `Size`, `LastModified`, `ETag`, `StorageClass`) matching the S3 API response structure exactly. This means `jq`, Python scripts, and any tooling that already parses S3 API responses can consume s3ls output with zero translation. Every available metadata field is included in every JSON record regardless of `--show-*` flags, so downstream consumers always get the full picture. Each line is independently parseable, making the output compatible with streaming processors, log aggregation systems, and `jq` filters alike. Humans can read individual records, and machines can process millions of them without loading the entire output into memory.
+**NDJSON** (`--json`) — One JSON object per line. Field names use PascalCase (`Key`, `Size`, `LastModified`, `ETag`, `StorageClass`) matching the S3 API response structure exactly. This means `jq`, Python scripts, and any tooling that already parses S3 API responses can consume s3ls output with zero translation. Every field returned by S3 for a given object is included in its JSON record. A few fields require an explicit opt-in because they cost an extra request parameter or rely on data S3 omits by default — `--show-owner` enables `Owner` for `ListObjectsV2` (it is always present for `ListObjectVersions`), and `--show-restore-status` enables `RestoreStatus`; for bucket listing, `--show-bucket-arn` and `--show-owner` gate the corresponding fields. Beyond those, the `--show-*` flags affect only column selection in text output. Each line is independently parseable, making the output compatible with streaming processors, log aggregation systems, and `jq` filters alike. Humans can read individual records, and machines can process millions of them without loading the entire output into memory.
 
 Both formats share the same design principle: one record per line, stable field order, no surprises.
 
@@ -375,20 +374,20 @@ s3ls --recursive --filter-exclude-regex '^tmp/' s3://my-bucket/
 ### Filter by size
 
 ```bash
-# Files larger than 100MB
+# Files at least 100 MiB (≥)
 s3ls --recursive --filter-larger-size 100MiB s3://my-bucket/
 
-# Files smaller than 1KB
+# Files strictly smaller than 1 KiB (<)
 s3ls --recursive --filter-smaller-size 1KiB s3://my-bucket/
 ```
 
 ### Filter by modified time
 
 ```bash
-# Files modified after a date
+# Files modified at or after a date (≥)
 s3ls --recursive --filter-mtime-after 2025-01-01T00:00:00Z s3://my-bucket/
 
-# Files modified before a date
+# Files modified strictly before a date (<)
 s3ls --recursive --filter-mtime-before 2024-06-01T00:00:00Z s3://my-bucket/
 ```
 
@@ -753,11 +752,11 @@ s3ls supports multi-column sorting with up to 2 fields. Available sort fields di
 - **Object listing:** `key`, `size`, `date`
 - **Bucket listing:** `bucket`, `region`, `date`
 
-Default sort is `key` for objects and `bucket` for buckets. When using `--all-versions`, `date` is automatically appended as a secondary sort field if not already specified.
+Default sort is `key` for objects and `bucket` for buckets. When using `--all-versions`, if exactly one sort field is specified and it is not `date`, `date` is automatically appended as a secondary sort so versions of the same key appear in chronological order. If two sort fields are already specified, no automatic append happens.
 
 Sorting requires buffering all results in memory before output. For very large result sets, use `--no-sort` to stream results directly.
 
-When the result set exceeds `--parallel-sort-threshold` (default: 1,000,000), s3ls uses parallel sorting via the rayon library.
+When the result set reaches `--parallel-sort-threshold` (default: 1,000,000), s3ls uses parallel sorting via the rayon library.
 
 ### Streaming mode
 
@@ -793,7 +792,7 @@ The `--json` flag outputs one JSON object per line (NDJSON format). Field names 
 - `RestoreStatus` (nested object with `IsRestoreInProgress` and `RestoreExpiryDate`)
 - `VersionId`, `IsLatest` (when using `--all-versions`)
 
-All available fields are included in JSON output regardless of `--show-*` flags. The `--show-*` flags only affect tab-delimited text output.
+JSON output includes every field S3 returns for a given object. Two flags also gate the underlying request and therefore JSON inclusion: `--show-owner` enables `fetch_owner=true` on `ListObjectsV2` (so `Owner` is omitted from object listings without it; `ListObjectVersions` always returns `Owner`), and `--show-restore-status` enables the `RestoreStatus` optional object attribute. For bucket listing, `--show-bucket-arn` and `--show-owner` likewise gate `BucketArn` and `Owner` in the JSON output. All other `--show-*` flags affect only column selection in text output.
 
 ### Control character escaping detail
 
