@@ -129,7 +129,7 @@ The pipeline stages are decoupled through channels and trait abstractions. Filte
 
 ### Scope
 
-s3ls is a listing-only tool. It is **not** intended to be a drop-in replacement for, or behaviorally compatible with, the AWS CLI (`aws s3 ls`) or `s5cmd`. Its command-line flags, output columns, sort/filter semantics, and exit codes are designed around fast parallel listing and stable machine-readable output — not interoperability with those tools' interfaces. Output formats and flag names will not be adjusted to match `aws s3 ls` or `s5cmd`, and scripts written against either tool should not be expected to work with s3ls unmodified. If you need full S3 functionality (copy, sync, presign, multipart upload, etc.) or compatibility with the AWS CLI flag set, use those tools.
+s3ls is a listing-only tool. It is **not** intended to be a drop-in replacement for, or behaviorally compatible with, any other S3 client — examples include the AWS CLI (`aws s3 ls`) and `s5cmd`, but the same applies to any S3 listing or transfer tool. Its command-line flags, output columns, sort/filter semantics, and exit codes are designed around fast parallel listing and stable machine-readable output — not interoperability with another tool's interface. Output formats and flag names will not be adjusted to match any external tool, and scripts written against another S3 client should not be expected to work with s3ls unmodified. If you need full S3 functionality (copy, sync, presign, multipart upload, etc.) or compatibility with a specific tool's flag set, use that tool.
 
 ## Features
 
