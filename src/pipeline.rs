@@ -171,10 +171,10 @@ impl ListingPipeline {
             Box::new(JsonFormatter::new(opts))
         } else if self.config.display_config.one_line {
             Box::new(OneLineFormatter::new(opts))
-        } else if self.config.display_config.aligned {
-            Box::new(AlignedFormatter::new(opts))
-        } else {
+        } else if self.config.display_config.tsv {
             Box::new(TsvFormatter::new(opts))
+        } else {
+            Box::new(AlignedFormatter::new(opts))
         };
 
         let display_writer_config = DisplayWriterConfig {

@@ -16,7 +16,7 @@ struct BucketEntry {
 }
 
 pub(crate) struct BucketFormatOpts {
-    pub aligned: bool,
+    pub tsv: bool,
     pub one_line: bool,
     pub show_bucket_arn: bool,
     pub show_owner: bool,
@@ -92,12 +92,12 @@ fn format_bucket_entry(entry: &BucketEntry, opts: &BucketFormatOpts) -> String {
         .pop()
         .expect("at least DATE+REGION+BUCKET are always present");
 
-    if opts.aligned {
-        render_cols(&specs, &last.value)
-    } else {
+    if opts.tsv {
         let mut parts: Vec<&str> = specs.iter().map(|c| c.value.as_str()).collect();
         parts.push(&last.value);
         parts.join("\t")
+    } else {
+        render_cols(&specs, &last.value)
     }
 }
 
@@ -151,12 +151,12 @@ fn format_bucket_header(opts: &BucketFormatOpts) -> String {
         .pop()
         .expect("at least DATE+REGION+BUCKET are always present");
 
-    if opts.aligned {
-        render_cols(&specs, &last.value)
-    } else {
+    if opts.tsv {
         let mut parts: Vec<&str> = specs.iter().map(|c| c.value.as_str()).collect();
         parts.push(&last.value);
         parts.join("\t")
+    } else {
+        render_cols(&specs, &last.value)
     }
 }
 
@@ -205,7 +205,7 @@ pub async fn list_buckets(config: &Config) -> Result<()> {
     // Options for text-mode header + per-entry formatting. Constructed
     // once because these flags are row-invariant.
     let bopts = BucketFormatOpts {
-        aligned: config.display_config.aligned,
+        tsv: config.display_config.tsv,
         one_line: config.display_config.one_line,
         show_bucket_arn,
         show_owner,
@@ -377,9 +377,9 @@ mod aligned_tests {
         }
     }
 
-    fn opts(aligned: bool, show_arn: bool, show_owner: bool) -> BucketFormatOpts {
+    fn opts(tsv: bool, show_arn: bool, show_owner: bool) -> BucketFormatOpts {
         BucketFormatOpts {
-            aligned,
+            tsv,
             one_line: false,
             show_bucket_arn: show_arn,
             show_owner,
@@ -390,7 +390,7 @@ mod aligned_tests {
     #[test]
     fn bucket_one_line_emits_only_name() {
         let opts = BucketFormatOpts {
-            aligned: false,
+            tsv: false,
             one_line: true,
             show_bucket_arn: true,
             show_owner: true,
@@ -401,10 +401,10 @@ mod aligned_tests {
     }
 
     #[test]
-    fn bucket_one_line_ignores_show_flags_even_when_aligned() {
-        // one_line takes precedence over aligned in the formatter.
+    fn bucket_one_line_ignores_show_flags_even_when_tsv() {
+        // one_line takes precedence over the column format in the formatter.
         let opts = BucketFormatOpts {
-            aligned: true,
+            tsv: true,
             one_line: true,
             show_bucket_arn: true,
             show_owner: true,
@@ -417,7 +417,7 @@ mod aligned_tests {
     #[test]
     fn bucket_one_line_header_is_bucket_label() {
         let opts = BucketFormatOpts {
-            aligned: false,
+            tsv: false,
             one_line: true,
             show_bucket_arn: true,
             show_owner: true,
@@ -427,15 +427,15 @@ mod aligned_tests {
     }
 
     #[test]
-    fn bucket_tsv_unchanged_when_not_aligned() {
-        let line = format_bucket_entry(&entry(), &opts(false, false, false));
+    fn bucket_tsv_when_tsv_true() {
+        let line = format_bucket_entry(&entry(), &opts(true, false, false));
         assert_eq!(line, "2024-01-01T00:00:00Z\tus-east-1\tmybucket");
     }
 
     #[test]
     fn bucket_aligned_default_bucket_is_last_unpadded() {
         use crate::display::aligned::{SEP, W_BUCKET_REGION, W_DATE};
-        let line = format_bucket_entry(&entry(), &opts(true, false, false));
+        let line = format_bucket_entry(&entry(), &opts(false, false, false));
         let date = "2024-01-01T00:00:00Z";
         let region = "us-east-1";
         let expected = format!(
@@ -449,7 +449,7 @@ mod aligned_tests {
     #[test]
     fn bucket_aligned_with_show_bucket_arn_puts_arn_last() {
         use crate::display::aligned::{SEP, W_BUCKET_NAME, W_BUCKET_REGION, W_DATE};
-        let line = format_bucket_entry(&entry(), &opts(true, true, false));
+        let line = format_bucket_entry(&entry(), &opts(false, true, false));
         let date = "2024-01-01T00:00:00Z";
         let region = "us-east-1";
         let bucket = "mybucket";
@@ -468,7 +468,7 @@ mod aligned_tests {
         use crate::display::aligned::{
             SEP, W_BUCKET_NAME, W_BUCKET_REGION, W_DATE, W_OWNER_DISPLAY_NAME,
         };
-        let line = format_bucket_entry(&entry(), &opts(true, false, true));
+        let line = format_bucket_entry(&entry(), &opts(false, false, true));
         let date = "2024-01-01T00:00:00Z";
         let region = "us-east-1";
         let bucket = "mybucket";
@@ -488,7 +488,7 @@ mod aligned_tests {
         use crate::display::aligned::{
             SEP, W_BUCKET_ARN, W_BUCKET_NAME, W_BUCKET_REGION, W_DATE, W_OWNER_DISPLAY_NAME,
         };
-        let line = format_bucket_entry(&entry(), &opts(true, true, true));
+        let line = format_bucket_entry(&entry(), &opts(false, true, true));
         let date = "2024-01-01T00:00:00Z";
         let region = "us-east-1";
         let bucket = "mybucket";
@@ -508,7 +508,7 @@ mod aligned_tests {
     #[test]
     fn bucket_aligned_header_default() {
         use crate::display::aligned::{SEP, W_BUCKET_REGION, W_DATE};
-        let h = format_bucket_header(&opts(true, false, false));
+        let h = format_bucket_header(&opts(false, false, false));
         let expected = format!(
             "DATE{}{SEP}REGION{}{SEP}BUCKET",
             " ".repeat(W_DATE - "DATE".len()),

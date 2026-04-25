@@ -1,3 +1,8 @@
+//! This crate is intended to be used as a binary crate (`s3ls`) and is not
+//! intended for use as a library in any way. The public items below exist
+//! only to support the binary and integration tests; no API stability is
+//! provided and external consumers should not depend on them.
+
 pub mod aggregate;
 pub mod bucket_lister;
 pub mod config;

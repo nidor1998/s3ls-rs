@@ -1,6 +1,7 @@
 # s3ls
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![GitHub](https://img.shields.io/github/downloads/nidor1998/s3ls-rs/total?label=downloads%20%28GitHub%29)](https://github.com/nidor1998/s3ls-rs/releases)
 [![codecov](https://codecov.io/gh/nidor1998/s3ls-rs/graph/badge.svg)](https://codecov.io/gh/nidor1998/s3ls-rs)
 
 ## Fast Amazon S3 object listing tool
@@ -25,6 +26,7 @@ This demo shows listing approximately 360,000 objects per second, listing 1,100,
     * [How it works](#how-it-works)
     * [Why it's fast](#why-its-fast)
     * [Why it's flexible](#why-its-flexible)
+    * [Scope](#scope)
 - [Features](#features)
     * [High performance](#high-performance)
     * [Powerful filtering](#powerful-filtering)
@@ -51,7 +53,7 @@ This demo shows listing approximately 360,000 objects per second, listing 1,100,
     * [Combined filters](#combined-filters)
     * [Sort results](#sort-results)
     * [Display options](#display-options)
-    * [Aligned output](#aligned-output)
+    * [TSV output](#tsv-output)
     * [One-per-line output](#one-per-line-output)
     * [JSON output](#json-output)
     * [Version listing](#version-listing)
@@ -77,7 +79,7 @@ This demo shows listing approximately 360,000 objects per second, listing 1,100,
     * [--max-parallel-listings](#--max-parallel-listings)
     * [--max-parallel-listing-max-depth](#--max-parallel-listing-max-depth)
     * [--no-sort](#--no-sort)
-    * [--aligned](#--aligned)
+    * [--tsv](#--tsv)
     * [--max-keys](#--max-keys)
     * [--filter-include-regex/--filter-exclude-regex](#--filter-include-regex--filter-exclude-regex)
     * [-v](#-v)
@@ -113,7 +115,7 @@ s3ls uses a three-stage streaming pipeline connected by bounded async channels:
 
 1. **Lister + Filter Chain** — Sends concurrent S3 API calls using parallel prefix discovery. Uses the S3 delimiter feature to discover "virtual directories" (common prefixes) at the top levels of the hierarchy, then lists each prefix independently and concurrently, with up to 64 parallel operations by default. A semaphore prevents overwhelming S3 while maximizing throughput. Filters (regex, time range, size range, storage class) are applied inline as entries arrive — objects that don't match are discarded immediately without being forwarded to the aggregator.
 2. **Aggregator** — In default mode, buffers all entries and sorts them. In streaming mode (`--no-sort`), passes each entry through immediately with no buffering. Computes statistics when summary output is requested.
-3. **DisplayWriter** — Receives sorted (or streamed) entries and formats them as tab-delimited text or NDJSON, writing the result to stdout.
+3. **DisplayWriter** — Receives sorted (or streamed) entries and formats them as whitespace-aligned text (default), TSV (`--tsv`), one-per-line keys (`-1`), or NDJSON (`--json`), writing the result to stdout.
 
 ### Why it's fast
 
@@ -123,7 +125,11 @@ Rust contributes low per-object overhead (no garbage collector pauses, small str
 
 ### Why it's flexible
 
-The pipeline stages are decoupled through channels and trait abstractions. Filters are composed as a chain within the lister. Sorting and display are separated — the aggregator handles ordering while the display writer handles both tab-delimited text and JSON formatting. Adding a new filter, sort field, or output column does not require changes to the pipeline coordination — each concern is isolated.
+The pipeline stages are decoupled through channels and trait abstractions. Filters are composed as a chain within the lister. Sorting and display are separated — the aggregator handles ordering while the display writer handles aligned-text, TSV, one-per-line, and NDJSON formatting through a common `EntryFormatter` trait. Adding a new filter, sort field, or output column does not require changes to the pipeline coordination — each concern is isolated.
+
+### Scope
+
+s3ls is a listing-only tool. It is **not** intended to be a drop-in replacement for, or behaviorally compatible with, any other S3 client — examples include the AWS CLI (`aws s3 ls`) and `s5cmd`, but the same applies to any S3 listing or transfer tool. Its command-line flags, output columns, sort/filter semantics, and exit codes are designed around fast parallel listing and stable machine-readable output — not interoperability with another tool's interface. Output formats and flag names will not be adjusted to match any external tool, and scripts written against another S3 client should not be expected to work with s3ls unmodified. If you need full S3 functionality (copy, sync, presign, multipart upload, etc.) or compatibility with a specific tool's flag set, use that tool.
 
 ## Features
 
@@ -143,8 +149,8 @@ Parallel listing relies on the S3 delimiter feature to discover common prefixes 
 Multiple filter types can be combined with AND logic:
 
 - **Regex include/exclude** — Filter object keys using regular expressions (`--filter-include-regex`, `--filter-exclude-regex`)
-- **Modified time range** — Filter by modification time (`--filter-mtime-before`, `--filter-mtime-after`) using RFC 3339 format
-- **Size range** — Filter by object size (`--filter-smaller-size`, `--filter-larger-size`) with human-readable suffixes (KB, KiB, MB, MiB, GB, GiB, TB, TiB)
+- **Modified time range** — Filter by modification time using RFC 3339 format. `--filter-mtime-before` matches strictly before the given time; `--filter-mtime-after` matches at or after the given time
+- **Size range** — Filter by object size with human-readable suffixes (KB, KiB, MB, MiB, GB, GiB, TB, TiB). `--filter-smaller-size` matches objects strictly smaller than the threshold; `--filter-larger-size` matches objects greater than or equal to the threshold
 - **Storage class** — Filter by storage class (`--storage-class STANDARD,GLACIER,DEEP_ARCHIVE`)
 
 ### S3 versioning
@@ -162,12 +168,11 @@ s3ls supports S3 Express One Zone directory buckets:
 - `--list-express-one-zone-buckets` — List only Express One Zone directory buckets
 - `--allow-parallel-listings-in-express-one-zone` — Enable parallel listing in Express One Zone buckets
 
-Parallel listing is disabled by default for Express One Zone directory buckets due to two ListObjectsV2 API limitations specific to directory buckets:
+Parallel listing is disabled by default for Express One Zone directory buckets due to a `ListObjectsV2` behavior specific to directory buckets:
 
-1. **Prefix restriction** — Directory buckets only support prefixes that end in a delimiter (`/`). The prefix discovery that drives parallel listing splits the key space using single-character prefixes (e.g., `a`, `b`, `c`), which are not delimiter-terminated and therefore not supported.
-2. **CommonPrefixes pollution** — When querying with a delimiter during in-progress multipart uploads, the `CommonPrefixes` response includes prefixes associated with those uploads. This can produce spurious prefixes that don't correspond to actual object key hierarchies, making prefix-based parallelization unreliable.
+**CommonPrefixes pollution** — When querying with a delimiter during in-progress multipart uploads, the `CommonPrefixes` response includes prefixes associated with those uploads. This can produce spurious prefixes that don't correspond to actual object key hierarchies, making prefix-based parallelization unreliable.
 
-s3ls detects Express One Zone buckets by their `--x-s3` name suffix and falls back to sequential listing as a conservative default.
+s3ls detects Express One Zone buckets by their `--x-s3` name suffix and falls back to sequential listing as a conservative default. Pass `--allow-parallel-listings-in-express-one-zone` to opt in.
 
 To enable parallel listing on Express One Zone buckets:
 
@@ -186,13 +191,15 @@ s3ls --recursive --allow-parallel-listings-in-express-one-zone s3://my-bucket--u
 
 s3ls is designed from the ground up so that every byte of output is useful to a human reading a terminal and to a program parsing a pipe — in both of its output formats.
 
-**Tab-separated text** (default) — Each line is a single record. Fields are separated by tab characters, so `cut`, `awk`, `sort`, and other Unix tools can process the output directly without custom delimiters or quoting rules. At the same time, tabs align columns naturally in a terminal, making the output scannable at a glance. Control characters in S3 keys (`\x00`-`\x1f`, `\x7f`) are escaped as `\xNN` hex by default, so a maliciously-named object cannot inject newlines or ANSI sequences into terminal output or break downstream line-oriented parsing. Use `--raw-output` to disable escaping when trusting bucket contents. Add `--header` for a labeled header row that makes wide output self-documenting without interfering with `tail -n +2` workflows.
+**Whitespace-aligned text** (default) — Each line is a single record. Each non-KEY column is padded to a fixed width and rows are separated by two spaces, so columns line up visually in a terminal and the output is easy for a human to scan. Control characters in S3 keys (`\x00`-`\x1f`, `\x7f`) are escaped as `\xNN` hex by default, so a maliciously-named object cannot inject newlines or ANSI sequences into terminal output or break downstream line-oriented parsing. Use `--raw-output` to disable escaping when trusting bucket contents. Add `--header` for a labeled header row that makes wide output self-documenting without interfering with `tail -n +2` workflows.
 
-For interactive terminal use, add `--aligned` to pad each column to a
-fixed width with spaces. This is a pure layout option and is
-independent of `--human-readable` (which formats individual values).
+For pipelines and Unix tooling, add `--tsv` to emit tab-separated
+output instead. `cut`, `awk`, `sort`, and friends can then process
+the output directly without custom delimiters or quoting rules. The
+choice of layout is independent of `--human-readable` (which formats
+individual values).
 
-**NDJSON** (`--json`) — One JSON object per line. Field names use PascalCase (`Key`, `Size`, `LastModified`, `ETag`, `StorageClass`) matching the S3 API response structure exactly. This means `jq`, Python scripts, and any tooling that already parses S3 API responses can consume s3ls output with zero translation. Every available metadata field is included in every JSON record regardless of `--show-*` flags, so downstream consumers always get the full picture. Each line is independently parseable, making the output compatible with streaming processors, log aggregation systems, and `jq` filters alike. Humans can read individual records, and machines can process millions of them without loading the entire output into memory.
+**NDJSON** (`--json`) — One JSON object per line. Field names use PascalCase (`Key`, `Size`, `LastModified`, `ETag`, `StorageClass`) matching the S3 API response structure exactly. This means `jq`, Python scripts, and any tooling that already parses S3 API responses can consume s3ls output with zero translation. Every field returned by S3 for a given object is included in its JSON record. A few fields require an explicit opt-in because they cost an extra request parameter or rely on data S3 omits by default — `--show-owner` enables `Owner` for `ListObjectsV2` (it is always present for `ListObjectVersions`), and `--show-restore-status` enables `RestoreStatus`; for bucket listing, `--show-bucket-arn` and `--show-owner` gate the corresponding fields. Beyond those, the `--show-*` flags affect only column selection in text output. Each line is independently parseable, making the output compatible with streaming processors, log aggregation systems, and `jq` filters alike. Humans can read individual records, and machines can process millions of them without loading the entire output into memory.
 
 Both formats share the same design principle: one record per line, stable field order, no surprises.
 
@@ -226,8 +233,8 @@ If you still need sorted output for very large buckets, you can stream to a file
 
 ```bash
 # Stream to a file, then sort by the 3rd column (key) using the OS sort command
-s3ls --recursive --no-sort s3://huge-bucket/ > listing.tsv
-sort -t'\t' -k3 listing.tsv > listing_sorted.tsv
+s3ls --recursive --no-sort --tsv s3://huge-bucket/ > listing.tsv
+sort -t$'\t' -k3 listing.tsv > listing_sorted.tsv
 ```
 
 The OS `sort` command automatically spills to disk when the data exceeds available memory, so this approach works for any bucket size.
@@ -372,20 +379,20 @@ s3ls --recursive --filter-exclude-regex '^tmp/' s3://my-bucket/
 ### Filter by size
 
 ```bash
-# Files larger than 100MB
+# Files at least 100 MiB (≥)
 s3ls --recursive --filter-larger-size 100MiB s3://my-bucket/
 
-# Files smaller than 1KB
+# Files strictly smaller than 1 KiB (<)
 s3ls --recursive --filter-smaller-size 1KiB s3://my-bucket/
 ```
 
 ### Filter by modified time
 
 ```bash
-# Files modified after a date
+# Files modified at or after a date (≥)
 s3ls --recursive --filter-mtime-after 2025-01-01T00:00:00Z s3://my-bucket/
 
-# Files modified before a date
+# Files modified strictly before a date (<)
 s3ls --recursive --filter-mtime-before 2024-06-01T00:00:00Z s3://my-bucket/
 ```
 
@@ -440,34 +447,35 @@ s3ls --recursive --header --show-storage-class s3://my-bucket/
 s3ls --recursive --show-relative-path s3://my-bucket/data/
 ```
 
-### Aligned output
+### TSV output
 
 ```
-# Default TSV — machine-friendly, tabs between columns
+# Default — columns padded with spaces so the output scans well in a terminal
 $ s3ls --recursive s3://my-bucket/data/
-2024-01-15T10:30:00Z	1234	data/readme.txt
-2024-06-01T08:00:00Z	5678	data/2024/report.csv
-
-# Aligned — columns padded with spaces so the output scans well in a terminal
-$ s3ls --recursive --aligned s3://my-bucket/data/
 2024-01-15T10:30:00Z                 1234  data/readme.txt
 2024-06-01T08:00:00Z                 5678  data/2024/report.csv
 
-# Combined with --human-readable
-$ s3ls --recursive --aligned --human-readable s3://my-bucket/data/
+# TSV — machine-friendly, tab character between columns
+$ s3ls --recursive --tsv s3://my-bucket/data/
+2024-01-15T10:30:00Z	1234	data/readme.txt
+2024-06-01T08:00:00Z	5678	data/2024/report.csv
+
+# Default aligned, combined with --human-readable
+$ s3ls --recursive --human-readable s3://my-bucket/data/
 2024-01-15T10:30:00Z          1.2KiB  data/readme.txt
 2024-06-01T08:00:00Z          5.5KiB  data/2024/report.csv
 ```
 
-`--aligned` pads each non-KEY column to a fixed width so rows line up
-on screen. It is independent of `--human-readable`:
+The default aligned layout pads each non-KEY column to a fixed width
+so rows line up on screen. It is independent of `--human-readable`:
 
 - `--human-readable` makes individual **values** human-friendly
   (e.g., `1.2KiB` rather than raw bytes).
-- `--aligned` makes the **layout** human-friendly (columns line up).
+- The default aligned layout makes the **layout** human-friendly
+  (columns line up).
 
-The default tab-separated output is preserved for `cut`, `awk`, and
-other Unix tools. `--aligned` composes with `--no-sort`, `--header`,
+For `cut`, `awk`, and other Unix tools that prefer tab-separated
+input, opt into `--tsv`. `--tsv` composes with `--no-sort`, `--header`,
 `--summarize`, and every `--show-*` flag. It conflicts with `--json`
 (NDJSON is not columnar).
 
@@ -543,7 +551,7 @@ s3ls --recursive --all-versions s3://my-bucket/
 s3ls --recursive --all-versions --show-is-latest s3://my-bucket/
 
 # Hide delete markers
-s3ls --recursive --all-versions --hide-delete-marker s3://my-bucket/
+s3ls --recursive --all-versions --hide-delete-markers s3://my-bucket/
 ```
 
 ### Depth-limited recursive listing
@@ -602,10 +610,10 @@ loading AWS credentials. Requests are sent unsigned (no SigV4), so no
 access key, profile, or IMDS lookup is required.
 
 ```bash
-# List a public bucket (e.g. Common Crawl) anonymously
+# List a public bucket anonymously (replace with an actual public bucket)
 s3ls --recursive --target-no-sign-request \
      --target-region us-east-1 \
-     s3://commoncrawl/crawl-data/
+     s3://example-public-bucket/
 
 # Works with S3-compatible endpoints too
 s3ls --recursive --target-no-sign-request \
@@ -749,11 +757,11 @@ s3ls supports multi-column sorting with up to 2 fields. Available sort fields di
 - **Object listing:** `key`, `size`, `date`
 - **Bucket listing:** `bucket`, `region`, `date`
 
-Default sort is `key` for objects and `bucket` for buckets. When using `--all-versions`, `date` is automatically appended as a secondary sort field if not already specified.
+Default sort is `key` for objects and `bucket` for buckets. When using `--all-versions`, if exactly one sort field is specified and it is not `date`, `date` is automatically appended as a secondary sort so versions of the same key appear in chronological order. If two sort fields are already specified, no automatic append happens.
 
 Sorting requires buffering all results in memory before output. For very large result sets, use `--no-sort` to stream results directly.
 
-When the result set exceeds `--parallel-sort-threshold` (default: 1,000,000), s3ls uses parallel sorting via the rayon library.
+When the result set reaches `--parallel-sort-threshold` (default: 1,000,000), s3ls uses parallel sorting via the rayon library.
 
 ### Streaming mode
 
@@ -766,8 +774,8 @@ When the result set exceeds `--parallel-sort-threshold` (default: 1,000,000), s3
 If sorted output is needed for a bucket too large to sort in memory, stream to a file and sort externally:
 
 ```bash
-s3ls --recursive --no-sort s3://huge-bucket/ > listing.tsv
-sort -t'\t' -k3 listing.tsv > listing_sorted.tsv
+s3ls --recursive --no-sort --tsv s3://huge-bucket/ > listing.tsv
+sort -t$'\t' -k3 listing.tsv > listing_sorted.tsv
 ```
 
 The OS `sort` command automatically spills to disk when the data exceeds available memory.
@@ -789,7 +797,7 @@ The `--json` flag outputs one JSON object per line (NDJSON format). Field names 
 - `RestoreStatus` (nested object with `IsRestoreInProgress` and `RestoreExpiryDate`)
 - `VersionId`, `IsLatest` (when using `--all-versions`)
 
-All available fields are included in JSON output regardless of `--show-*` flags. The `--show-*` flags only affect tab-delimited text output.
+JSON output includes every field S3 returns for a given object. Two flags also gate the underlying request and therefore JSON inclusion: `--show-owner` enables `fetch_owner=true` on `ListObjectsV2` (so `Owner` is omitted from object listings without it; `ListObjectVersions` always returns `Owner`), and `--show-restore-status` enables the `RestoreStatus` optional object attribute. For bucket listing, `--show-bucket-arn` and `--show-owner` likewise gate `BucketArn` and `Owner` in the JSON output. All other `--show-*` flags affect only column selection in text output.
 
 ### Control character escaping detail
 
@@ -829,7 +837,7 @@ s3ls requires the following IAM permissions:
 
 | Exit Code | Meaning |
 |-----------|---------|
-| 0 | Success |
+| 0 | Success (also returned when no objects match the given prefix) |
 | 1 | General error |
 | 2 | Invalid command line arguments |
 
@@ -863,47 +871,51 @@ Disables sorting and streams results directly to stdout. Reduces memory usage to
 s3ls --recursive --no-sort s3://huge-bucket/
 ```
 
-### --aligned
+### --tsv
 
-Pads each non-KEY column to a fixed width with spaces and uses a
-two-space column separator, producing output that lines up visually
-in a terminal. The default TSV output uses tab characters, which
-align to tab stops rather than column content, so rows with varying
-field lengths don't line up on screen.
+Switches the output from the default whitespace-aligned columns to
+tab-separated text (TSV). TSV is machine-friendly: `cut`, `awk`,
+`sort`, and other Unix tools can process it directly without custom
+delimiters or quoting rules. Columns won't line up visually in a
+terminal because tabs align to tab stops, not to content.
 
-`--aligned` is independent of `--human-readable`:
+`--tsv` is independent of `--human-readable`:
 
 - `--human-readable` changes individual **values** (`1.2KiB` instead
   of `1234`).
-- `--aligned` changes the **layout** (columns line up on screen).
+- `--tsv` changes the **layout** (tabs between columns instead of
+  fixed-width spaces).
 
 The two can be combined.
 
 ```bash
-s3ls --recursive --aligned s3://my-bucket/data/
-s3ls --recursive --aligned --human-readable --summarize s3://my-bucket/
+s3ls --recursive --tsv s3://my-bucket/data/
+s3ls --recursive --tsv --human-readable --summarize s3://my-bucket/
 ```
 
-**Zero buffering.** Every non-KEY column has a bounded maximum width
-derived from the S3 API contract (e.g., a single object is at most
-50 TiB = 14 digits, an ETag is at most 38 chars), and the KEY column
-is always emitted last with no trailing padding. So `--aligned`
-streams rows one-by-one just like the default TSV mode — it composes
-cleanly with `--no-sort` (constant memory for huge buckets).
+**Zero buffering.** Both layouts stream rows one-by-one — neither
+requires buffering the full result set. The default aligned layout
+relies on bounded maximum widths derived from the S3 API contract
+(e.g., a single object is at most 50 TiB = 14 digits, an ETag is at
+most 38 chars), with the KEY column emitted last unpadded — so
+aligned output composes cleanly with `--no-sort` (constant memory
+for huge buckets) just like `--tsv`.
 
-**Conflicts.** Only `--json` (NDJSON output is not columnar).
+**Conflicts.** `--tsv` cannot be combined with `--json` (NDJSON
+output is not columnar).
 
-**Overflow.** If a value exceeds its column width (e.g., an unusually
-long VersionId, or an OwnerDisplayName with CJK characters that
-render wider than the character count suggests), the value is
-emitted as-is without truncation. Subsequent columns on that row
-shift right, but no data is hidden. This mirrors `ls -l` behavior
+**Overflow (aligned mode only).** If a value exceeds its column width
+(e.g., an unusually long VersionId, or an OwnerDisplayName with CJK
+characters that render wider than the character count suggests), the
+value is emitted as-is without truncation. Subsequent columns on that
+row shift right, but no data is hidden. This mirrors `ls -l` behavior
 for long filenames.
 
-**`--raw-output` interaction.** Allowed. With `--raw-output`, control
-characters in keys or owner names are not re-escaped, so column
-widths may be disrupted on rows containing such bytes. This is a
-deliberate tradeoff implied by `--raw-output` itself.
+**`--raw-output` interaction.** Allowed in both layouts. With
+`--raw-output`, control characters in keys or owner names are not
+re-escaped, so in aligned mode column widths may be disrupted on rows
+containing such bytes. This is a deliberate tradeoff implied by
+`--raw-output` itself.
 
 ### --max-keys
 
@@ -1035,7 +1047,7 @@ Display:
       --json                     Output as NDJSON (one JSON object per line) [env: JSON=]
       --show-objects-only        Show only objects, hiding common prefixes (directory markers) from output [env: SHOW_OBJECTS_ONLY=]
       --raw-output               Emit raw S3 key/prefix bytes without escaping control characters [env: RAW_OUTPUT=]
-      --aligned                  Display output with columns aligned using whitespace padding [env: ALIGNED=]
+      --tsv                      Emit tab-separated text instead of the default whitespace-aligned columns [env: TSV=]
   -1, --one                      Display only the key (or bucket name), one per line, with no other columns. All `--show-*` options are ignored. For object listings, common prefixes are emitted unless `--show-objects-only` is set [env: ONE_LINE=]
 
 Tracing/Logging:
@@ -1159,31 +1171,6 @@ s3ls --auto-complete-shell fish > ~/.config/fish/completions/s3ls.fish
 
 Support for S3-compatible storage is on a best-effort basis and may behave differently.
 s3ls has been tested with Amazon S3. s3ls has unit tests, property-based tests (proptest), and end-to-end integration tests.
-
-### Running unit and property tests
-
-```bash
-cargo test
-```
-
-### Running E2E tests
-
-E2E tests require live AWS credentials and are gated behind `#[cfg(e2e_test)]`.
-
-```bash
-# Run all E2E tests
-RUSTFLAGS="--cfg e2e_test" cargo test --test 'e2e_*'
-
-# Run a specific test file
-RUSTFLAGS="--cfg e2e_test" cargo test --test e2e_listing
-
-# Run a specific test function
-RUSTFLAGS="--cfg e2e_test" cargo test --test e2e_listing -- e2e_basic_recursive_listing
-```
-
-Available test files: `e2e_listing`, `e2e_filters`, `e2e_filters_versioned`, `e2e_sort`, `e2e_display`, `e2e_bucket_listing`.
-
-Express One Zone tests require the `S3LS_E2E_AZ_ID` environment variable (defaults to `apne1-az4` if unset).
 
 S3-compatible storage is not tested when a new version is released. Since there is no official certification for S3-compatible storage, comprehensive testing is not possible.
 

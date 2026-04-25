@@ -452,7 +452,7 @@ async fn e2e_bucket_listing_express_one_zone_with_prefix() {
     _guard_other.cleanup().await;
 }
 
-/// `--aligned --header --show-bucket-arn --show-owner` combined.
+/// `--header --show-bucket-arn --show-owner` combined (default aligned format).
 ///
 /// Verifies that every column in the aligned bucket listing lands at the
 /// byte offset computed from the width constants in
@@ -474,8 +474,7 @@ async fn e2e_aligned_bucket_listing_all_columns() {
         helper.create_bucket(&bucket).await;
 
         // Scope to just our test bucket via --bucket-name-prefix.
-        let output = TestHelper::run_s3ls(&[
-            "--aligned",
+        let output = TestHelper::run_s3ls_no_default_format(&[
             "--header",
             "--show-bucket-arn",
             "--show-owner",
@@ -663,8 +662,8 @@ async fn e2e_one_line_bucket_listing() {
     _guard.cleanup().await;
 }
 
-/// `--aligned --list-express-one-zone-buckets`: verifies that aligned
-/// mode works correctly for directory bucket listings.
+/// `--list-express-one-zone-buckets` (default aligned format): verifies
+/// that aligned mode works correctly for directory bucket listings.
 ///
 /// Verifies:
 /// - Exit 0.
@@ -714,8 +713,7 @@ async fn e2e_aligned_bucket_listing_express_one_zone() {
 
         // Use the short_id prefix so only this test's bucket is included.
         let prefix = format!("s3ls-e2e-al-{short_id}");
-        let output = TestHelper::run_s3ls(&[
-            "--aligned",
+        let output = TestHelper::run_s3ls_no_default_format(&[
             "--list-express-one-zone-buckets",
             "--bucket-name-prefix",
             prefix.as_str(),

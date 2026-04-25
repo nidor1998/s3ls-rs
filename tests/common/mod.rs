@@ -692,14 +692,41 @@ impl TestHelper {
     /// inherited `AWS_PROFILE` env var on the calling shell, which is the
     /// safer default for E2E tests.
     ///
+    /// Auto-appends `--tsv` unless the args already select an output format
+    /// (`--tsv`, `--json`, `-1`, or `--one`). The default s3ls output format
+    /// is whitespace-aligned columns, but the bulk of E2E assertions were
+    /// written when TSV was the default; this helper preserves that
+    /// expectation. Tests that intentionally exercise the aligned default
+    /// must use [`run_s3ls_no_default_format`].
+    ///
     /// Synchronous by design: the framework does no other work while waiting
     /// for a single subprocess, and a blocking spawn is simpler than
     /// `tokio::process::Command`.
     pub fn run_s3ls(args: &[&str]) -> S3lsOutput {
+        let has_format = args
+            .iter()
+            .any(|a| *a == "--tsv" || *a == "--json" || *a == "-1" || *a == "--one");
+
+        let mut full_args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        if !has_format {
+            full_args.push("--tsv".to_string());
+        }
+        Self::run_s3ls_raw(&full_args)
+    }
+
+    /// Run the s3ls binary with the given args, without injecting any output
+    /// format flag. Use this when the test must observe the binary's
+    /// default output format (whitespace-aligned columns).
+    pub fn run_s3ls_no_default_format(args: &[&str]) -> S3lsOutput {
+        let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        Self::run_s3ls_raw(&owned)
+    }
+
+    fn run_s3ls_raw(args: &[String]) -> S3lsOutput {
         let has_profile = args.iter().any(|a| a.starts_with("--target-profile"));
         let has_access_key = args.iter().any(|a| a.starts_with("--target-access-key"));
 
-        let mut full_args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        let mut full_args: Vec<String> = args.to_vec();
         if !has_profile && !has_access_key {
             full_args.push("--target-profile".to_string());
             full_args.push(AWS_PROFILE.to_string());

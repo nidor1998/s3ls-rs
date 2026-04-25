@@ -362,30 +362,34 @@ pub struct CLIArgs {
     )]
     pub raw_output: bool,
 
-    /// Display output with columns aligned using whitespace padding.
+    /// Emit tab-separated text (TSV) instead of the default
+    /// whitespace-aligned columns.
     ///
-    /// By default, s3ls emits tab-separated text (TSV). TSV is
-    /// machine-friendly but columns don't line up visually in a
-    /// terminal because tabs align to tab stops, not to content.
-    /// `--aligned` pads each non-KEY column to a fixed width and
-    /// uses two spaces as the column separator, producing output
-    /// that's easy for a human to scan.
+    /// By default, s3ls pads each non-KEY column to a fixed width and
+    /// uses two spaces as the column separator, producing output that
+    /// lines up on screen and is easy for a human to scan.
+    ///
+    /// `--tsv` switches to tab-separated output, which is
+    /// machine-friendly: `cut`, `awk`, `sort`, and other Unix tools
+    /// can process it directly without custom delimiters or quoting
+    /// rules. Columns won't line up visually in a terminal because
+    /// tabs align to tab stops, not to content.
     ///
     /// Independent of `--human-readable`:
     ///   - `--human-readable` makes individual values human-friendly
     ///     (e.g., `1.2KiB` rather than raw bytes).
-    ///   - `--aligned` makes the layout human-friendly (columns line
-    ///     up on screen).
+    ///   - `--tsv` changes the layout (tab-separated columns instead
+    ///     of fixed-width columns).
     ///
-    /// The two can be combined.
+    /// `--tsv` cannot be combined with `--json`.
     #[arg(
         long,
         env,
         default_value_t = false,
-        conflicts_with_all = ["json", "one_line"],
+        conflicts_with = "json",
         help_heading = "Display"
     )]
-    pub aligned: bool,
+    pub tsv: bool,
 
     /// Display only the key (or bucket name), one per line, with no
     /// other columns. All `--show-*` options are ignored. For object
@@ -396,7 +400,7 @@ pub struct CLIArgs {
         long = "one",
         env,
         default_value_t = false,
-        conflicts_with_all = ["json", "aligned"],
+        conflicts_with = "json",
         help_heading = "Display"
     )]
     pub one_line: bool,
@@ -861,7 +865,7 @@ impl TryFrom<CLIArgs> for crate::config::Config {
                 header: args.header,
                 json: args.json,
                 raw_output: args.raw_output,
-                aligned: args.aligned,
+                tsv: args.tsv,
                 one_line: args.one_line,
             },
             max_parallel_listings: args.max_parallel_listings,

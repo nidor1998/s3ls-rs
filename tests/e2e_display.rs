@@ -1992,8 +1992,9 @@ async fn e2e_display_bucket_listing_text_raw_output() {
     _guard.cleanup().await;
 }
 
-/// `--aligned` produces fixed-width space-separated columns so that KEY
-/// starts at the same character position on every object row.
+/// The default (aligned) format produces fixed-width space-separated
+/// columns so that KEY starts at the same character position on every
+/// object row.
 ///
 /// The default column layout (DATE, SIZE, KEY) gives a prefix of
 /// `W_DATE + SEP + W_SIZE + SEP` = 25 + 2 + 20 + 2 = 49 characters
@@ -2019,7 +2020,7 @@ async fn e2e_aligned_object_listing() {
 
         let target = format!("s3://{bucket}/");
 
-        let output = TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--aligned"]);
+        let output = TestHelper::run_s3ls_no_default_format(&[target.as_str(), "--recursive"]);
         assert!(output.status.success(), "s3ls failed: {}", output.stderr);
 
         // Collect non-empty, non-summary data rows.
@@ -2104,9 +2105,9 @@ async fn e2e_aligned_object_listing() {
     _guard.cleanup().await;
 }
 
-/// `--recursive --aligned --no-sort` exits successfully, emits at least
-/// one row, and every row still follows the fixed-width aligned layout
-/// (alignment must not depend on pre-sorting or buffering).
+/// `--recursive --no-sort` (default aligned format) exits successfully,
+/// emits at least one row, and every row still follows the fixed-width
+/// aligned layout (alignment must not depend on pre-sorting or buffering).
 #[tokio::test]
 async fn e2e_aligned_with_no_sort() {
     let helper = TestHelper::new().await;
@@ -2124,7 +2125,7 @@ async fn e2e_aligned_with_no_sort() {
         let target = format!("s3://{bucket}/");
 
         let output =
-            TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--aligned", "--no-sort"]);
+            TestHelper::run_s3ls_no_default_format(&[target.as_str(), "--recursive", "--no-sort"]);
         assert!(
             output.status.success(),
             "aligned --no-sort: s3ls failed: {}",
@@ -2179,10 +2180,10 @@ async fn e2e_aligned_with_no_sort() {
     _guard.cleanup().await;
 }
 
-/// `--recursive --aligned --human-readable --summarize` exits
-/// successfully, data rows follow the human-readable aligned layout
-/// (W_SIZE_HUMAN=9 instead of W_SIZE=20), and the summary line uses
-/// spaces (not tabs) as separators.
+/// `--recursive --human-readable --summarize` (default aligned format)
+/// exits successfully, data rows follow the human-readable aligned
+/// layout (W_SIZE_HUMAN=9 instead of W_SIZE=20), and the summary line
+/// uses spaces (not tabs) as separators.
 #[tokio::test]
 async fn e2e_aligned_with_human_and_summary() {
     let helper = TestHelper::new().await;
@@ -2198,10 +2199,9 @@ async fn e2e_aligned_with_human_and_summary() {
 
         let target = format!("s3://{bucket}/");
 
-        let output = TestHelper::run_s3ls(&[
+        let output = TestHelper::run_s3ls_no_default_format(&[
             target.as_str(),
             "--recursive",
-            "--aligned",
             "--human-readable",
             "--summarize",
         ]);
@@ -2279,7 +2279,7 @@ async fn e2e_aligned_with_human_and_summary() {
     _guard.cleanup().await;
 }
 
-/// `--all-versions --aligned --header` with every `--show-*` flag enabled.
+/// `--all-versions --header` (default aligned format) with every `--show-*` flag enabled.
 ///
 /// Verifies that when all 12 non-KEY columns are present the byte offsets
 /// computed from the width constants in `s3ls_rs::display::aligned` match
@@ -2304,10 +2304,9 @@ async fn e2e_aligned_all_columns() {
 
         let target = format!("s3://{bucket}/");
 
-        let output = TestHelper::run_s3ls(&[
+        let output = TestHelper::run_s3ls_no_default_format(&[
             target.as_str(),
             "--all-versions",
-            "--aligned",
             "--header",
             "--show-storage-class",
             "--show-etag",
