@@ -229,8 +229,8 @@ If you still need sorted output for very large buckets, you can stream to a file
 
 ```bash
 # Stream to a file, then sort by the 3rd column (key) using the OS sort command
-s3ls --recursive --no-sort s3://huge-bucket/ > listing.tsv
-sort -t'\t' -k3 listing.tsv > listing_sorted.tsv
+s3ls --recursive --no-sort --tsv s3://huge-bucket/ > listing.tsv
+sort -t$'\t' -k3 listing.tsv > listing_sorted.tsv
 ```
 
 The OS `sort` command automatically spills to disk when the data exceeds available memory, so this approach works for any bucket size.
@@ -547,7 +547,7 @@ s3ls --recursive --all-versions s3://my-bucket/
 s3ls --recursive --all-versions --show-is-latest s3://my-bucket/
 
 # Hide delete markers
-s3ls --recursive --all-versions --hide-delete-marker s3://my-bucket/
+s3ls --recursive --all-versions --hide-delete-markers s3://my-bucket/
 ```
 
 ### Depth-limited recursive listing
@@ -606,10 +606,10 @@ loading AWS credentials. Requests are sent unsigned (no SigV4), so no
 access key, profile, or IMDS lookup is required.
 
 ```bash
-# List a public bucket (e.g. Common Crawl) anonymously
+# List a public bucket anonymously (replace with an actual public bucket)
 s3ls --recursive --target-no-sign-request \
      --target-region us-east-1 \
-     s3://commoncrawl/crawl-data/
+     s3://example-public-bucket/
 
 # Works with S3-compatible endpoints too
 s3ls --recursive --target-no-sign-request \
@@ -770,8 +770,8 @@ When the result set exceeds `--parallel-sort-threshold` (default: 1,000,000), s3
 If sorted output is needed for a bucket too large to sort in memory, stream to a file and sort externally:
 
 ```bash
-s3ls --recursive --no-sort s3://huge-bucket/ > listing.tsv
-sort -t'\t' -k3 listing.tsv > listing_sorted.tsv
+s3ls --recursive --no-sort --tsv s3://huge-bucket/ > listing.tsv
+sort -t$'\t' -k3 listing.tsv > listing_sorted.tsv
 ```
 
 The OS `sort` command automatically spills to disk when the data exceeds available memory.
@@ -833,7 +833,7 @@ s3ls requires the following IAM permissions:
 
 | Exit Code | Meaning |
 |-----------|---------|
-| 0 | Success |
+| 0 | Success (also returned when no objects match the given prefix) |
 | 1 | General error |
 | 2 | Invalid command line arguments |
 
@@ -1167,31 +1167,6 @@ s3ls --auto-complete-shell fish > ~/.config/fish/completions/s3ls.fish
 
 Support for S3-compatible storage is on a best-effort basis and may behave differently.
 s3ls has been tested with Amazon S3. s3ls has unit tests, property-based tests (proptest), and end-to-end integration tests.
-
-### Running unit and property tests
-
-```bash
-cargo test
-```
-
-### Running E2E tests
-
-E2E tests require live AWS credentials and are gated behind `#[cfg(e2e_test)]`.
-
-```bash
-# Run all E2E tests
-RUSTFLAGS="--cfg e2e_test" cargo test --test 'e2e_*'
-
-# Run a specific test file
-RUSTFLAGS="--cfg e2e_test" cargo test --test e2e_listing
-
-# Run a specific test function
-RUSTFLAGS="--cfg e2e_test" cargo test --test e2e_listing -- e2e_basic_recursive_listing
-```
-
-Available test files: `e2e_listing`, `e2e_filters`, `e2e_filters_versioned`, `e2e_sort`, `e2e_display`, `e2e_bucket_listing`.
-
-Express One Zone tests require the `S3LS_E2E_AZ_ID` environment variable (defaults to `apne1-az4` if unset).
 
 S3-compatible storage is not tested when a new version is released. Since there is no official certification for S3-compatible storage, comprehensive testing is not possible.
 
