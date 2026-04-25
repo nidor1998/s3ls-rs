@@ -1,6 +1,7 @@
 # s3ls
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![GitHub](https://img.shields.io/github/downloads/nidor1998/s3ls-rs/total?label=downloads%20%28GitHub%29)](https://github.com/nidor1998/s3ls-rs/releases)
 [![codecov](https://codecov.io/gh/nidor1998/s3ls-rs/graph/badge.svg)](https://codecov.io/gh/nidor1998/s3ls-rs)
 
 ## Fast Amazon S3 object listing tool
