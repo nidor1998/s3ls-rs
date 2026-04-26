@@ -27,6 +27,7 @@ This demo shows listing approximately 360,000 objects per second, listing 1,100,
     * [Why it's fast](#why-its-fast)
     * [Why it's flexible](#why-its-flexible)
     * [Scope](#scope)
+    * [Non-Goals](#non-goals)
 - [Features](#features)
     * [High performance](#high-performance)
     * [Powerful filtering](#powerful-filtering)
@@ -129,7 +130,20 @@ The pipeline stages are decoupled through channels and trait abstractions. Filte
 
 ### Scope
 
-s3ls is a listing-only tool. It is **not** intended to be a drop-in replacement for, or behaviorally compatible with, any other S3 client — examples include the AWS CLI (`aws s3 ls`) and `s5cmd`, but the same applies to any S3 listing or transfer tool. Its command-line flags, output columns, sort/filter semantics, and exit codes are designed around fast parallel listing and stable machine-readable output — not interoperability with another tool's interface. Output formats and flag names will not be adjusted to match any external tool, and scripts written against another S3 client should not be expected to work with s3ls unmodified. If you need full S3 functionality (copy, sync, presign, multipart upload, etc.) or compatibility with a specific tool's flag set, use that tool.
+s3ls is a listing-only tool. It is **not** intended to be a drop-in replacement for, or behaviorally compatible with, any other S3 client — examples include the AWS CLI (`aws s3`, `aws s3api`), `s5cmd`, `s3cmd`, `rclone`, `mc`, etc., but the same applies to any S3 listing or transfer tool. Its command-line flags, output columns, sort/filter semantics, and exit codes are designed around fast parallel listing and stable machine-readable output — not interoperability with another tool's interface. Output formats and flag names will not be adjusted to match any external tool, and scripts written against another S3 client should not be expected to work with s3ls unmodified. If you need full S3 functionality (copy, sync, presign, multipart upload, etc.) or compatibility with a specific tool's flag set, use that tool.
+
+### Non-Goals
+
+The following are explicitly out of scope and will not be added, regardless of demand:
+
+- Object or bucket modification (copy, sync, move, delete, presign, multipart upload, tagging, policy, etc.). s3ls is read-only; for transfers use [s3sync](https://github.com/nidor1998/s3sync) or [s3util](https://github.com/nidor1998/s3util-rs), and for general S3 operations use the [AWS CLI](https://aws.amazon.com/cli/).
+- Per-object `HeadObject` or `GetObject` calls. All metadata in the output comes from the list response itself — s3ls will not issue a second request to enrich a single row.
+- APIs other than `ListObjectsV2`, `ListObjectVersions`, and `ListBuckets`. s3ls intentionally restricts itself to these three list APIs; `ListMultipartUploads`, `HeadObject`, `GetObject`, and others are out of scope.
+- Glob or wildcard expansion in S3 prefixes. The prefix you specify is passed to S3 as a literal string match. For pattern-based matching, use `--filter-include-regex` / `--filter-exclude-regex`, evaluated client-side after listing.
+- Compatibility with other S3 clients — neither in flag names and behavior, nor in feature coverage. The presence of a feature, flag, or output format in `aws s3`, `aws s3api`, `s5cmd`, `s3cmd`, `rclone`, `mc`, or any other S3 tool is not, by itself, a reason to add or change it in s3ls. Each request is evaluated only against s3ls's own scope and design principles. Use that other tool if you need its specific surface.
+- A plugin or extension mechanism.
+
+Issues and pull requests requesting any of the above will be closed.
 
 ## Features
 
