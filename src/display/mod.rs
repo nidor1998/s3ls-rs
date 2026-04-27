@@ -145,10 +145,17 @@ pub(crate) fn format_key_display(entry_key: &str, opts: &FormatOptions) -> Strin
         return entry_key.to_string();
     }
     if let Some(ref prefix) = opts.prefix {
-        let stripped = entry_key
-            .strip_prefix(prefix.as_str())
-            .unwrap_or(entry_key)
-            .trim_start_matches('/');
+        let after_prefix = entry_key.strip_prefix(prefix.as_str()).unwrap_or(entry_key);
+        // Strip exactly one boundary '/' only when the user-provided prefix
+        // didn't already end in one. trim_start_matches('/') would collapse
+        // legitimate multi-slash residues — keys like "logs//report.csv"
+        // relative to "logs/" must stay as "/report.csv", since S3 keys
+        // are opaque strings and the second slash is part of the key.
+        let stripped = if !prefix.ends_with('/') {
+            after_prefix.strip_prefix('/').unwrap_or(after_prefix)
+        } else {
+            after_prefix
+        };
         if stripped.is_empty() {
             entry_key.to_string()
         } else {
@@ -303,6 +310,81 @@ mod tests {
         let (num, unit) = format_size_split(1024);
         assert_eq!(num, "1.0");
         assert_eq!(unit, "KiB");
+    }
+
+    // ========================================================================
+    // format_key_display: --show-relative-path output
+    // ========================================================================
+
+    fn rel_opts(prefix: Option<&str>) -> FormatOptions {
+        FormatOptions {
+            show_relative_path: true,
+            prefix: prefix.map(|s| s.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn format_key_display_returns_original_when_relative_path_disabled() {
+        let opts = FormatOptions {
+            show_relative_path: false,
+            prefix: Some("logs/".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(format_key_display("logs/a.txt", &opts), "logs/a.txt");
+    }
+
+    #[test]
+    fn format_key_display_returns_original_when_no_prefix_set() {
+        let opts = rel_opts(None);
+        assert_eq!(format_key_display("a/b.txt", &opts), "a/b.txt");
+    }
+
+    #[test]
+    fn format_key_display_strips_prefix_with_trailing_slash() {
+        let opts = rel_opts(Some("logs/"));
+        assert_eq!(format_key_display("logs/a.txt", &opts), "a.txt");
+    }
+
+    #[test]
+    fn format_key_display_strips_boundary_slash_when_prefix_lacks_trailing_slash() {
+        let opts = rel_opts(Some("logs"));
+        assert_eq!(format_key_display("logs/a.txt", &opts), "a.txt");
+    }
+
+    #[test]
+    fn format_key_display_preserves_extra_leading_slash_when_prefix_has_trailing_slash() {
+        // Regression for trim_start_matches('/'): used to collapse "/report.csv"
+        // (the legitimate residue of "logs//report.csv" against "logs/") down
+        // to "report.csv", losing key information.
+        let opts = rel_opts(Some("logs/"));
+        assert_eq!(format_key_display("logs//report.csv", &opts), "/report.csv");
+    }
+
+    #[test]
+    fn format_key_display_preserves_extra_leading_slash_when_prefix_lacks_trailing_slash() {
+        // prefix "logs", key "logs//report.csv": strip "logs" → "//report.csv",
+        // then swallow exactly one boundary '/' → "/report.csv".
+        let opts = rel_opts(Some("logs"));
+        assert_eq!(format_key_display("logs//report.csv", &opts), "/report.csv");
+    }
+
+    #[test]
+    fn format_key_display_falls_back_to_full_key_when_residue_is_empty() {
+        let opts = rel_opts(Some("logs/"));
+        assert_eq!(format_key_display("logs/", &opts), "logs/");
+    }
+
+    #[test]
+    fn format_key_display_falls_back_when_residue_is_only_boundary_slash() {
+        let opts = rel_opts(Some("logs"));
+        assert_eq!(format_key_display("logs/", &opts), "logs/");
+    }
+
+    #[test]
+    fn format_key_display_returns_original_when_key_does_not_start_with_prefix() {
+        let opts = rel_opts(Some("logs/"));
+        assert_eq!(format_key_display("other/a.txt", &opts), "other/a.txt");
     }
 
     #[test]
