@@ -502,25 +502,48 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
             if page.is_truncated {
                 match mode {
                     ListingMode::Objects => {
-                        continuation_token = page.continuation_token;
-                        if continuation_token.is_none() {
+                        let next_token = page.continuation_token;
+                        if next_token.is_none() {
                             anyhow::bail!(
                                 "S3 returned truncated response but no continuation token for s3://{}/{}",
                                 self.bucket,
                                 self.prefix.as_deref().unwrap_or("")
                             );
                         }
+                        // A buggy S3-compatible endpoint that returns the same
+                        // token forever would otherwise loop indefinitely.
+                        if next_token == continuation_token {
+                            anyhow::bail!(
+                                "S3 returned the same continuation token twice for s3://{}/{}; \
+                                 refusing to loop. This is likely a bug in the S3-compatible endpoint.",
+                                self.bucket,
+                                self.prefix.as_deref().unwrap_or("")
+                            );
+                        }
+                        continuation_token = next_token;
                     }
                     ListingMode::Versions => {
-                        key_marker = page.key_marker;
-                        version_id_marker = page.version_id_marker;
-                        if key_marker.is_none() {
+                        let next_key_marker = page.key_marker;
+                        let next_version_id_marker = page.version_id_marker;
+                        if next_key_marker.is_none() {
                             anyhow::bail!(
                                 "S3 returned truncated response but no next key marker for s3://{}/{}",
                                 self.bucket,
                                 self.prefix.as_deref().unwrap_or("")
                             );
                         }
+                        if next_key_marker == key_marker
+                            && next_version_id_marker == version_id_marker
+                        {
+                            anyhow::bail!(
+                                "S3 returned the same key/version marker twice for s3://{}/{}; \
+                                 refusing to loop. This is likely a bug in the S3-compatible endpoint.",
+                                self.bucket,
+                                self.prefix.as_deref().unwrap_or("")
+                            );
+                        }
+                        key_marker = next_key_marker;
+                        version_id_marker = next_version_id_marker;
                     }
                 }
             } else {
@@ -603,25 +626,46 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
                 if page.is_truncated {
                     match mode {
                         ListingMode::Objects => {
-                            continuation_token = page.continuation_token;
-                            if continuation_token.is_none() {
+                            let next_token = page.continuation_token;
+                            if next_token.is_none() {
                                 anyhow::bail!(
                                     "S3 returned truncated response but no continuation token for s3://{}/{}",
                                     self.bucket,
                                     self.prefix.as_deref().unwrap_or("")
                                 );
                             }
+                            if next_token == continuation_token {
+                                anyhow::bail!(
+                                    "S3 returned the same continuation token twice for s3://{}/{}; \
+                                     refusing to loop. This is likely a bug in the S3-compatible endpoint.",
+                                    self.bucket,
+                                    self.prefix.as_deref().unwrap_or("")
+                                );
+                            }
+                            continuation_token = next_token;
                         }
                         ListingMode::Versions => {
-                            key_marker = page.key_marker;
-                            version_id_marker = page.version_id_marker;
-                            if key_marker.is_none() {
+                            let next_key_marker = page.key_marker;
+                            let next_version_id_marker = page.version_id_marker;
+                            if next_key_marker.is_none() {
                                 anyhow::bail!(
                                     "S3 returned truncated response but no next key marker for s3://{}/{}",
                                     self.bucket,
                                     self.prefix.as_deref().unwrap_or("")
                                 );
                             }
+                            if next_key_marker == key_marker
+                                && next_version_id_marker == version_id_marker
+                            {
+                                anyhow::bail!(
+                                    "S3 returned the same key/version marker twice for s3://{}/{}; \
+                                     refusing to loop. This is likely a bug in the S3-compatible endpoint.",
+                                    self.bucket,
+                                    self.prefix.as_deref().unwrap_or("")
+                                );
+                            }
+                            key_marker = next_key_marker;
+                            version_id_marker = next_version_id_marker;
                         }
                     }
                 } else {
@@ -1438,6 +1482,157 @@ mod tests {
         let err_msg = result.unwrap_err().to_string();
         assert!(
             err_msg.contains("truncated") && err_msg.contains("continuation token"),
+            "unexpected error: {}",
+            err_msg
+        );
+    }
+
+    // 8b. sequential_errors_on_duplicate_continuation_token
+    #[tokio::test]
+    async fn sequential_errors_on_duplicate_continuation_token() {
+        // A buggy S3-compatible endpoint that returns the same continuation
+        // token twice should be detected and aborted, not looped on forever.
+        let fetcher = MockPageFetcher::from_pages(
+            Some("prefix/"),
+            None,
+            vec![
+                ListPage {
+                    objects: vec![make_entry("prefix/1.txt")],
+                    sub_prefixes: vec![],
+                    is_truncated: true,
+                    continuation_token: Some("stuck-token".to_string()),
+                    key_marker: None,
+                    version_id_marker: None,
+                },
+                ListPage {
+                    objects: vec![make_entry("prefix/2.txt")],
+                    sub_prefixes: vec![],
+                    is_truncated: true,
+                    continuation_token: Some("stuck-token".to_string()),
+                    key_marker: None,
+                    version_id_marker: None,
+                },
+            ],
+        );
+        let engine = make_engine(fetcher, "bucket", Some("prefix/"), None, 1, 3, false);
+        let result = collect_entries(&engine, ListingMode::Objects, 1000).await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("same continuation token"),
+            "unexpected error: {}",
+            err_msg
+        );
+    }
+
+    // 8d. parallel_errors_on_duplicate_continuation_token
+    #[tokio::test]
+    async fn parallel_errors_on_duplicate_continuation_token() {
+        // Same defense as 8b but for the parallel prefix-discovery loop in
+        // list_with_parallel. Parallel pagination is at (prefix, Some("/")).
+        let mut map: HashMap<(Option<String>, Option<String>), Vec<ListPage>> = HashMap::new();
+        map.insert(
+            (Some("p/".to_string()), Some("/".to_string())),
+            vec![
+                ListPage {
+                    objects: vec![],
+                    sub_prefixes: vec!["p/a/".to_string()],
+                    is_truncated: true,
+                    continuation_token: Some("stuck-token".to_string()),
+                    key_marker: None,
+                    version_id_marker: None,
+                },
+                ListPage {
+                    objects: vec![],
+                    sub_prefixes: vec!["p/b/".to_string()],
+                    is_truncated: true,
+                    continuation_token: Some("stuck-token".to_string()),
+                    key_marker: None,
+                    version_id_marker: None,
+                },
+            ],
+        );
+        let fetcher = MockPageFetcher::from_map(map);
+        // recursive (no delimiter) + max_parallel > 1 => parallel
+        let engine = make_engine(fetcher, "bucket", Some("p/"), None, 4, 3, false);
+        let result = collect_entries(&engine, ListingMode::Objects, 1000).await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("same continuation token"),
+            "unexpected error: {}",
+            err_msg
+        );
+    }
+
+    // 8e. parallel_errors_on_duplicate_versions_marker
+    #[tokio::test]
+    async fn parallel_errors_on_duplicate_versions_marker() {
+        let mut map: HashMap<(Option<String>, Option<String>), Vec<ListPage>> = HashMap::new();
+        map.insert(
+            (Some("p/".to_string()), Some("/".to_string())),
+            vec![
+                ListPage {
+                    objects: vec![],
+                    sub_prefixes: vec!["p/a/".to_string()],
+                    is_truncated: true,
+                    continuation_token: None,
+                    key_marker: Some("k".to_string()),
+                    version_id_marker: Some("v".to_string()),
+                },
+                ListPage {
+                    objects: vec![],
+                    sub_prefixes: vec!["p/b/".to_string()],
+                    is_truncated: true,
+                    continuation_token: None,
+                    key_marker: Some("k".to_string()),
+                    version_id_marker: Some("v".to_string()),
+                },
+            ],
+        );
+        let fetcher = MockPageFetcher::from_map(map);
+        let engine = make_engine(fetcher, "bucket", Some("p/"), None, 4, 3, false);
+        let result = collect_entries(&engine, ListingMode::Versions, 1000).await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("same key/version marker"),
+            "unexpected error: {}",
+            err_msg
+        );
+    }
+
+    // 8c. sequential_errors_on_duplicate_versions_marker
+    #[tokio::test]
+    async fn sequential_errors_on_duplicate_versions_marker() {
+        let fetcher = MockPageFetcher::from_pages(
+            Some("prefix/"),
+            None,
+            vec![
+                ListPage {
+                    objects: vec![make_entry("prefix/1.txt")],
+                    sub_prefixes: vec![],
+                    is_truncated: true,
+                    continuation_token: None,
+                    key_marker: Some("k".to_string()),
+                    version_id_marker: Some("v".to_string()),
+                },
+                ListPage {
+                    objects: vec![make_entry("prefix/2.txt")],
+                    sub_prefixes: vec![],
+                    is_truncated: true,
+                    continuation_token: None,
+                    key_marker: Some("k".to_string()),
+                    version_id_marker: Some("v".to_string()),
+                },
+            ],
+        );
+        let engine = make_engine(fetcher, "bucket", Some("prefix/"), None, 1, 3, false);
+        let result = collect_entries(&engine, ListingMode::Versions, 1000).await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("same key/version marker"),
             "unexpected error: {}",
             err_msg
         );

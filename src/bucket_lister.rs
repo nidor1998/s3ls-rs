@@ -307,11 +307,19 @@ async fn list_general_buckets(client: &Client, prefix: Option<&str>) -> Result<V
             });
         }
 
-        match resp.continuation_token() {
-            Some(token) if !token.is_empty() => {
-                continuation_token = Some(token.to_string());
+        let next_token = resp
+            .continuation_token()
+            .filter(|t| !t.is_empty())
+            .map(|s| s.to_string());
+        match next_token {
+            None => break,
+            Some(ref t) if Some(t) == continuation_token.as_ref() => {
+                anyhow::bail!(
+                    "ListBuckets returned the same continuation token twice; \
+                     refusing to loop. This is likely a bug in the S3-compatible endpoint."
+                );
             }
-            _ => break,
+            Some(t) => continuation_token = Some(t),
         }
     }
 
@@ -346,10 +354,23 @@ async fn list_directory_buckets(client: &Client) -> Result<Vec<BucketEntry>> {
             });
         }
 
-        if resp.continuation_token().is_some() {
-            continuation_token = resp.continuation_token().map(|s| s.to_string());
-        } else {
-            break;
+        // An empty token must terminate (some S3-compatible endpoints emit
+        // Some("") at end-of-pagination instead of omitting the field).
+        // Detect a token equal to the one we just sent, which would otherwise
+        // loop forever against a buggy endpoint.
+        let next_token = resp
+            .continuation_token()
+            .filter(|t| !t.is_empty())
+            .map(|s| s.to_string());
+        match next_token {
+            None => break,
+            Some(ref t) if Some(t) == continuation_token.as_ref() => {
+                anyhow::bail!(
+                    "ListDirectoryBuckets returned the same continuation token twice; \
+                     refusing to loop. This is likely a bug in the S3-compatible endpoint."
+                );
+            }
+            Some(t) => continuation_token = Some(t),
         }
     }
 
