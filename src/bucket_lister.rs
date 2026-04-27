@@ -21,6 +21,7 @@ pub(crate) struct BucketFormatOpts {
     pub show_bucket_arn: bool,
     pub show_owner: bool,
     pub raw_output: bool,
+    pub show_local_time: bool,
 }
 
 fn bucket_escape(s: &str, raw_output: bool) -> String {
@@ -42,7 +43,8 @@ fn format_bucket_entry(entry: &BucketEntry, opts: &BucketFormatOpts) -> String {
 
     let date = entry
         .creation_date
-        .map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        .as_ref()
+        .map(|d| crate::display::format_rfc3339(d, opts.show_local_time))
         .unwrap_or_default();
     let region = entry.region.as_deref().unwrap_or("").to_string();
     let bucket = bucket_escape(&entry.name, opts.raw_output);
@@ -210,6 +212,7 @@ pub async fn list_buckets(config: &Config) -> Result<()> {
         show_bucket_arn,
         show_owner,
         raw_output: config.display_config.raw_output,
+        show_local_time: config.display_config.show_local_time,
     };
 
     if config.display_config.header && !config.display_config.json {
@@ -223,10 +226,13 @@ pub async fn list_buckets(config: &Config) -> Result<()> {
                 "Name".to_string(),
                 serde_json::Value::String(entry.name.clone()),
             );
-            if let Some(d) = entry.creation_date {
+            if let Some(ref d) = entry.creation_date {
                 map.insert(
                     "CreationDate".to_string(),
-                    serde_json::Value::String(d.to_rfc3339()),
+                    serde_json::Value::String(crate::display::format_rfc3339(
+                        d,
+                        bopts.show_local_time,
+                    )),
                 );
             }
             if let Some(ref r) = entry.region {
@@ -405,6 +411,7 @@ mod aligned_tests {
             show_bucket_arn: show_arn,
             show_owner,
             raw_output: false,
+            show_local_time: false,
         }
     }
 
@@ -416,6 +423,7 @@ mod aligned_tests {
             show_bucket_arn: true,
             show_owner: true,
             raw_output: false,
+            show_local_time: false,
         };
         let line = format_bucket_entry(&entry(), &opts);
         assert_eq!(line, "mybucket");
@@ -430,6 +438,7 @@ mod aligned_tests {
             show_bucket_arn: true,
             show_owner: true,
             raw_output: false,
+            show_local_time: false,
         };
         let line = format_bucket_entry(&entry(), &opts);
         assert_eq!(line, "mybucket");
@@ -443,8 +452,44 @@ mod aligned_tests {
             show_bucket_arn: true,
             show_owner: true,
             raw_output: false,
+            show_local_time: false,
         };
         assert_eq!(format_bucket_header(&opts), "BUCKET");
+    }
+
+    #[test]
+    fn bucket_date_uses_utc_z_when_show_local_time_false() {
+        // Default: UTC with the trailing 'Z' — matches the object-listing convention.
+        let opts = opts(true, false, false);
+        let line = format_bucket_entry(&entry(), &opts);
+        assert!(
+            line.starts_with("2024-01-01T00:00:00Z\t"),
+            "expected UTC 'Z' suffix, got: {line}"
+        );
+    }
+
+    #[test]
+    fn bucket_date_uses_local_offset_when_show_local_time_true() {
+        // format_rfc3339 with local=true always emits an explicit numeric
+        // offset (use_z=false), so 'Z' must never appear here. The string
+        // must still re-parse to the original UTC instant regardless of the
+        // host's timezone.
+        let mut bopts = opts(true, false, false);
+        bopts.show_local_time = true;
+        let line = format_bucket_entry(&entry(), &bopts);
+        let date_field = line.split('\t').next().unwrap();
+
+        assert!(
+            !date_field.ends_with('Z'),
+            "expected explicit offset, got UTC 'Z': {date_field}"
+        );
+
+        let parsed = chrono::DateTime::parse_from_rfc3339(date_field)
+            .unwrap_or_else(|e| panic!("failed to parse {date_field}: {e}"));
+        assert_eq!(
+            parsed.with_timezone(&chrono::Utc),
+            entry().creation_date.unwrap()
+        );
     }
 
     #[test]
