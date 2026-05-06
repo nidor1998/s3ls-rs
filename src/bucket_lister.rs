@@ -179,7 +179,12 @@ pub async fn list_buckets(config: &Config) -> Result<()> {
         }
         buckets
     } else {
-        list_general_buckets(&client, config.bucket_name_prefix.as_deref()).await?
+        list_general_buckets(
+            &client,
+            config.bucket_name_prefix.as_deref(),
+            client_config.endpoint_url.is_none(),
+        )
+        .await?
     };
 
     // Sort (skipped when --no-sort is set)
@@ -241,7 +246,7 @@ pub async fn list_buckets(config: &Config) -> Result<()> {
                     serde_json::Value::String(r.clone()),
                 );
             }
-            if show_bucket_arn && let Some(ref arn) = entry.bucket_arn {
+            if let Some(ref arn) = entry.bucket_arn {
                 map.insert(
                     "BucketArn".to_string(),
                     serde_json::Value::String(arn.clone()),
@@ -278,12 +283,23 @@ pub async fn list_buckets(config: &Config) -> Result<()> {
     Ok(())
 }
 
-async fn list_general_buckets(client: &Client, prefix: Option<&str>) -> Result<Vec<BucketEntry>> {
+async fn list_general_buckets(
+    client: &Client,
+    prefix: Option<&str>,
+    use_max_buckets: bool,
+) -> Result<Vec<BucketEntry>> {
     let mut entries = Vec::new();
     let mut continuation_token: Option<String> = None;
 
     loop {
-        let mut req = client.list_buckets().max_buckets(1000);
+        let mut req = client.list_buckets();
+        // AWS S3 only populates BucketArn/BucketRegion in the response when
+        // MaxBuckets or Prefix is set on the request. Skip MaxBuckets when a
+        // custom endpoint is configured, since some S3-compatible storage
+        // providers do not support this parameter.
+        if use_max_buckets {
+            req = req.max_buckets(1000);
+        }
         if let Some(prefix) = prefix {
             req = req.prefix(prefix);
         }
