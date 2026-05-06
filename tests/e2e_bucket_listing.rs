@@ -64,11 +64,9 @@ async fn e2e_bucket_listing_default_json_shape() {
             "default shape: BucketRegion missing or empty, got {v:?}"
         );
 
-        // Optional fields must be absent (no display flags set)
-        assert!(
-            v.get("BucketArn").is_none(),
-            "default shape: BucketArn should be absent without --show-bucket-arn, got {v:?}"
-        );
+        // BucketArn is included in JSON whenever AWS returns it (i.e. when
+        // MaxBuckets or Prefix is set on the request). Owner remains gated
+        // on --show-owner.
         assert!(
             v.get("Owner").is_none(),
             "default shape: Owner should be absent without --show-owner, got {v:?}"

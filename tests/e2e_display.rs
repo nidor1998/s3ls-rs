@@ -1634,28 +1634,9 @@ async fn e2e_display_bucket_listing_show_bucket_arn() {
             "bucket listing show-bucket-arn json on: BucketArn field missing, got {v:?}"
         );
 
-        // Sub-assertion 4: JSON without flag — BucketArn field absent
-        let output = TestHelper::run_s3ls(&["--json"]);
-        assert!(output.status.success(), "s3ls failed: {}", output.stderr);
-        let bucket_line = output
-            .stdout
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .find(|l| {
-                serde_json::from_str::<serde_json::Value>(l)
-                    .ok()
-                    .and_then(|v| v.get("Name").and_then(|n| n.as_str()).map(|s| s == bucket))
-                    .unwrap_or(false)
-            })
-            .unwrap_or_else(|| {
-                panic!("bucket listing json off: test bucket {bucket} not found in JSON output")
-            });
-        let v: serde_json::Value = serde_json::from_str(bucket_line).unwrap();
-        assert!(
-            v.get("BucketArn").is_none(),
-            "bucket listing show-bucket-arn json off: BucketArn should be absent, got {:?}",
-            v.get("BucketArn")
-        );
+        // Sub-assertion 4 was removed: BucketArn is now always emitted in
+        // JSON output when AWS returns it, regardless of --show-bucket-arn.
+        // The flag still gates the BUCKET_ARN column in text mode.
     });
 
     _guard.cleanup().await;
