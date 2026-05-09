@@ -1,8 +1,6 @@
 # s3ls
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Crates.io](https://img.shields.io/crates/v/s3ls-rs.svg)](https://crates.io/crates/s3ls-rs)
-[![GitHub](https://img.shields.io/github/downloads/nidor1998/s3ls-rs/total?label=downloads%20%28GitHub%29)](https://github.com/nidor1998/s3ls-rs/releases)
 [![codecov](https://codecov.io/gh/nidor1998/s3ls-rs/graph/badge.svg)](https://codecov.io/gh/nidor1998/s3ls-rs)
 
 > **Note on issues:** This project continues to be maintained, and binaries will keep being released. However, to consolidate discussion across the [s3sync](https://github.com/nidor1998/s3sync) / [s3util-rs](https://github.com/nidor1998/s3util-rs) / [s3rm-rs](https://github.com/nidor1998/s3rm-rs) / [s3ls-rs](https://github.com/nidor1998/s3ls-rs) family, **please file new issues in the [s7cmd](https://github.com/nidor1998/s7cmd) repository** instead of here. [s7cmd](https://github.com/nidor1998/s7cmd) bundles these tools as subcommands built on the same underlying code, so its behavior matches the standalone binaries and it can be used in their place. **Before opening an issue, please read the Scope and Non-Goals sections in the READMEs of [s7cmd](https://github.com/nidor1998/s7cmd) and each project ([s3sync](https://github.com/nidor1998/s3sync) / [s3util-rs](https://github.com/nidor1998/s3util-rs) / [s3rm-rs](https://github.com/nidor1998/s3rm-rs) / [s3ls-rs](https://github.com/nidor1998/s3ls-rs))** — requests outside the documented scope will generally be declined. Existing issues in this repository will continue to be handled as usual.
@@ -282,7 +280,7 @@ s3ls
 
 ### Flexibility
 
-s3ls works with any S3-compatible storage service:
+The following flags are available for connecting to S3-compatible storage services:
 
 - Custom endpoints via `--target-endpoint-url` (MinIO, Wasabi, Cloudflare R2, etc.)
 - Path-style access via `--target-force-path-style`
@@ -290,6 +288,8 @@ s3ls works with any S3-compatible storage service:
 - Requester-pays via `--target-request-payer`
 - Anonymous (unsigned) requests via `--target-no-sign-request` for public buckets
 - HTTP/HTTPS proxy via standard environment variables (`HTTPS_PROXY`, `HTTP_PROXY`)
+
+> **S3-compatible storage is not supported.** These flags remain available and may work, but their use against non-Amazon services is provided **as-is** — no testing, no support, no fixes for service-specific issues. See [About testing](#about-testing) for details.
 
 s3ls is performance-tuned for Amazon S3, which supports high request rates. S3-compatible storage services may have lower rate limits. If you encounter throttling errors, use `--rate-limit-api` to cap the number of S3 API requests per second, or reduce concurrency with `--max-parallel-listings`:
 
@@ -1187,10 +1187,9 @@ s3ls --auto-complete-shell fish > ~/.config/fish/completions/s3ls.fish
 
 **Supported target: Amazon S3 only.**
 
-Support for S3-compatible storage is on a best-effort basis and may behave differently.
-s3ls has been tested with Amazon S3. s3ls has unit tests, property-based tests (proptest), and end-to-end integration tests.
+S3-compatible storage is **not supported**. The custom-endpoint flags (`--target-endpoint-url`, `--target-force-path-style`, etc.) remain available and may work in practice, but any use against non-Amazon services is provided strictly **as-is** — no testing is performed, no support is offered, and bug reports or feature requests specific to S3-compatible storage will be closed without investigation.
 
-S3-compatible storage is not tested when a new version is released. Since there is no official certification for S3-compatible storage, comprehensive testing is not possible.
+s3ls has unit tests, property-based tests (proptest), and end-to-end integration tests, all run exclusively against Amazon S3. Since there is no official certification for S3-compatible storage, comprehensive testing across implementations is not possible.
 
 ## Fully AI-generated (human-verified) software
 
