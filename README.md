@@ -90,6 +90,7 @@ This demo shows listing approximately 360,000 objects per second, listing 1,100,
 - [CI/CD Integration](#cicd-integration)
 - [Shell completions](#shell-completions)
 - [About testing](#about-testing)
+- [Security assumptions](#security-assumptions)
 - [Fully AI-generated (human-verified) software](#fully-ai-generated-human-verified-software)
 - [Scope](#scope)
 - [Non-Goals](#non-goals)
@@ -1173,6 +1174,20 @@ s3ls --auto-complete-shell fish > ~/.config/fish/completions/s3ls.fish
 S3-compatible storage is **not supported**. The custom-endpoint flags (`--target-endpoint-url`, `--target-force-path-style`, etc.) remain available and may work in practice, but any use against non-Amazon services is provided strictly **as-is** — no testing is performed, no support is offered, and bug reports or feature requests specific to S3-compatible storage will be closed without investigation.
 
 s3ls has unit tests, property-based tests (proptest), and end-to-end integration tests, all run exclusively against Amazon S3. Since there is no official certification for S3-compatible storage, comprehensive testing across implementations is not possible.
+
+## Security assumptions
+
+s3ls is built on a fundamental security assumption: **both the object storage system and the specific bucket you list must be trusted.**
+
+Within this trust model, s3ls implements the security measures you would reasonably expect of a listing tool: encrypted transport (TLS/HTTPS) for requests and the metadata they return, secure handling of credentials through the standard AWS credential providers (with access keys masked in logs and credential environment-variable values hidden from `--help` output), and control-character escaping of the object keys, prefixes, and owner names returned by S3 so that a maliciously-named object cannot inject terminal escape sequences or forge rows in the output. These measures protect your credentials, and the confidentiality and integrity of the listing metadata in transit, against transport-level and accidental threats.
+
+Unlike a synchronization or transfer tool, s3ls never downloads object data — it reads only listing metadata, via `ListObjectsV2`, `ListObjectVersions`, and `ListBuckets`. It therefore performs no object-content integrity verification: the ETag and checksum columns it can display are values **reported by** the storage endpoint and surfaced for you to inspect, not guarantees that s3ls has independently verified.
+
+s3ls also assumes that the storage endpoint is honest and non-adversarial — that it correctly implements the S3 list APIs and returns the object keys, metadata, and checksum values it actually stores, without tampering. The output is **not** a defense against a malicious or compromised storage backend that deliberately returns a fabricated listing, forged metadata, or falsified checksums. Against such an adversarial endpoint, these guarantees do not hold.
+
+Crucially, trust must extend to the **bucket**, not just the storage provider. Even when the object storage system itself is fully trustworthy, a bucket can still be adversarial — for example, a bucket you do not control, a shared bucket writable by others, or one whose object names, metadata, or checksums were crafted by an attacker. If you list such a bucket, the keys and metadata it serves are already untrusted at the source, and s3ls's guarantees no longer apply. A trusted storage provider hosting an untrusted bucket is, for the purposes of this security model, an untrusted source. (s3ls escapes control characters in S3-returned strings by default precisely because object names are attacker-controlled — see [Control character escaping detail](#control-character-escaping-detail) — but that hardening is not a substitute for trusting the source.)
+
+Listing an untrusted, compromised, or non-conformant endpoint or bucket is outside s3ls's security model. Selecting a trustworthy storage provider, and ensuring that every bucket you list is one you control or trust — including its credentials, encryption, and access policies — remains your responsibility.
 
 ## Fully AI-generated (human-verified) software
 
