@@ -413,4 +413,34 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
+
+    /// `--target-no-sign-request` disables credential loading. Exercises the
+    /// `S3Credentials::NoSign` arm of `load_config_credential`.
+    #[tokio::test]
+    async fn create_client_no_sign_request() {
+        let mut config = default_client_config();
+        config.credential = S3Credentials::NoSign;
+        config.region = Some("us-east-1".to_string());
+        let _client = config.create_client().await;
+    }
+
+    /// Default (environment) credentials. Exercises the
+    /// `S3Credentials::FromEnvironment` arm of `load_config_credential`.
+    #[tokio::test]
+    async fn create_client_from_environment() {
+        let mut config = default_client_config();
+        // default_client_config already uses FromEnvironment; pin a region so
+        // the default region provider chain is not consulted (no IMDS call).
+        config.region = Some("us-east-1".to_string());
+        let _client = config.create_client().await;
+    }
+
+    /// A custom endpoint URL is applied to the SDK config loader.
+    #[tokio::test]
+    async fn create_client_with_endpoint_url() {
+        let mut config = default_client_config();
+        config.region = Some("us-east-1".to_string());
+        config.endpoint_url = Some("http://localhost:9000".to_string());
+        let _client = config.create_client().await;
+    }
 }

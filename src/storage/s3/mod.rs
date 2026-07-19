@@ -22,6 +22,7 @@ use crate::types::token::PipelineCancellationToken;
 use crate::types::{ListEntry, S3Object, VersionInfo};
 use leaky_bucket::RateLimiter;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 const EXPRESS_ONEZONE_STORAGE_SUFFIX: &str = "--x-s3";
 
@@ -577,12 +578,20 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
                 return Ok(());
             }
 
-            // Beyond max parallel depth: switch to sequential with no delimiter
+            // Beyond max parallel depth: switch to sequential with no
+            // delimiter. Hold `permit` across the entire sequential scan so
+            // this leaf listing counts against `max_parallel_listings`.
+            // Releasing it before the scan (as this once did) let an unbounded
+            // number of leaf scans run concurrently, ignoring the concurrency
+            // limit. This cannot deadlock: `list_sequential` never acquires
+            // another permit, and every parent task releases its own permit
+            // before awaiting its children.
             if depth > self.max_parallel_listing_max_depth {
-                drop(permit);
-                return self
+                let result = self
                     .list_sequential(mode, sender, max_keys, prefix, None)
                     .await;
+                drop(permit);
+                return result;
             }
 
             let mut current_permit = Some(permit);
@@ -788,17 +797,13 @@ impl S3Storage {
 
         let semaphore_size = max_parallel_listings.max(1) as usize;
 
-        const REFILL_PER_INTERVAL_DIVIDER: usize = 10;
         let rate_limiter = rate_limit_api.map(|rate_limit_value| {
-            let refill = if (rate_limit_value as usize) <= REFILL_PER_INTERVAL_DIVIDER {
-                1
-            } else {
-                rate_limit_value as usize / REFILL_PER_INTERVAL_DIVIDER
-            };
+            let (interval_ms, refill) = rate_limiter_schedule(rate_limit_value);
             Arc::new(
                 RateLimiter::builder()
                     .max(rate_limit_value as usize)
                     .initial(rate_limit_value as usize)
+                    .interval(Duration::from_millis(interval_ms))
                     .refill(refill)
                     .fair(true)
                     .build(),
@@ -854,6 +859,39 @@ impl StorageTrait for S3Storage {
 // ---------------------------------------------------------------------------
 // Helper functions
 // ---------------------------------------------------------------------------
+
+/// Choose a `(interval_ms, refill)` pair for a leaky-bucket rate limiter that
+/// sustains *exactly* `rate` tokens per second.
+///
+/// `leaky-bucket` adds `refill` tokens every `interval`, so the sustained rate
+/// is `refill * 1000 / interval_ms`. To hit `rate` exactly we pick the smallest
+/// interval that divides 1000ms and yields a whole-number refill. This keeps
+/// common rates smooth (many small refills spread across the second) while
+/// awkward rates — e.g. primes coprime to 1000 like 19 — fall back to a single
+/// `rate`-token refill once per second. The previous implementation used a
+/// fixed `rate / 10` refill, which floored the effective rate to a multiple of
+/// 10 (e.g. `--rate-limit-api 19` throttled to 10/s).
+///
+/// The returned interval is always >= 1ms and the refill always >= 1, so the
+/// builder's non-zero invariants hold for every `rate` in the CLI's `10..`
+/// range.
+fn rate_limiter_schedule(rate: u32) -> (u64, usize) {
+    // Divisors of 1000, smallest (smoothest) first. 1000 itself always
+    // divides `rate * interval_ms`, so the loop always returns.
+    const INTERVALS_MS: [u64; 16] = [
+        1, 2, 4, 5, 8, 10, 20, 25, 40, 50, 100, 125, 200, 250, 500, 1000,
+    ];
+    let rate = rate as u64;
+    for &interval_ms in &INTERVALS_MS {
+        let tokens = rate * interval_ms;
+        if tokens.is_multiple_of(1000) {
+            return (interval_ms, (tokens / 1000) as usize);
+        }
+    }
+    // Unreachable (interval_ms == 1000 always satisfies the check above), but
+    // fall back to an exact one-second refill rather than panic.
+    (1000, rate as usize)
+}
 
 /// Extract error code and message from an AWS SDK error.
 fn extract_sdk_error_details<
@@ -2103,6 +2141,169 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // rate_limiter_schedule: exact sustained rate
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn rate_limiter_schedule_is_exact_for_all_valid_rates() {
+        // The CLI accepts --rate-limit-api values of 10 and up. For every one,
+        // the sustained rate refill * (1000 / interval_ms) must equal the
+        // requested rate exactly, i.e. refill * 1000 == rate * interval_ms.
+        for rate in 10u32..=65_535 {
+            let (interval_ms, refill) = rate_limiter_schedule(rate);
+            assert!(interval_ms >= 1, "interval must be non-zero (rate {rate})");
+            assert!(interval_ms <= 1000, "interval must be <= 1s (rate {rate})");
+            assert!(refill >= 1, "refill must be non-zero (rate {rate})");
+            assert_eq!(
+                refill as u64 * 1000,
+                rate as u64 * interval_ms,
+                "schedule not exact for rate {rate}: refill={refill}, interval_ms={interval_ms}"
+            );
+        }
+    }
+
+    #[test]
+    fn rate_limiter_schedule_prefers_smooth_intervals_for_round_rates() {
+        // "Round" rates get a sub-second interval with a small refill, so
+        // tokens spread across the second instead of arriving in one burst.
+        assert_eq!(rate_limiter_schedule(10), (100, 1));
+        assert_eq!(rate_limiter_schedule(50), (20, 1));
+        assert_eq!(rate_limiter_schedule(100), (10, 1));
+        assert_eq!(rate_limiter_schedule(1000), (1, 1));
+    }
+
+    #[test]
+    fn rate_limiter_schedule_falls_back_to_one_second_for_awkward_rates() {
+        // A rate coprime to 1000 (e.g. 19) can only be hit exactly with a
+        // full-second interval refilling `rate` tokens at once. The old
+        // `rate / 10` refill floored 19 to an effective 10/s; now it is 19/s.
+        assert_eq!(rate_limiter_schedule(19), (1000, 19));
+        assert_eq!(rate_limiter_schedule(23), (1000, 23));
+    }
+
+    // -----------------------------------------------------------------------
+    // Parallel concurrency limit
+    // -----------------------------------------------------------------------
+
+    /// A fetcher that records the peak number of concurrent `fetch_page`
+    /// calls, sleeping on each call to force overlap. Used to verify the
+    /// listing semaphore actually bounds concurrency during leaf (sequential)
+    /// scans, not just during prefix discovery.
+    #[derive(Clone)]
+    struct ConcurrencyTrackingFetcher {
+        inner: MockPageFetcher,
+        in_flight: Arc<std::sync::atomic::AtomicUsize>,
+        max_in_flight: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl PageFetcher for ConcurrencyTrackingFetcher {
+        async fn fetch_page(
+            &self,
+            mode: ListingMode,
+            max_keys: i32,
+            prefix: Option<&str>,
+            delimiter: Option<&str>,
+            continuation_token: Option<&str>,
+            key_marker: Option<&str>,
+            version_id_marker: Option<&str>,
+        ) -> Result<ListPage> {
+            let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_in_flight.fetch_max(now, Ordering::SeqCst);
+            // Sleep while "in flight" so concurrent scans actually overlap.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let result = self
+                .inner
+                .fetch_page(
+                    mode,
+                    max_keys,
+                    prefix,
+                    delimiter,
+                    continuation_token,
+                    key_marker,
+                    version_id_marker,
+                )
+                .await;
+            self.in_flight.fetch_sub(1, Ordering::SeqCst);
+            result
+        }
+    }
+
+    // Regression: leaf sequential scans must respect max_parallel_listings.
+    // Previously list_with_parallel dropped its semaphore permit *before* the
+    // leaf sequential scan, letting an unbounded number of leaf listings run
+    // at once. With max_parallel_listings = 2, no more than 2 fetch_page
+    // calls may be in flight simultaneously.
+    #[tokio::test]
+    async fn parallel_leaf_scans_respect_concurrency_limit() {
+        let mut map: PageMap = HashMap::new();
+        // Root discovery (delimiter "/") reveals 6 leaf prefixes, no objects.
+        let leaves = ["p/a/", "p/b/", "p/c/", "p/d/", "p/e/", "p/f/"];
+        map.insert(
+            (Some("p/".to_string()), Some("/".to_string())),
+            vec![ListPage {
+                objects: vec![],
+                sub_prefixes: leaves.iter().map(|s| s.to_string()).collect(),
+                is_truncated: false,
+                continuation_token: None,
+                key_marker: None,
+                version_id_marker: None,
+            }],
+        );
+        // Each leaf is scanned sequentially (delimiter None) — one object each.
+        for leaf in leaves {
+            map.insert(
+                (Some(leaf.to_string()), None),
+                vec![ListPage {
+                    objects: vec![make_entry(&format!("{leaf}obj.txt"))],
+                    sub_prefixes: vec![],
+                    is_truncated: false,
+                    continuation_token: None,
+                    key_marker: None,
+                    version_id_marker: None,
+                }],
+            );
+        }
+
+        let in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let max_in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fetcher = ConcurrencyTrackingFetcher {
+            inner: MockPageFetcher::from_map(map),
+            in_flight,
+            max_in_flight: max_in_flight.clone(),
+        };
+
+        // max_parallel_listing_max_depth = 0 makes the depth-1 children leaf
+        // sequential scans; the semaphore of size 2 must cap them at 2.
+        let token = create_pipeline_cancellation_token();
+        let engine = ListingEngine {
+            fetcher,
+            bucket: "bucket".to_string(),
+            prefix: Some("p/".to_string()),
+            delimiter: None,
+            cancellation_token: token,
+            max_parallel_listings: 2,
+            max_parallel_listing_max_depth: 0,
+            allow_parallel_listings_in_express_one_zone: false,
+            listing_worker_semaphore: Arc::new(tokio::sync::Semaphore::new(2)),
+            max_depth: None,
+            rate_limiter: None,
+            api_call_counter: Arc::new(AtomicU64::new(0)),
+        };
+
+        let entries = collect_entries(&engine, ListingMode::Objects, 1000)
+            .await
+            .unwrap();
+
+        assert_eq!(entries.len(), 6, "expected all leaf objects: {entries:?}");
+        let peak = max_in_flight.load(Ordering::SeqCst);
+        assert!(
+            peak <= 2,
+            "peak concurrent fetch_page was {peak}, expected <= 2"
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // Rate limiter tests
     // -----------------------------------------------------------------------
 
@@ -2364,5 +2565,630 @@ mod tests {
             1,
             "expected 1 API call for single page"
         );
+    }
+
+    // =======================================================================
+    // send_listed_entries: cancellation and receiver-dropped signals
+    // =======================================================================
+
+    #[tokio::test]
+    async fn send_listed_entries_stops_on_cancel() {
+        let token = create_pipeline_cancellation_token();
+        token.cancel();
+        let engine = make_engine_with_token(
+            MockPageFetcher::from_map(HashMap::new()),
+            "bucket",
+            None,
+            None,
+            1,
+            5,
+            false,
+            token,
+        );
+        let (tx, _rx) = tokio::sync::mpsc::channel(10);
+        let stop = engine
+            .send_listed_entries(vec![make_entry("a.txt")], &tx, None)
+            .await
+            .unwrap();
+        assert!(stop, "cancelled token must signal stop");
+    }
+
+    #[tokio::test]
+    async fn send_listed_entries_stops_when_receiver_dropped() {
+        let engine = make_engine(
+            MockPageFetcher::from_map(HashMap::new()),
+            "bucket",
+            None,
+            None,
+            1,
+            5,
+            false,
+        );
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        drop(rx);
+        let stop = engine
+            .send_listed_entries(vec![make_entry("a.txt")], &tx, None)
+            .await
+            .unwrap();
+        assert!(stop, "dropped receiver must signal stop");
+    }
+
+    #[tokio::test]
+    async fn send_listed_entries_boundary_stops_when_receiver_dropped() {
+        // max_depth=1 with a deeper key synthesizes a CommonPrefix at the
+        // boundary; the dropped receiver makes that send fail, signalling stop.
+        let engine = make_engine_with_max_depth(
+            MockPageFetcher::from_map(HashMap::new()),
+            "bucket",
+            Some("p/"),
+            None,
+            1,
+            5,
+            false,
+            Some(1),
+        );
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        drop(rx);
+        let mut seen = std::collections::HashSet::new();
+        let stop = engine
+            .send_listed_entries(vec![make_entry("p/a/b/c.txt")], &tx, Some(&mut seen))
+            .await
+            .unwrap();
+        assert!(stop, "boundary CommonPrefix send failure must signal stop");
+    }
+
+    // =======================================================================
+    // Sequential: receiver-dropped mid-page returns gracefully
+    // =======================================================================
+
+    #[tokio::test]
+    async fn sequential_stops_when_receiver_dropped_on_objects() {
+        let mut map: PageMap = HashMap::new();
+        map.insert(
+            (Some("p/".to_string()), Some("/".to_string())),
+            vec![ListPage {
+                objects: vec![make_entry("p/a.txt")],
+                sub_prefixes: vec!["p/sub/".to_string()],
+                is_truncated: false,
+                continuation_token: None,
+                key_marker: None,
+                version_id_marker: None,
+            }],
+        );
+        let engine = make_engine(
+            MockPageFetcher::from_map(map),
+            "bucket",
+            Some("p/"),
+            Some("/"),
+            1,
+            5,
+            false,
+        );
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        drop(rx);
+        let r = engine.list_dispatch(ListingMode::Objects, &tx, 1000).await;
+        assert!(r.is_ok(), "dropped receiver is graceful: {r:?}");
+    }
+
+    #[tokio::test]
+    async fn sequential_stops_when_receiver_dropped_on_prefixes() {
+        // No objects, only sub-prefixes: the object send is a no-op and the
+        // CommonPrefix send fails on the dropped receiver.
+        let mut map: PageMap = HashMap::new();
+        map.insert(
+            (Some("p/".to_string()), Some("/".to_string())),
+            vec![ListPage {
+                objects: vec![],
+                sub_prefixes: vec!["p/sub/".to_string()],
+                is_truncated: false,
+                continuation_token: None,
+                key_marker: None,
+                version_id_marker: None,
+            }],
+        );
+        let engine = make_engine(
+            MockPageFetcher::from_map(map),
+            "bucket",
+            Some("p/"),
+            Some("/"),
+            1,
+            5,
+            false,
+        );
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        drop(rx);
+        let r = engine.list_dispatch(ListingMode::Objects, &tx, 1000).await;
+        assert!(r.is_ok(), "dropped receiver is graceful: {r:?}");
+    }
+
+    // =======================================================================
+    // Version-listing pagination guards (sequential)
+    // =======================================================================
+
+    async fn drain(rx: &mut tokio::sync::mpsc::Receiver<ListEntry>) {
+        while rx.recv().await.is_some() {}
+    }
+
+    #[tokio::test]
+    async fn sequential_versions_truncated_without_marker_errors() {
+        let mut map: PageMap = HashMap::new();
+        map.insert(
+            (Some("p/".to_string()), Some("/".to_string())),
+            vec![ListPage {
+                objects: vec![],
+                sub_prefixes: vec![],
+                is_truncated: true,
+                continuation_token: None,
+                key_marker: None,
+                version_id_marker: None,
+            }],
+        );
+        let engine = make_engine(
+            MockPageFetcher::from_map(map),
+            "bucket",
+            Some("p/"),
+            Some("/"),
+            1,
+            5,
+            false,
+        );
+        let (tx, mut rx) = tokio::sync::mpsc::channel(10);
+        let r = engine.list_dispatch(ListingMode::Versions, &tx, 1000).await;
+        drop(tx);
+        drain(&mut rx).await;
+        let err = r.unwrap_err();
+        assert!(err.to_string().contains("no next key marker"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn sequential_versions_repeated_marker_errors() {
+        let page = || ListPage {
+            objects: vec![],
+            sub_prefixes: vec![],
+            is_truncated: true,
+            continuation_token: None,
+            key_marker: Some("m1".to_string()),
+            version_id_marker: Some("v1".to_string()),
+        };
+        let mut map: PageMap = HashMap::new();
+        map.insert(
+            (Some("p/".to_string()), Some("/".to_string())),
+            vec![page(), page()],
+        );
+        let engine = make_engine(
+            MockPageFetcher::from_map(map),
+            "bucket",
+            Some("p/"),
+            Some("/"),
+            1,
+            5,
+            false,
+        );
+        let (tx, mut rx) = tokio::sync::mpsc::channel(10);
+        let r = engine.list_dispatch(ListingMode::Versions, &tx, 1000).await;
+        drop(tx);
+        drain(&mut rx).await;
+        let err = r.unwrap_err();
+        assert!(
+            err.to_string().contains("same key/version marker twice"),
+            "got: {err}"
+        );
+    }
+
+    // =======================================================================
+    // Pagination guards (parallel discovery loop)
+    // =======================================================================
+
+    fn truncated_objects_no_token() -> PageMap {
+        let mut map: PageMap = HashMap::new();
+        map.insert(
+            (Some("p/".to_string()), Some("/".to_string())),
+            vec![ListPage {
+                objects: vec![],
+                sub_prefixes: vec![],
+                is_truncated: true,
+                continuation_token: None,
+                key_marker: None,
+                version_id_marker: None,
+            }],
+        );
+        map
+    }
+
+    #[tokio::test]
+    async fn parallel_objects_truncated_without_token_errors() {
+        let engine = make_engine(
+            MockPageFetcher::from_map(truncated_objects_no_token()),
+            "bucket",
+            Some("p/"),
+            None, // no delimiter -> parallel path
+            4,
+            5,
+            false,
+        );
+        let (tx, mut rx) = tokio::sync::mpsc::channel(10);
+        let r = engine.list_dispatch(ListingMode::Objects, &tx, 1000).await;
+        drop(tx);
+        drain(&mut rx).await;
+        let err = r.unwrap_err();
+        assert!(
+            err.to_string().contains("no continuation token"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn parallel_objects_repeated_token_errors() {
+        let page = || ListPage {
+            objects: vec![],
+            sub_prefixes: vec![],
+            is_truncated: true,
+            continuation_token: Some("tok".to_string()),
+            key_marker: None,
+            version_id_marker: None,
+        };
+        let mut map: PageMap = HashMap::new();
+        map.insert(
+            (Some("p/".to_string()), Some("/".to_string())),
+            vec![page(), page()],
+        );
+        let engine = make_engine(
+            MockPageFetcher::from_map(map),
+            "bucket",
+            Some("p/"),
+            None,
+            4,
+            5,
+            false,
+        );
+        let (tx, mut rx) = tokio::sync::mpsc::channel(10);
+        let r = engine.list_dispatch(ListingMode::Objects, &tx, 1000).await;
+        drop(tx);
+        drain(&mut rx).await;
+        let err = r.unwrap_err();
+        assert!(
+            err.to_string().contains("same continuation token twice"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn parallel_versions_truncated_without_marker_errors() {
+        let mut map: PageMap = HashMap::new();
+        map.insert(
+            (Some("p/".to_string()), Some("/".to_string())),
+            vec![ListPage {
+                objects: vec![],
+                sub_prefixes: vec![],
+                is_truncated: true,
+                continuation_token: None,
+                key_marker: None,
+                version_id_marker: None,
+            }],
+        );
+        let engine = make_engine(
+            MockPageFetcher::from_map(map),
+            "bucket",
+            Some("p/"),
+            None,
+            4,
+            5,
+            false,
+        );
+        let (tx, mut rx) = tokio::sync::mpsc::channel(10);
+        let r = engine.list_dispatch(ListingMode::Versions, &tx, 1000).await;
+        drop(tx);
+        drain(&mut rx).await;
+        let err = r.unwrap_err();
+        assert!(err.to_string().contains("no next key marker"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn parallel_versions_repeated_marker_errors() {
+        let page = || ListPage {
+            objects: vec![],
+            sub_prefixes: vec![],
+            is_truncated: true,
+            continuation_token: None,
+            key_marker: Some("m1".to_string()),
+            version_id_marker: Some("v1".to_string()),
+        };
+        let mut map: PageMap = HashMap::new();
+        map.insert(
+            (Some("p/".to_string()), Some("/".to_string())),
+            vec![page(), page()],
+        );
+        let engine = make_engine(
+            MockPageFetcher::from_map(map),
+            "bucket",
+            Some("p/"),
+            None,
+            4,
+            5,
+            false,
+        );
+        let (tx, mut rx) = tokio::sync::mpsc::channel(10);
+        let r = engine.list_dispatch(ListingMode::Versions, &tx, 1000).await;
+        drop(tx);
+        drain(&mut rx).await;
+        let err = r.unwrap_err();
+        assert!(
+            err.to_string().contains("same key/version marker twice"),
+            "got: {err}"
+        );
+    }
+
+    // =======================================================================
+    // Parallel: pre-cancellation, send-cancel, boundary emit, sub-task panic
+    // =======================================================================
+
+    #[tokio::test]
+    async fn parallel_returns_immediately_when_pre_cancelled() {
+        let token = create_pipeline_cancellation_token();
+        token.cancel();
+        let engine = make_engine_with_token(
+            MockPageFetcher::from_map(HashMap::new()),
+            "bucket",
+            Some("p/"),
+            None,
+            4,
+            5,
+            false,
+            token,
+        );
+        let (tx, mut rx) = tokio::sync::mpsc::channel(10);
+        let r = engine.list_dispatch(ListingMode::Objects, &tx, 1000).await;
+        drop(tx);
+        let mut n = 0;
+        while rx.recv().await.is_some() {
+            n += 1;
+        }
+        assert!(r.is_ok());
+        assert_eq!(n, 0, "cancelled before fetching: no entries");
+    }
+
+    #[tokio::test]
+    async fn parallel_stops_when_receiver_dropped_on_objects() {
+        let mut map: PageMap = HashMap::new();
+        map.insert(
+            (Some("p/".to_string()), Some("/".to_string())),
+            vec![ListPage {
+                objects: vec![make_entry("p/a.txt")],
+                sub_prefixes: vec![],
+                is_truncated: false,
+                continuation_token: None,
+                key_marker: None,
+                version_id_marker: None,
+            }],
+        );
+        let engine = make_engine(
+            MockPageFetcher::from_map(map),
+            "bucket",
+            Some("p/"),
+            None,
+            4,
+            5,
+            false,
+        );
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        drop(rx);
+        let r = engine.list_dispatch(ListingMode::Objects, &tx, 1000).await;
+        assert!(r.is_ok(), "dropped receiver is graceful: {r:?}");
+    }
+
+    #[tokio::test]
+    async fn parallel_emits_boundary_prefixes_at_max_depth() {
+        // content max_depth = 1: the depth-0 discovery emits its sub-prefixes
+        // as CommonPrefix entries instead of recursing into them.
+        let mut map: PageMap = HashMap::new();
+        map.insert(
+            (Some("p/".to_string()), Some("/".to_string())),
+            vec![ListPage {
+                objects: vec![],
+                sub_prefixes: vec!["p/a/".to_string(), "p/b/".to_string()],
+                is_truncated: false,
+                continuation_token: None,
+                key_marker: None,
+                version_id_marker: None,
+            }],
+        );
+        let engine = make_engine_with_max_depth(
+            MockPageFetcher::from_map(map),
+            "bucket",
+            Some("p/"),
+            None,
+            4,
+            5,
+            false,
+            Some(1),
+        );
+        let entries = collect_entries(&engine, ListingMode::Objects, 1000)
+            .await
+            .unwrap();
+        let mut keys: Vec<String> = entries.iter().map(|e| e.key().to_string()).collect();
+        keys.sort();
+        assert_eq!(keys, vec!["p/a/".to_string(), "p/b/".to_string()]);
+        assert!(
+            entries
+                .iter()
+                .all(|e| matches!(e, ListEntry::CommonPrefix(_))),
+            "boundary sub-prefixes must be emitted as CommonPrefix"
+        );
+    }
+
+    /// Fetcher that panics for one sub-prefix, to exercise sub-task join errors.
+    #[derive(Clone)]
+    struct PanicFetcher {
+        panic_prefix: String,
+        fallback: MockPageFetcher,
+    }
+
+    #[async_trait]
+    impl PageFetcher for PanicFetcher {
+        async fn fetch_page(
+            &self,
+            mode: ListingMode,
+            max_keys: i32,
+            prefix: Option<&str>,
+            delimiter: Option<&str>,
+            continuation_token: Option<&str>,
+            key_marker: Option<&str>,
+            version_id_marker: Option<&str>,
+        ) -> Result<ListPage> {
+            if prefix == Some(self.panic_prefix.as_str()) {
+                panic!("fetch boom");
+            }
+            self.fallback
+                .fetch_page(
+                    mode,
+                    max_keys,
+                    prefix,
+                    delimiter,
+                    continuation_token,
+                    key_marker,
+                    version_id_marker,
+                )
+                .await
+        }
+    }
+
+    #[tokio::test]
+    async fn parallel_sub_task_panic_is_reported() {
+        let mut map: PageMap = HashMap::new();
+        map.insert(
+            (Some("p/".to_string()), Some("/".to_string())),
+            vec![ListPage {
+                objects: vec![],
+                sub_prefixes: vec!["p/boom/".to_string()],
+                is_truncated: false,
+                continuation_token: None,
+                key_marker: None,
+                version_id_marker: None,
+            }],
+        );
+        let fetcher = PanicFetcher {
+            panic_prefix: "p/boom/".to_string(),
+            fallback: MockPageFetcher::from_map(map),
+        };
+        let engine = make_engine(fetcher, "bucket", Some("p/"), None, 4, 5, false);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(10);
+        let r = engine.list_dispatch(ListingMode::Objects, &tx, 1000).await;
+        drop(tx);
+        drain(&mut rx).await;
+        let err = r.unwrap_err();
+        assert!(
+            err.to_string().contains("Listing sub-task panicked"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn prefix_at_depth_returns_none_when_key_lacks_enough_slashes() {
+        let engine = make_engine(
+            MockPageFetcher::from_map(HashMap::new()),
+            "bucket",
+            Some("p/"),
+            None,
+            1,
+            5,
+            false,
+        );
+        // relative part "nofile" has no slash, so the 2nd-slash boundary
+        // doesn't exist and prefix_at_depth returns None.
+        assert_eq!(engine.prefix_at_depth("p/nofile", 2), None);
+        // A key not under the prefix also yields None.
+        assert_eq!(engine.prefix_at_depth("other/x", 1), None);
+    }
+
+    #[tokio::test]
+    async fn parallel_boundary_emit_stops_when_receiver_dropped() {
+        // Boundary emit at max_depth sends CommonPrefix entries directly; a
+        // dropped receiver makes that send fail and the task returns gracefully.
+        let mut map: PageMap = HashMap::new();
+        map.insert(
+            (Some("p/".to_string()), Some("/".to_string())),
+            vec![ListPage {
+                objects: vec![],
+                sub_prefixes: vec!["p/a/".to_string(), "p/b/".to_string()],
+                is_truncated: false,
+                continuation_token: None,
+                key_marker: None,
+                version_id_marker: None,
+            }],
+        );
+        let engine = make_engine_with_max_depth(
+            MockPageFetcher::from_map(map),
+            "bucket",
+            Some("p/"),
+            None,
+            4,
+            5,
+            false,
+            Some(1),
+        );
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        drop(rx);
+        let r = engine.list_dispatch(ListingMode::Objects, &tx, 1000).await;
+        assert!(r.is_ok(), "dropped receiver is graceful: {r:?}");
+    }
+
+    // =======================================================================
+    // convert_object / convert_object_version: restore-status mapping
+    // =======================================================================
+
+    #[test]
+    fn convert_object_maps_restore_status() {
+        use aws_sdk_s3::types::{Object, RestoreStatus};
+        use aws_smithy_types::DateTime as SmithyDateTime;
+
+        let obj = Object::builder()
+            .key("k.txt")
+            .size(10)
+            .last_modified(SmithyDateTime::from_secs(1_700_000_000))
+            .restore_status(
+                RestoreStatus::builder()
+                    .is_restore_in_progress(false)
+                    .restore_expiry_date(SmithyDateTime::from_secs(1_700_100_000))
+                    .build(),
+            )
+            .build();
+
+        match convert_object(&obj).expect("object should convert") {
+            ListEntry::Object(o) => {
+                assert_eq!(o.is_restore_in_progress, Some(false));
+                assert!(
+                    o.restore_expiry_date.is_some(),
+                    "restore expiry should be mapped"
+                );
+            }
+            other => panic!("expected Object, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn convert_object_version_maps_restore_status() {
+        use aws_sdk_s3::types::{ObjectVersion, RestoreStatus};
+        use aws_smithy_types::DateTime as SmithyDateTime;
+
+        let version = ObjectVersion::builder()
+            .key("k.txt")
+            .version_id("v1")
+            .is_latest(true)
+            .size(20)
+            .last_modified(SmithyDateTime::from_secs(1_700_000_000))
+            .restore_status(
+                RestoreStatus::builder()
+                    .is_restore_in_progress(true)
+                    .build(),
+            )
+            .build();
+
+        match convert_object_version(&version).expect("version should convert") {
+            ListEntry::Object(o) => {
+                assert_eq!(o.is_restore_in_progress, Some(true));
+                assert_eq!(o.version_id(), Some("v1"));
+            }
+            other => panic!("expected Object, got {other:?}"),
+        }
     }
 }

@@ -644,4 +644,218 @@ mod tests {
             original_keys.iter().map(|s| s.as_str()).collect::<Vec<_>>()
         );
     }
+
+    // ========================================================================
+    // Streaming (no_sort) summary, cancellation, and send-error paths
+    // ========================================================================
+
+    fn streaming_config(
+        summary: bool,
+        token: crate::types::token::PipelineCancellationToken,
+    ) -> AggregatorConfig {
+        AggregatorConfig {
+            no_sort: true,
+            sort_fields: vec![],
+            reverse: false,
+            summary,
+            parallel_sort_threshold: usize::MAX,
+            cancellation_token: token,
+        }
+    }
+
+    fn delete_marker(key: &str) -> ListEntry {
+        ListEntry::DeleteMarker {
+            key: key.to_string(),
+            version_info: crate::types::VersionInfo {
+                version_id: "v".to_string(),
+                is_latest: true,
+            },
+            last_modified: chrono::Utc::now(),
+            owner_display_name: None,
+            owner_id: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn streaming_emits_entries_then_summary() {
+        // no_sort + summary exercises accumulate_statistics and the Summary
+        // send inside run_streaming (distinct from run_aggregate).
+        let (entry_tx, entry_rx) = mpsc::channel(10);
+        let (display_tx, mut display_rx) = mpsc::channel(10);
+        let token = crate::types::token::create_pipeline_cancellation_token();
+        let aggregator = Aggregator::new(entry_rx, display_tx, streaming_config(true, token));
+
+        entry_tx
+            .send(make_entry("a.txt", 100, 2024, 1))
+            .await
+            .unwrap();
+        entry_tx
+            .send(make_entry("b.txt", 200, 2024, 1))
+            .await
+            .unwrap();
+        entry_tx.send(delete_marker("d.txt")).await.unwrap();
+        drop(entry_tx);
+
+        aggregator.run().await.unwrap();
+
+        let mut entries = 0;
+        let mut summary = None;
+        while let Some(msg) = display_rx.recv().await {
+            match msg {
+                DisplayMessage::Entry(_) => entries += 1,
+                DisplayMessage::Summary(s) => summary = Some(s),
+            }
+        }
+        assert_eq!(entries, 3, "two objects + one delete marker stream through");
+        let s = summary.expect("summary emitted in streaming mode");
+        assert_eq!(s.total_objects, 2);
+        assert_eq!(s.total_size, 300);
+        assert_eq!(s.total_delete_markers, 1);
+    }
+
+    #[tokio::test]
+    async fn streaming_stops_when_pre_cancelled() {
+        // Cancelled before running: the first in-loop cancel check returns Ok
+        // without emitting anything.
+        let (entry_tx, entry_rx) = mpsc::channel(10);
+        let (display_tx, mut display_rx) = mpsc::channel(10);
+        let token = crate::types::token::create_pipeline_cancellation_token();
+        token.cancel();
+        let aggregator = Aggregator::new(entry_rx, display_tx, streaming_config(false, token));
+
+        entry_tx
+            .send(make_entry("a.txt", 1, 2024, 1))
+            .await
+            .unwrap();
+        drop(entry_tx);
+
+        aggregator.run().await.unwrap();
+        assert!(display_rx.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn streaming_stops_when_display_receiver_dropped() {
+        // Dropping the display receiver makes the entry send fail; run_streaming
+        // returns Ok gracefully rather than erroring.
+        let (entry_tx, entry_rx) = mpsc::channel(10);
+        let (display_tx, display_rx) = mpsc::channel(10);
+        drop(display_rx);
+        let token = crate::types::token::create_pipeline_cancellation_token();
+        let aggregator = Aggregator::new(entry_rx, display_tx, streaming_config(false, token));
+
+        entry_tx
+            .send(make_entry("a.txt", 1, 2024, 1))
+            .await
+            .unwrap();
+        drop(entry_tx);
+
+        aggregator.run().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn streaming_post_loop_cancellation_skips_summary() {
+        // Zero entries + a cancelled token: the recv loop exits immediately and
+        // the post-loop cancel check returns before the summary is sent.
+        let (entry_tx, entry_rx) = mpsc::channel(10);
+        let (display_tx, mut display_rx) = mpsc::channel(10);
+        let token = crate::types::token::create_pipeline_cancellation_token();
+        let aggregator =
+            Aggregator::new(entry_rx, display_tx, streaming_config(true, token.clone()));
+
+        token.cancel();
+        drop(entry_tx); // no entries at all
+
+        aggregator.run().await.unwrap();
+        assert!(
+            display_rx.recv().await.is_none(),
+            "cancelled: no entries and no summary"
+        );
+    }
+
+    // ========================================================================
+    // run_aggregate send-error and mid-send cancellation paths
+    // ========================================================================
+
+    fn aggregate_config(
+        summary: bool,
+        token: crate::types::token::PipelineCancellationToken,
+    ) -> AggregatorConfig {
+        AggregatorConfig {
+            no_sort: false,
+            sort_fields: vec![SortField::Key],
+            reverse: false,
+            summary,
+            parallel_sort_threshold: usize::MAX,
+            cancellation_token: token,
+        }
+    }
+
+    #[tokio::test]
+    async fn aggregate_stops_when_display_receiver_dropped() {
+        // run_aggregate drains and sorts, then the first Entry send fails
+        // because the display receiver was dropped; it returns Ok.
+        let (entry_tx, entry_rx) = mpsc::channel(10);
+        let (display_tx, display_rx) = mpsc::channel(10);
+        drop(display_rx);
+        let token = crate::types::token::create_pipeline_cancellation_token();
+        let aggregator = Aggregator::new(entry_rx, display_tx, aggregate_config(false, token));
+
+        entry_tx
+            .send(make_entry("a.txt", 1, 2024, 1))
+            .await
+            .unwrap();
+        entry_tx
+            .send(make_entry("b.txt", 2, 2024, 1))
+            .await
+            .unwrap();
+        drop(entry_tx);
+
+        aggregator.run().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn aggregate_stops_mid_send_on_cancellation() {
+        // run_aggregate: cancellation during the post-sort send loop stops it
+        // early. Deterministic on the current-thread test runtime: the first
+        // recv() drives the aggregator past the post-drain cancel check and
+        // parks it on a full (capacity-1) display channel; we cancel before
+        // releasing it, so the next loop iteration observes the cancel.
+        let (entry_tx, entry_rx) = mpsc::channel(10);
+        let (display_tx, mut display_rx) = mpsc::channel(1);
+        let token = crate::types::token::create_pipeline_cancellation_token();
+        let aggregator =
+            Aggregator::new(entry_rx, display_tx, aggregate_config(false, token.clone()));
+
+        entry_tx
+            .send(make_entry("a.txt", 1, 2024, 1))
+            .await
+            .unwrap();
+        entry_tx
+            .send(make_entry("b.txt", 2, 2024, 1))
+            .await
+            .unwrap();
+        entry_tx
+            .send(make_entry("c.txt", 3, 2024, 1))
+            .await
+            .unwrap();
+        drop(entry_tx);
+
+        let handle = tokio::spawn(aggregator.run());
+
+        // First recv drives the task: drain all, pass the post-drain cancel
+        // check (uncancelled), send "a", and park sending "b".
+        let first = display_rx.recv().await.unwrap();
+        assert!(matches!(first, DisplayMessage::Entry(e) if e.key() == "a.txt"));
+
+        // Cancel, then release "b". The next iteration ("c") sees the cancel.
+        token.cancel();
+        let second = display_rx.recv().await.unwrap();
+        assert!(matches!(second, DisplayMessage::Entry(e) if e.key() == "b.txt"));
+
+        assert!(
+            display_rx.recv().await.is_none(),
+            "cancelled before 'c' was sent"
+        );
+        handle.await.unwrap().unwrap();
+    }
 }
