@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Parallel object listing now honors `--max-parallel-listings` for deep-prefix (leaf) listings. Previously the concurrency permit was released before the sequential scan of each leaf prefix, so buckets with many deep prefixes could issue an unbounded number of concurrent `ListObjectsV2` calls regardless of the configured limit.
+- `--rate-limit-api` now enforces the exact requested rate. Previously the effective rate was rounded down to a multiple of 10 (e.g. `--rate-limit-api 19` throttled to 10 requests per second).
+- `--storage-class` invalid-value error message now lists `ONEZONE_IA` correctly (previously shown as `ONE-ZONE_IA`, which is not an accepted value).
+
+### Security
+
+- `--help` no longer prints the *values* of the credential environment variables `TARGET_ACCESS_KEY`, `TARGET_SECRET_ACCESS_KEY`, and `TARGET_SESSION_TOKEN`, preventing credentials from leaking into help output when they are set in the environment. The variable names are still shown.
+- Bumped `crossbeam-epoch` to `v0.9.20` to resolve RUSTSEC-2026-0204.
+
 ## [1.0.3] - 2026-06-27
 
 Monthly update.

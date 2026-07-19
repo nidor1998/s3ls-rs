@@ -444,15 +444,15 @@ pub struct CLIArgs {
     pub target_profile: Option<String>,
 
     /// Target access key
-    #[arg(long, env, conflicts_with_all = ["target_profile"], requires = "target_secret_access_key", value_parser = NonEmptyStringValueParser::new(), help_heading = "AWS Configuration")]
+    #[arg(long, env, hide_env_values = true, conflicts_with_all = ["target_profile"], requires = "target_secret_access_key", value_parser = NonEmptyStringValueParser::new(), help_heading = "AWS Configuration")]
     pub target_access_key: Option<String>,
 
     /// Target secret access key
-    #[arg(long, env, conflicts_with_all = ["target_profile"], requires = "target_access_key", value_parser = NonEmptyStringValueParser::new(), help_heading = "AWS Configuration")]
+    #[arg(long, env, hide_env_values = true, conflicts_with_all = ["target_profile"], requires = "target_access_key", value_parser = NonEmptyStringValueParser::new(), help_heading = "AWS Configuration")]
     pub target_secret_access_key: Option<String>,
 
     /// Target session token
-    #[arg(long, env, conflicts_with_all = ["target_profile"], requires = "target_access_key", value_parser = NonEmptyStringValueParser::new(), help_heading = "AWS Configuration")]
+    #[arg(long, env, hide_env_values = true, conflicts_with_all = ["target_profile"], requires = "target_access_key", value_parser = NonEmptyStringValueParser::new(), help_heading = "AWS Configuration")]
     pub target_session_token: Option<String>,
 
     /// AWS region for the target

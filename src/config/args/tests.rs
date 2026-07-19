@@ -1957,3 +1957,51 @@ fn one_line_composes_with_show_flags_even_though_they_are_ignored() {
     assert!(cli.show_storage_class);
     assert!(cli.human);
 }
+
+// ===========================================================================
+// Security: credential env values must not leak into --help output
+// ===========================================================================
+
+use rusty_fork::rusty_fork_test;
+
+rusty_fork_test! {
+    #[test]
+    fn help_hides_credential_env_values_but_shows_names() {
+        use clap::CommandFactory;
+
+        // SAFETY: rusty_fork runs this test body in its own process, so
+        // mutating the environment cannot race other tests.
+        unsafe {
+            std::env::set_var("TARGET_ACCESS_KEY", "AKIA_should_not_appear");
+            std::env::set_var("TARGET_SECRET_ACCESS_KEY", "SECRET_should_not_appear");
+            std::env::set_var("TARGET_SESSION_TOKEN", "TOKEN_should_not_appear");
+            std::env::set_var("TARGET_REGION", "us-west-2");
+        }
+
+        let help = CLIArgs::command().render_long_help().to_string();
+
+        // Control: clap does render env values into help, so the non-secret
+        // TARGET_REGION value appears. This proves the assertions below would
+        // catch a leak (i.e. env values really are read at render time).
+        assert!(
+            help.contains("us-west-2"),
+            "expected the non-secret TARGET_REGION value in help output"
+        );
+
+        // Credential env var names must still be shown, but never their values.
+        for (name, value) in [
+            ("TARGET_ACCESS_KEY", "AKIA_should_not_appear"),
+            ("TARGET_SECRET_ACCESS_KEY", "SECRET_should_not_appear"),
+            ("TARGET_SESSION_TOKEN", "TOKEN_should_not_appear"),
+        ] {
+            assert!(
+                help.contains(name),
+                "env var name {name} should still appear in help"
+            );
+            assert!(
+                !help.contains(value),
+                "credential value for {name} leaked into --help output"
+            );
+        }
+    }
+}
