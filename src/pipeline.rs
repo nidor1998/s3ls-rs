@@ -287,4 +287,23 @@ mod tests {
         let result = pipeline.run().await;
         assert!(result.is_ok());
     }
+
+    #[tokio::test]
+    async fn build_storage_errors_without_client_config() {
+        // With no storage override and a Config whose client config is absent,
+        // the pipeline must surface build_s3_storage's "No client
+        // configuration" error rather than panicking.
+        let mut config =
+            Config::try_from(crate::parse_from_args(vec!["s3ls", "s3://test-bucket/"]).unwrap())
+                .unwrap();
+        config.target_client_config = None;
+
+        let token = create_pipeline_cancellation_token();
+        let pipeline = ListingPipeline::new(config, token);
+        let err = pipeline.run().await.unwrap_err();
+        assert!(
+            err.to_string().contains("No client configuration"),
+            "got: {err}"
+        );
+    }
 }

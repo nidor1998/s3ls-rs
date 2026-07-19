@@ -132,4 +132,10 @@ mod tests {
 
         assert!(rx.recv().await.is_none());
     }
+
+    #[test]
+    fn mock_storage_reports_zero_api_calls() {
+        let mock = MockStorage::new(vec![]);
+        assert_eq!(mock.api_call_count(), 0);
+    }
 }

@@ -311,4 +311,105 @@ mod tests {
         assert_eq!(received[0].key(), "file1.txt");
         assert_eq!(received[1].key(), "logs/");
     }
+
+    // ------------------------------------------------------------------------
+    // Error, break, and panic paths
+    // ------------------------------------------------------------------------
+
+    /// Filter that always errors, to exercise the filter-error branch.
+    struct ErrorFilter;
+    impl crate::filters::ObjectFilter for ErrorFilter {
+        fn matches(&self, _entry: &ListEntry) -> anyhow::Result<bool> {
+            Err(anyhow::anyhow!("boom"))
+        }
+    }
+
+    /// Storage whose listing task panics, to exercise the join-error branch.
+    struct PanicStorage;
+    #[async_trait::async_trait]
+    impl StorageTrait for PanicStorage {
+        async fn list_objects(&self, _s: &mpsc::Sender<ListEntry>, _m: i32) -> Result<()> {
+            panic!("storage boom");
+        }
+        async fn list_object_versions(&self, _s: &mpsc::Sender<ListEntry>, _m: i32) -> Result<()> {
+            panic!("storage boom");
+        }
+        fn api_call_count(&self) -> u64 {
+            0
+        }
+    }
+
+    #[tokio::test]
+    async fn stops_when_output_receiver_dropped() {
+        // The downstream aggregate receiver is gone, so the forward send fails
+        // and the lister breaks out of the loop cleanly (returns Ok).
+        let mock = Arc::new(MockStorage::new(sample_entries()));
+        let (tx, rx) = mpsc::channel(10);
+        drop(rx);
+
+        let lister = ObjectLister {
+            storage: mock,
+            sender: tx,
+            all_versions: false,
+            max_keys: 1000,
+            queue_size: 10,
+            cancellation_token: create_pipeline_cancellation_token(),
+            hide_delete_markers: false,
+            show_objects_only: false,
+            filter_chain: FilterChain::new(vec![]),
+        };
+
+        lister.list_target().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn filter_error_cancels_and_propagates() {
+        let mock = Arc::new(MockStorage::new(sample_entries()));
+        let (tx, _rx) = mpsc::channel(10);
+        let token = create_pipeline_cancellation_token();
+
+        let lister = ObjectLister {
+            storage: mock,
+            sender: tx,
+            all_versions: false,
+            max_keys: 1000,
+            queue_size: 10,
+            cancellation_token: token.clone(),
+            hide_delete_markers: false,
+            show_objects_only: false,
+            filter_chain: FilterChain::new(vec![Box::new(ErrorFilter)]),
+        };
+
+        let err = lister.list_target().await.unwrap_err();
+        assert!(err.to_string().contains("boom"), "got: {err}");
+        assert!(
+            token.is_cancelled(),
+            "a filter error must cancel the pipeline"
+        );
+    }
+
+    #[tokio::test]
+    async fn storage_task_panic_is_reported() {
+        let (tx, _rx) = mpsc::channel(10);
+        let token = create_pipeline_cancellation_token();
+
+        let lister = ObjectLister {
+            storage: Arc::new(PanicStorage),
+            sender: tx,
+            all_versions: false,
+            max_keys: 1000,
+            queue_size: 10,
+            cancellation_token: token.clone(),
+            hide_delete_markers: false,
+            show_objects_only: false,
+            filter_chain: FilterChain::new(vec![]),
+        };
+
+        let err = lister.list_target().await.unwrap_err();
+        assert!(
+            err.to_string().contains("Lister task panicked"),
+            "got: {err}"
+        );
+        assert!(token.is_cancelled());
+    }
 }
