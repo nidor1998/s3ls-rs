@@ -89,7 +89,6 @@ impl std::fmt::Display for SortField {
 pub struct CLIArgs {
     /// S3 target path: s3://<BUCKET_NAME>[/prefix] (omit to list buckets)
     #[arg(
-        env,
         help = "S3 target path: s3://<BUCKET_NAME>[/prefix] (omit to list buckets)",
         value_parser = check_s3_target,
         required = false,

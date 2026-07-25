@@ -2004,4 +2004,22 @@ rusty_fork_test! {
             );
         }
     }
+
+    #[test]
+    fn positional_target_ignores_target_env_var() {
+        // SAFETY: rusty_fork runs this test body in its own process, so
+        // mutating the environment cannot race other tests.
+        unsafe {
+            std::env::set_var("TARGET", "s3://from-env");
+        }
+
+        // Without a positional argument, the generic TARGET env var must not
+        // fill in the target; bucket listing mode (empty target) is expected.
+        let cli = parse_from_args(args(&[])).unwrap();
+        assert_eq!(cli.target, "");
+
+        // A positional argument on the command line still wins as usual.
+        let cli = parse_from_args(args(&["s3://from-cli"])).unwrap();
+        assert_eq!(cli.target, "s3://from-cli");
+    }
 }

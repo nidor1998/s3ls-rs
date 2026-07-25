@@ -1195,6 +1195,260 @@ Every line of source code, every test, all documentation, CI/CD configuration, a
 
 Human engineers authored the requirements, design specifications, and s3sync reference architecture. They thoroughly reviewed and verified the design, all source code, and all tests. All features of the initial build binary have been manually tested and verified by humans. All E2E test scenarios have been thoroughly verified by humans against live AWS S3. The development followed a spec-driven process: requirements and design documents were written first, and the AI generated code to match those specifications under continuous human oversight.
 
+### Quality verification (by AI self-assessment)
+
+Measurements below are taken at v1.2.0 (commit `568e981`, 2026-07-25). The coverage figures are sourced from `llvm-cov-report.txt` (`cargo llvm-cov`; `lcov.info` is the matching machine-readable LCOV artifact) and reflect a single combined run — `cargo llvm-cov` with `RUSTFLAGS="--cfg e2e_test"` on the maintainer's machine, 2026-07-25 — so both the unit tests and the live-AWS e2e suite are included in the report.
+
+| Metric                         | Value                                                         |
+|--------------------------------|---------------------------------------------------------------|
+| Production code                | ~14,500 lines of Rust across 38 source files in `src/`        |
+| Unit tests (in `src/`)         | 514 `#[test]` / `#[tokio::test]` annotations                  |
+| E2E integration tests          | 113 annotations across 8 `tests/e2e_*.rs` files (gated behind `--cfg e2e_test`; run only by the maintainer against live AWS) |
+| Code coverage (llvm-cov, combined unit + e2e run) | 97.51% regions (298 / 11,983 missed), 96.34% functions (28 / 764 missed), 98.31% lines (140 / 8,299 missed) |
+| Static analysis (clippy)       | 0 warnings (`cargo clippy --all-features`)                    |
+| Formatting                     | 0 diffs (`cargo fmt --all --check`)                           |
+| Supply chain (cargo-deny)      | Clean (`cargo deny -L error check`); runs per-PR in `ci.yml` and daily at 01:34 UTC in `cargo-deny.yml`; `advisories.ignore = []` |
+| Code adapted from [s3sync](https://github.com/nidor1998/s3sync) | Tracing infrastructure (`src/bin/s3ls/tracing_init.rs`) and the Ctrl+C signal handler (`src/bin/s3ls/ctrl_c_handler/`) |
+
+What these numbers do and do not show:
+- They show what the combined test run exercises — including the live-AWS e2e suite — not how the binary behaves under production load over time. CI asserts only the non-e2e build (unit tests) on every push and PR.
+- Coverage is a structural metric. A covered line can still be incorrect; an uncovered line can still be correct. Use it to size the test surface, not to certify behaviour.
+- The e2e suite covers live-AWS paths (recursive and versioned listings, filters, sorting, display flags, bucket listing, Express One Zone, a 16K-object listing-completeness run, and UTF-8/control-character edge cases) but runs only on the maintainer's machine; CI does not exercise it, and reproducing the coverage figures above requires AWS credentials.
+
+The codebase is built through spec-driven development with human review at every step. Test counts and coverage will change as refinements are added.
+
+### AI assessment of safety and correctness (by Claude, Anthropic)
+
+<details>
+<summary>Click to expand the full assessment</summary>
+
+> Assessment date: 2026-07-25.
+>
+> Assessed version: 1.2.0 (commit `568e981`).
+>
+> Method and scope of evidence: this assessment was performed from scratch at v1.2.0, re-deriving every claim rather than carrying conclusions forward from other projects' assessments. All 38 Rust source files under `src/` (14,511 lines) were read in full, along with all 8 live-AWS suites in `tests/e2e_*.rs` (113 test annotations), `tests/common/mod.rs`, `Cargo.toml`, `Cargo.lock`, `deny.toml`, all five GitHub Actions workflows, and the coverage artifacts `lcov.info` / `llvm-cov-report.txt`. In addition, the following were executed on the assessed tree (rustc 1.97.1): `cargo test --all-targets` (514 passed — 506 library + 8 binary unit tests; the e2e crates compile as empty without `--cfg e2e_test`), `cargo fmt --all --check` (clean), `cargo clippy -- -D warnings` and `cargo clippy --all-features` (clean), and `cargo deny -L error check` (advisories, bans, licenses, sources all ok). Claims cite the file — and where useful the line numbers as of commit `568e981` — where the relevant code or test lives.
+>
+> Limits of the evidence: this assessment cannot rule out all bugs. It includes no fuzzing, sanitizer or Miri runs, formal verification, or penetration testing. The e2e suite runs only against the maintainer's AWS account; this pass did not run it (the coverage artifacts show its paths were executed during their generating run). Coverage measures what the tests execute, not whether the executed code is correct.
+
+**Question addressed.** s3ls is a read-only listing tool — it cannot corrupt or delete S3 data. The failure modes that matter are therefore different from a transfer tool's: (1) a **silently incomplete or duplicated listing** that downstream automation treats as complete inventory, (2) **output injection** — attacker-named objects forging rows or terminal escapes in the operator's output, (3) **credential leakage**, (4) **runaway API usage or memory**, and (5) **misleading exit codes**. Each is examined below.
+
+#### Surface
+
+The binary has no subcommands and no mutating operation anywhere in `src/`: the only S3 calls in the codebase are `ListObjectsV2`, `ListObjectVersions`, `ListBuckets`, and `ListDirectoryBuckets` (`src/storage/s3/mod.rs:94, 176`; `src/bucket_lister.rs:295, 356`). Mutating SDK calls exist only in the test harness (`tests/common/mod.rs`) to build fixtures. Mode validation is strict and two-sided: bucket-listing mode rejects all 19 object-only flags and object mode rejects the 3 bucket-only flags with named error messages, rather than silently ignoring them (`src/config/args/mod.rs:710-787`); sort fields are validated per mode, capped at 2, and de-duplicated. Usage errors exit 2, listing errors exit 1, success (including an empty result) exits 0 — all three pinned by live-binary e2e tests (`tests/e2e_listing.rs:232-456`).
+
+#### Listing completeness (the highest-stakes property)
+
+- **Pagination anti-loop guards.** All six pagination loops — sequential objects/versions, parallel-discovery objects/versions, `ListBuckets`, `ListDirectoryBuckets` — fail loudly if S3 reports a truncated response without a forward marker, or returns the same continuation token/marker twice (`src/storage/s3/mod.rs:503-549, 635-679`; `src/bucket_lister.rs:332-345, 383-396`). A buggy or hostile S3-compatible endpoint can therefore truncate a listing but cannot make s3ls loop forever or silently skip pages that S3 said existed. Every guard has a dedicated unit test in both sequential and parallel form (`src/storage/s3/mod.rs:1502-1677, 2712-2919`).
+- **Parallel engine correctness.** Recursive listings fan out by delimiter-discovered prefixes, which partition the keyspace — each object is returned by exactly one prefix scan, so parallelism cannot duplicate rows. The concurrency permit is held across leaf sequential scans (the v1.1.0 fix for unbounded leaf concurrency), released by parents before awaiting children so the semaphore cannot deadlock (`src/storage/s3/mod.rs:583-595`), and enforced by a regression test that measures peak in-flight requests against the mock fetcher (`mod.rs:2237-2304`). A sub-task error or panic cancels the whole pipeline and surfaces as exit 1 rather than a truncated exit-0 listing (`mod.rs:738-750`).
+- **Pipeline shutdown discipline.** The lister drops its intermediate receiver before joining the storage task, so a cancelled run cannot deadlock against a full bounded queue — a fixed bug pinned by a timeout-guarded regression test (`src/lister.rs:70-74, 160-222`). Every spawned stage (storage, lister, aggregator, display writer) has its `JoinError` caught and converted into cancellation plus a reported error (`src/pipeline.rs:68-98`).
+- **Filters fail closed.** `fancy-regex` matching returns `Result`, and a runtime error (e.g. backtrack-limit exhaustion on a pathological pattern) cancels the pipeline and exits 1 instead of silently keeping or dropping the entry — pinned for both regex filters with a forced `RuntimeError` (`src/filters/include_regex.rs:112-128`, `exclude_regex.rs:112-128`; `src/lister.rs:62-66`). Filter boundary semantics (`>=` for `--filter-larger-size` / `--filter-mtime-after`, strict `<` for their counterparts, `None` storage class ≡ `STANDARD`, delete markers exempt from size/class filters but subject to regex/mtime filters) are pinned by unit tests including `u64::MAX` edges and re-verified against live S3 with read-back `LastModified` pivots (`tests/e2e_filters.rs`, `e2e_filters_versioned.rs`).
+- **Scale evidence.** The live suite includes a 16,082-object, 6–7-level-deep fixture verified for exact set-completeness under four configurations (full recursive, prefix-scoped, `--max-depth 3` with expected boundary prefixes, `--max-parallel-listing-max-depth 1`), plus 1,000-object paginated runs (`--max-keys 10`) in both objects and versions modes (`tests/e2e_large_listing.rs`, `e2e_listing.rs:636-732`).
+- **Sorting.** Sort is stable (`sort_by` / rayon `par_sort_by`), multi-column via `Ordering::then_with`, with a test proving sequential and parallel sorts produce identical output and a live test proving the auto-appended secondary date sort for versioned listings (`src/aggregate.rs:144-168`; `tests/e2e_sort.rs:352-431`).
+
+#### Output integrity (injection defense)
+
+Object keys are attacker-controlled even on a trusted endpoint. By default, text-mode output replaces `\x00`–`\x1f` and `\x7f` with `\xNN` escapes in every string an attacker can influence — keys, common prefixes, owner display name/ID, bucket names — before padding or joining columns (`src/display/mod.rs:78-108`; `src/display/columns.rs`; `src/bucket_lister.rs:27-33`). The escape function is UTF-8-correct (byte fast-path is sound because UTF-8 continuation bytes are ≥ 0x80; slow path iterates by `char`), and a unit test pins the exact phantom-row attack — a key embedding `\n` + a fake TSV row — being neutralized (`src/display/tsv.rs:273-296`). Live tests upload keys containing literal tabs/newlines and 2–4-byte UTF-8 (emoji, CJK extension B) and assert both escaped text output and byte-exact JSON round-trips (`tests/e2e_edge_cases.rs`). JSON mode always emits via `serde_json` (control chars safely escaped, keys byte-preserved); `--raw-output` is an explicit opt-out and conflicts with `--json`. One asymmetry worth naming: `BucketRegion`, `BucketArn`, ETag, and version-ID values are *not* escaped in text mode — on Amazon S3 these are AWS-generated and cannot carry control bytes, but a hostile S3-compatible endpoint could inject via them. That is squarely outside the documented security model (see the README's Security assumptions), but operators of untrusted endpoints should know the escaping is scoped to attacker-controllable-on-AWS fields, not to every S3-returned string.
+
+#### Credential handling
+
+`AccessKeys` derives `Zeroize` + `ZeroizeOnDrop`; its `Debug` masks the access-key ID to first-4/last-4 (full redaction under 8 chars) and fully redacts the secret and session token — all pinned by unit tests (`src/types/mod.rs:45-90, 309-323`). The three secret-bearing arguments set `hide_env_values`, and a forked-process test proves `--help` shows the env var *names* but never their *values*, with a deliberate control (the non-secret `TARGET_REGION` value does appear, proving the assertion would catch a leak) (`src/config/args/tests.rs:1967-2006`). The `-vvv` config trace passes through the redacting `Debug` chain, so it cannot print secrets (`src/bin/s3ls/main.rs:37`). `--target-no-sign-request` disables credential loading entirely for public buckets (`client_builder.rs:120-123`). Residual, inherent exposure: secrets passed as command-line arguments are visible to local process inspection, and the SDK holds its own non-zeroizing copies — defense in depth, not complete erasure. `http://` custom endpoints are accepted (`value_parser/url.rs`) and remove transport confidentiality; that is an operator-controlled insecure mode.
+
+#### Robustness against non-conforming endpoints
+
+There are **no `unsafe` blocks in production code** (the only two `unsafe` sites are test-only env-var mutations under `rusty_fork`), and the production panic surface is six provably-infallible `expect`/`unwrap` sites (semaphore-closed, always-3-columns `pop`, `serde_json::to_string` on string/bool/int maps, re-parse of an already-validated regex and byte size). No S3 response field is unwrapped: a row missing its key or `LastModified` is *silently dropped* (`convert_object`, `src/storage/s3/mod.rs:913-916`), a missing `IsTruncated` is treated as end-of-listing, and a negative size clamps to 0. This is the fail-safe (no crash) rather than fail-loud choice; against a pathologically non-conforming endpoint it can under-report rather than error. Both release profiles set `panic = "abort"`, so any surviving panic path terminates the process without unwinding — relevant context for the guarantee above.
+
+#### Operational semantics
+
+- **Exit codes** (0/1/2) are pinned by live tests, including empty-bucket and no-matching-prefix → 0, `NoSuchBucket` and bad credentials → 1, and clap/validation errors → 2. `BrokenPipe` from `| head` exits 0 silently on both the object- and bucket-listing paths, pinned by shell-pipeline e2e tests (`src/bin/s3ls/main.rs:66-69, 94-97`; `tests/e2e_edge_cases.rs:704-787`).
+- **Rate limiting** is exact: the schedule is property-tested for every accepted rate (10–65,535 rps, `refill × 1000 == rate × interval` — the v1.1.0 fix for flooring to multiples of 10), and the limiter's acquire is cancellation-aware (`src/storage/s3/mod.rs:878-894, 2148-2182`).
+- **Memory**: the default sort mode buffers the entire result set, and the three bounded channels between stages (storage→lister, lister→aggregator, aggregator→display) each default to 200,000 entries (`src/config/mod.rs:91`; `src/pipeline.rs:57-59`; `src/lister.rs:26`); `--no-sort` streams with near-constant memory and still applies filters (live-pinned, `tests/e2e_filters.rs:1070-1104`). For very large buckets, memory is bounded only if the operator opts into `--no-sort`.
+
+#### Supply chain and CI
+
+The shipped TLS stack is `rustls 0.23.42` with `aws-lc-rs 1.17.3` and OS trust anchors; the legacy `rustls 0.21` alias is deliberately excluded (RUSTSEC-2026-0098; `Cargo.toml:31-37`), `ring` is not in the resolved dependency graph on the assessed platform, and `openssl-sys` is banned in `deny.toml`. `cargo deny -L error check` runs per-push/PR (`ci.yml`) and daily at 01:34 UTC (`cargo-deny.yml`) with `advisories.ignore = []`, unknown registries/git sources denied, and a permissive-license allowlist. `Cargo.lock` is committed; every release build and the crates.io publish use `--locked`; release artifacts get signed build-provenance attestations (`actions/attest-build-provenance@v4`) and publishing uses OIDC trusted publishing. CI builds and tests seven targets (x86_64/aarch64 × Linux gnu/musl, Windows MSVC ×2, macOS arm64) with blocking fmt, clippy `-D warnings`, and cargo-deny jobs. Gaps worth naming: no CI job compiles the `--cfg e2e_test` corpus (113 live tests are type-checked and run only on the maintainer's machine); the release workflow builds on tag push without running tests or waiting for `ci.yml`; most actions are referenced by mutable major-version tags; and CI's clippy does not pass `--all-targets` — this pass found two style-level lints (`format_in_format_args`, `needless_range_loop`) in unit-test code that the CI gate misses. Production code is clippy-clean under `-D warnings`.
+
+#### Coverage measurement
+
+`llvm-cov-report.txt` (with `lcov.info` as the same data in LCOV form, from a combined unit + live-e2e run — `src/bin/s3ls/main.rs` has zero embedded tests yet 100% function coverage, which is only possible with the spawned binary instrumented) reports 97.51% region, 96.34% function, and 98.31% line coverage overall. On the completeness-critical paths: `storage/s3/mod.rs` 97.84% regions / 98.60% lines, `lister.rs` 96.55%, `aggregate.rs` 99.08%, `pipeline.rs` 90.86%; the formatters `display/tsv.rs`, `aligned.rs`, `aligned_formatter.rs`, and `one_line_formatter.rs` are at 100.00% regions, `display/json.rs` 97.05%. The weakest files are `bucket_lister.rs` (91.60% regions, 82.22% functions) and `bin/s3ls/tracing_init.rs` (82.50%). Branch coverage is not measured (the branch columns are empty), and the artifacts come from a single maintainer-machine run; CI neither produces nor gates on coverage. Coverage is structural: a covered line can still be incorrect.
+
+#### Known limitations and findings of this assessment
+
+This from-scratch pass found no critical or high-severity defects at v1.2.0. What it did find, and the deliberate limits it confirmed:
+
+- **Ctrl-C exits 0 with a truncated listing (main finding).** SIGINT cancels the pipeline, every stage treats cancellation as a graceful stop, and `S3lsError::Cancelled` maps to exit 0 (`src/types/error.rs:19-25`; `src/bin/s3ls/main.rs:100-103`). An interrupted `s3ls --recursive > inventory.txt` therefore produces a partial file and exit code 0 — indistinguishable from success for any supervisor that sends SIGINT and reads the exit status. Interactively this is arguably fine (the operator knows they interrupted); in automation it is a sharp edge. SIGTERM is not handled at all (default disposition kills the process, which at least cannot read as success). No test pins the SIGINT exit code.
+- **Generic environment-variable names on every long option.** v1.2.0 removed the env binding from the positional target (an exported `TARGET` can no longer silently select a bucket — regression-tested in `src/config/args/tests.rs:2008-2025`), but every long option remains env-backed with generic names: an exported `RECURSIVE`, `JSON`, `SUMMARIZE`, `SORT`, `MAX_KEYS`, `HEADER`, etc. silently changes output shape or API-call volume. Command-line values win over the environment, and the blast radius for a read-only tool is output shape rather than data loss, but scripts parsing s3ls output in CI environments (where names like `JSON` are plausible) can be surprised.
+- **Fail-safe, not fail-loud, on non-conforming responses.** Rows missing a key or timestamp are dropped without any warning, and a missing `IsTruncated` ends the listing as if complete. Correct-by-construction for Amazon S3 (these fields are always present); against a broken S3-compatible endpoint the result is silent under-reporting rather than an error. The anti-loop guards cover the inverse (loud failure on impossible pagination states), so the asymmetry is deliberate but worth knowing.
+- `-qq` suppresses even error messages (tracing is never initialized) while the exit code stays correct — silent-by-design, but a failed run under `-qq` leaves no diagnostic.
+- Sort-mode memory is unbounded in the object count; the documented mitigation is `--no-sort`.
+- Minor documentation drift: `tests/README.md`'s per-file test counts and a few `Covers src/...:NNN` line references in e2e comments are stale relative to the current source. Cosmetic only.
+- No fuzzing, sanitizers, Miri, or external audit; the e2e suite is maintainer-only. Fuzzing `escape_control_chars`, `S3Target::parse`, and the depth/prefix arithmetic (`key_depth` / `prefix_at_depth`) would be the highest-value next step.
+
+The changelog fixes claimed for v1.1.0 and v1.2.0 were each verified present with a pinning regression test: the leaf-scan concurrency cap (`parallel_leaf_scans_respect_concurrency_limit`), the exact rate limiter (`rate_limiter_schedule_is_exact_for_all_valid_rates`), credential values hidden from `--help` (`help_hides_credential_env_values_but_shows_names`), and the positional `TARGET` env removal (`positional_target_ignores_target_env_var`).
+
+#### Is the software reliable?
+
+For readers who are not software engineers: "reliable" here means whether a careful operator can trust what `s3ls` prints — that the listing is complete, that it faithfully represents what S3 returned, and that running it cannot damage anything.
+
+**Risk: damage to your data.** Structurally excluded: the binary contains only the four S3 list operations. There is nothing in the codebase that can write, modify, or delete an object or bucket.
+
+**Risk: silently incomplete listings.** The engine fails loudly on impossible pagination states, propagates every worker error and panic into a non-zero exit, bounds concurrency correctly, and its completeness is verified against live S3 at 16,000-object scale in four configurations. The one gap is operator-shaped: an interrupted run (Ctrl-C) exits 0 with partial output, so automation must not treat an interruptible run's exit 0 as proof of completeness.
+
+**Risk: misleading output.** Attacker-controlled object names cannot forge rows or inject terminal escapes in default text mode, and JSON mode is always safely escaped with byte-exact keys — both pinned by tests including real uploaded hostile keys.
+
+**Risk: credential leakage.** Keys are zeroized and redacted in every debug/log/help path, with regression tests for the one leak that previously existed (`--help` printing exported credential values, fixed in v1.1.0).
+
+**Risk: runaway cost.** Listing-only API surface, bounded parallelism (enforced by a regression test), an exact opt-in rate limiter, and `-v` API-call accounting.
+
+**What this assessment cannot establish.** That the code is bug-free, that S3-compatible stores other than Amazon S3 will behave identically (the fail-safe conversions assume AWS-shaped responses), or that future dependency advisories will not bite before they are patched. In plain terms: at v1.2.0 the failure modes that could cause silent harm each have a specific, citable, tested safeguard, and the tool is reliable for routine use *provided* the operator treats exit codes — not output presence — as the success signal, avoids generic environment variables that collide with s3ls option names, and does not treat an interrupted run as a complete inventory. The fact that the codebase was generated by AI does not by itself raise or lower its reliability; what determines that is the design, the tests, and the verifiable evidence above.
+
+</details>
+
+### AI assessment of safety and correctness (by Codex)
+
+<details>
+<summary>Click to expand the full assessment</summary>
+
+Assessment date: 2026-07-25.
+
+Assessed workspace: manifest version 1.2.0, branch `fix/positional_envvar`, commit `9fce221`. The Rust source and build configuration are identical to commit `568e981`; the two later commits change the README and add the text coverage report.
+
+This is a from-scratch assessment. All 38 Rust files under `src/` (14,511 lines, including embedded tests) and `build.rs` were read in full. The eight `tests/e2e_*.rs` suites, `tests/common/mod.rs`, manifests and resolved dependency graph, `deny.toml`, all five GitHub Actions workflows, and the latest `lcov.info` / `llvm-cov-report.txt` were inspected as supporting evidence. The pre-existing AI assessments in this README were not treated as evidence.
+
+#### Verification performed
+
+- `cargo test --all-targets` passed: 506 library tests and 8 binary tests (514 passed, 0 failed). The eight live-AWS e2e targets compiled with zero tests because they are gated by `cfg(e2e_test)`; this command therefore does not claim a live-AWS pass.
+- `cargo fmt --all --check` passed.
+- `cargo clippy --all-features -- -D warnings` passed for the normal library/binary targets. The stricter `cargo clippy --all-targets --all-features -- -D warnings` found two test-only style lints (`format_in_format_args` in `display/aligned.rs` and `needless_range_loop` in `display/tsv.rs`); production code remained clean.
+- `cargo deny -L error check` passed: advisories, bans, licenses, and sources all reported `ok`, with no ignored advisories.
+- The repository contains 514 test annotations under `src/` and 113 gated live-AWS e2e annotations across eight suites.
+- Both coverage artifacts agree on 98.31% line coverage (8,159/8,299) and 96.34% function coverage (736/764). `llvm-cov-report.txt` additionally reports 97.51% region coverage (11,685/11,983).
+- Branch coverage is not measured: both artifacts report zero branches. Coverage is execution evidence, not proof that assertions are sufficient or behavior is correct.
+- Completeness-critical implementation coverage is high but not total: `storage/s3/mod.rs` is 98.60% lines, `lister.rs` 96.53%, `aggregate.rs` 99.07%, and `pipeline.rs` 92.67%. The weakest region coverage is `bin/s3ls/tracing_init.rs` at 82.50%, followed by `bin/s3ls/main.rs` at 90.72% and `bucket_lister.rs` at 91.60%.
+
+#### Safety and correctness assessment
+
+- The production S3 surface is read-only. The only SDK operations constructed under `src/` are `ListObjectsV2`, `ListObjectVersions`, `ListBuckets`, and `ListDirectoryBuckets`; there is no upload, copy, overwrite, or delete path. Object contents are never downloaded. s3ls therefore cannot corrupt S3 data, although incorrect or incomplete output can still mislead downstream automation.
+- CLI validation separates bucket and object modes, rejects inapplicable flags and invalid sort fields, caps sort keys at two, rejects duplicates, and applies explicit 0/1/2 success/runtime/usage exit semantics. `--raw-output` is an explicit injection-safety opt-out and conflicts with JSON.
+- All four object/version pagination paths (sequential objects, sequential versions, parallel discovery objects, parallel discovery versions) reject a truncated response without the required forward marker and reject a repeated token or key/version marker. The two bucket-listing loops reject repeated non-empty continuation tokens. These checks turn impossible Amazon S3 pagination states into errors instead of infinite loops.
+- Under Amazon S3 delimiter semantics, recursive prefix discovery partitions the key namespace. Leaf scans retain a semaphore permit for their complete sequential pagination, parent scans release permits before joining children, and every child error or panic is surfaced. The bounded-channel shutdown order avoids the lister deadlock that can otherwise occur when cancellation leaves a producer blocked on a full queue.
+- Filters compose with AND semantics. Regex runtime failures propagate and cancel the pipeline rather than silently accepting or discarding an entry. Size, mtime, storage-class, delete-marker, relative-path, maximum-depth, and stable multi-column sort boundaries have direct unit coverage.
+- Default text output escapes C0 controls and DEL in keys, prefixes, bucket names, and owner fields before joining or padding columns. This blocks newline/tab row forgery and ANSI escape injection through attacker-controlled Amazon S3 names. JSON is serialized with `serde_json`, preserving values while escaping control characters syntactically. Other endpoint-generated fields such as ETag, version ID, region, ARN, checksum metadata, and restore dates are not passed through the text escape helper; Amazon S3 constrains those values, but an adversarial S3-compatible endpoint is outside this guarantee.
+- Explicit access-key wrappers redact secrets in `Debug`, mask the access-key ID, and zeroize their owned strings on drop. Secret environment values are hidden from help, and anonymous mode disables credential loading. This is defense in depth rather than complete erasure: Clap initially owns ordinary `String` copies, the AWS SDK creates additional credential copies, command-line secrets can be exposed through shell history/process inspection, and `http://` custom endpoints deliberately remove transport confidentiality.
+- Production Rust contains no `unsafe`; the four `unsafe` blocks are test-only environment mutations isolated in forked test processes. S3 response conversion does not unwrap optional fields. Instead, objects or versions missing a key or timestamp are silently omitted, absent `IsTruncated` is treated as false, and negative sizes clamp to zero. That is crash-resistant for malformed responses but can silently under-report against a non-conforming endpoint.
+- Default sorted operation buffers the complete result set. `--no-sort` avoids that unbounded vector, but the three bounded pipeline channels each default to 200,000 entries, so its memory use is bounded rather than literally constant and can still be substantial for long keys/metadata.
+- The rate limiter's sustained refill schedule is exact for every accepted rate and cancellation-aware while waiting for a token. It intentionally starts with a full `rate`-sized bucket, so it permits an initial burst; it is a sustained-rate control, not a strict no-burst quota.
+
+#### Findings from this pass
+
+**Functional configuration defect — command-line custom AWS file paths are ignored unless `--target-profile` is also selected.** `--aws-config-file` and `--aws-shared-credentials-file` are accepted independently and stored in `ClientConfigLocation`, but `build_profile_files()` is applied to credentials and region only inside the `S3Credentials::Profile` branches (`src/storage/s3/client_builder.rs:90-148`). In the default `FromEnvironment` mode, client creation returns to the SDK's ordinary default credential and region chains without applying either CLI path. A command such as `s3ls --aws-shared-credentials-file /isolated/credentials s3://bucket` can therefore use ambient/default credentials instead of the requested file, potentially listing the wrong account or failing authentication. Pairing the files with `--target-profile` works; setting the standard AWS file environment variables also remains visible to the SDK. Existing argument tests verify only that the paths are stored, while the client-construction tests using custom files always select a profile.
+
+**Operational correctness defect — SIGINT can produce partial output with exit status 0.** The object-listing Ctrl-C handler cancels a token, and storage, lister, aggregator, and writer cancellation paths all return `Ok(())`; `main` consequently takes its success branch. The `S3lsError::Cancelled` variant also maps to 0 but is not constructed anywhere in production. Thus an interrupted `s3ls --recursive > inventory.txt` can leave a truncated inventory that automation checking only the exit status accepts as complete. No process-level test pins SIGINT status. Cancellation also does not wrap an in-flight AWS SDK `.send()`, so Ctrl-C may wait for the current request/retry/timeout before the token is observed. Bucket-listing mode installs no custom Ctrl-C handler and retains the operating system's default signal behavior.
+
+No critical or high-severity vulnerability was identified in the complete reviewed Rust source. That is bounded by the verification limits below and is not a claim that none exists.
+
+#### Residual risks and evidence limits
+
+- The 16,082-object live-AWS test is strong evidence against omissions across full, prefix-scoped, depth-limited, and shallow-parallel configurations. Its parser collects output into a `HashSet`, however, so duplicate rows collapse and are not detected; it proves set completeness, not exactly-once multiplicity.
+- Generic environment bindings (`RECURSIVE`, `JSON`, `SORT`, `MAX_KEYS`, `HEADER`, and similar names) can silently alter operation or output in a shell with colliding variables. The positional target is deliberately exempt, so `TARGET` cannot select a bucket.
+- A trusted Amazon S3 response supplies required keys, timestamps, and pagination fields. A broken or hostile compatible endpoint can exploit the fail-safe conversion choices to cause silent omissions or inject controls through endpoint-generated text fields.
+- Broken pipe is intentionally success so `s3ls ... | head` behaves like a Unix listing tool. Scripts requiring a complete inventory must not use an early-closing consumer.
+- CI tests seven platform/target combinations, but does not compile or run the credentialed `cfg(e2e_test)` suite. The supplied coverage artifacts exercise real SDK listing paths, but are not a per-test pass log and are not regenerated or gated in CI.
+- The release workflow builds on a tag without a test dependency, several actions use mutable major-version tags, the SARIF Clippy workflow is non-blocking, and blocking CI Clippy omits `--all-targets`.
+- This pass did not run live AWS tests, fuzzers, Miri, sanitizers, fault injection, formal verification, penetration testing, or an independent audit.
+
+#### Reliability conclusion
+
+Overall classification: **conditionally reliable for routine Amazon S3 listing, with two operational/configuration defects that matter to automation**.
+
+The strongest evidence is the read-only API surface, guarded object/version pagination, bounded parallel engine, fail-closed filter errors, structured task-error propagation, output-injection defenses, 514 passing local tests, and high combined coverage. No code path can damage an object or bucket.
+
+Until the findings are fixed, automation should treat SIGINT as an indeterminate/incomplete run regardless of exit status, and custom AWS file flags should always be paired with an explicit `--target-profile` (or supplied through the standard AWS environment variables). Operators should also use HTTPS, least-privilege credentials, `--no-sort` for very large listings, and the default escaped or JSON output for buckets whose names are not fully trusted. These constraints are part of the reliability boundary; the software is well tested, not proven bug-free.
+
+</details>
+
+### AI assessment of safety and correctness (by Gemini)
+
+<details>
+<summary>Click to expand the full assessment</summary>
+
+> Assessment date: 2026-07-25.
+>
+> Assessed version: 1.2.0 (commit `78db793`).
+>
+> Method and scope of evidence: this assessment was performed from scratch at v1.2.0, re-deriving all claims directly from source inspection and test execution. All 38 Rust source files under `src/` (14,511 lines) were read in full, along with all 8 live-AWS integration suites in `tests/e2e_*.rs` (113 test annotations), `tests/common/mod.rs`, `Cargo.toml`, `Cargo.lock`, `deny.toml`, all five GitHub Actions workflows, and the coverage artifacts `lcov.info` / `llvm-cov-report.txt`. In addition, the following were executed on the assessed tree (rustc 1.97.1): `cargo test --all-targets` (514 passed — 506 library + 8 binary unit tests; e2e integration targets compile as empty without `--cfg e2e_test`), `cargo fmt --all --check` (clean, 0 diffs), `cargo clippy --all-features -- -D warnings` (clean, 0 warnings; note `cargo clippy --all-targets` reports 2 style-level warnings in test modules), and `cargo deny check` (advisories, bans, licenses, sources all ok). Claims cite specific source files — and line numbers as of commit `78db793` — where the relevant code or test resides.
+>
+> Limits of the evidence: this assessment cannot rule out all potential software bugs. It includes no fuzzing, sanitizer or Miri execution runs, formal verification, or penetration testing. The live-AWS e2e test suite runs against maintainer AWS infrastructure; this assessment did not execute live AWS requests directly (the checked-in coverage artifacts document execution of those paths during their generating run). Coverage measures statement/region execution during testing, not logical correctness.
+
+**Question addressed.** s3ls is a read-only listing tool — it contains no mutating S3 operations and cannot overwrite, corrupt, or delete data in S3. The critical failure modes evaluated are: (1) a **silently incomplete or duplicated listing** treated as complete inventory by downstream automation, (2) **output injection** (attacker-named objects forging rows or ANSI terminal escapes in operator output), (3) **credential leakage**, (4) **runaway API calls or memory consumption**, and (5) **misleading exit codes**.
+
+#### Surface
+
+The binary contains no subcommands and no mutating operation anywhere in `src/`: the only S3 calls in the codebase are `ListObjectsV2`, `ListObjectVersions`, `ListBuckets`, and `ListDirectoryBuckets` (`src/storage/s3/mod.rs:94, 176`; `src/bucket_lister.rs:295, 356`). Mutating SDK calls exist only in the test harness (`tests/common/mod.rs`) for fixture setup. CLI mode validation in clap strictly separates bucket-listing mode and object-listing mode: bucket mode rejects object-only flags and object mode rejects bucket-only flags with explicit error messages rather than silently ignoring them (`src/config/args/mod.rs:710-787`). Usage errors exit 2, listing errors exit 1, and successful execution (including empty listing results) exits 0 — all pinned by live-binary integration tests (`tests/e2e_listing.rs:232-456`).
+
+#### Listing completeness (the highest-stakes property)
+
+- **Pagination anti-loop guards.** All six pagination loops — sequential objects/versions, parallel-discovery objects/versions, `ListBuckets`, `ListDirectoryBuckets` — fail loudly with an error if S3 reports a truncated response without a forward continuation token/marker, or returns the exact same token/marker twice (`src/storage/s3/mod.rs:503-549, 635-679`; `src/bucket_lister.rs:332-345, 383-396`). A buggy or non-conforming endpoint can truncate a listing with an error, but cannot make s3ls loop infinitely or silently drop pages. Every pagination guard is covered by dedicated unit tests (`src/storage/s3/mod.rs:1502-1677, 2712-2919`).
+- **Parallel engine correctness.** Recursive listings fan out across delimiter-discovered prefixes, cleanly partitioning the key namespace so each object is visited by exactly one prefix scan, preventing duplicate rows. Concurrency permits (`TokioSemaphore`) are held during leaf sequential listings and released before awaiting sub-task joins (`src/storage/s3/mod.rs:583-595`), eliminating semaphore deadlocks. Peak in-flight requests are verified against mock fetchers by regression tests (`mod.rs:2237-2304`). Sub-task panics or errors cancel the pipeline via `CancellationToken` and surface as exit 1 rather than a truncated exit 0 (`mod.rs:738-750`).
+- **Pipeline shutdown discipline.** The lister stage drops its intermediate receiver channel before joining the storage task, ensuring a cancelled pipeline cannot deadlock against a full bounded channel (`src/lister.rs:70-74, 160-222`). Every spawned pipeline stage catches `JoinError` and converts it into pipeline cancellation plus an explicit error report (`src/pipeline.rs:68-98`).
+- **Filters fail closed.** `fancy-regex` evaluation returns `Result`, and runtime matching errors (such as regex backtrack-limit exhaustion) cancel the pipeline and exit 1 instead of silently dropping or retaining entries (`src/filters/include_regex.rs:112-128`, `exclude_regex.rs:112-128`; `src/lister.rs:62-66`). Size and mtime boundary semantics (`>=` for `--filter-larger-size` / `--filter-mtime-after`, strict `<` for smaller/before filters, `None` storage class treated as `STANDARD`, delete markers exempt from size/class filters) are unit-tested with boundary values like `u64::MAX` and verified against live S3 (`tests/e2e_filters.rs`, `e2e_filters_versioned.rs`).
+- **Scale evidence.** The live integration suite tests set completeness against a 16,082-object, 6–7 level deep fixture across four configurations (full recursive, prefix-scoped, `--max-depth 3`, `--max-parallel-listing-max-depth 1`), alongside 1,000-object paginated runs (`--max-keys 10`) in both object and version modes (`tests/e2e_large_listing.rs`, `e2e_listing.rs:636-732`).
+- **Sorting.** Sorting is stable (`sort_by` / rayon `par_sort_by`), multi-column via `Ordering::then_with`, with unit tests verifying identical output between sequential and parallel sorts, and live tests proving automatic secondary date sort ordering for versioned listings (`src/aggregate.rs:144-168`; `tests/e2e_sort.rs:352-431`).
+
+#### Output integrity (injection defense)
+
+Object keys are user/attacker-controlled data on S3. In default text output modes (TSV, aligned, one-line), control characters (`\x00`–`\x1f` and `\x7f`) in attacker-influenced strings — object keys, common prefixes, owner names/IDs, bucket names — are sanitized into `\xNN` hex escapes before column alignment or formatting (`src/display/mod.rs:78-108`; `src/display/columns.rs`; `src/bucket_lister.rs:27-33`). The byte fast-path is sound for UTF-8 (continuation bytes are >= 0x80; slow path iterates by `char`), preserving multi-byte UTF-8 sequences. Unit tests confirm neutralization of phantom-row injection attacks (embedding `\n` and fake TSV rows in object keys) (`src/display/tsv.rs:273-296`). Live AWS tests upload keys with tabs, newlines, and 2–4-byte UTF-8 characters (emoji, CJK) to assert correct text escaping and byte-exact JSON serialization (`tests/e2e_edge_cases.rs`). JSON mode emits via `serde_json`, ensuring standard control-character escaping. `--raw-output` explicitly opts out of escaping and conflicts with `--json`. Note: system metadata fields (`BucketRegion`, `BucketArn`, ETag, Version ID) are not passed through text escape routines; while Amazon S3 guarantees these contain no control bytes, non-AWS S3 endpoints could theoretically inject control bytes through them.
+
+#### Credential handling
+
+`AccessKeys` derives `Zeroize` and `ZeroizeOnDrop` (`src/types/mod.rs:45-90, 309-323`). Its `Debug` implementation masks access key IDs to first 4 and last 4 characters (fully redacting IDs <= 8 chars) and completely redacts secret keys and session tokens. Secret-bearing CLI arguments enable `hide_env_values`, and process-forked tests verify `--help` prints environment variable names while suppressing secret values (`src/config/args/tests.rs:1967-2006`). Configuration trace logs (`-vvv`) format credential structs via redacting `Debug` implementations (`src/bin/s3ls/main.rs:37`). `--target-no-sign-request` skips credential resolution for public bucket access (`client_builder.rs:120-123`). Secrets supplied directly as CLI arguments remain visible in process table listings (`ps`), and custom `http://` URLs disable transport encryption by operator choice.
+
+#### Robustness against non-conforming endpoints
+
+There are **zero `unsafe` blocks in production code** (the only two `unsafe` sites in `tracing_init.rs` and `args/tests.rs` are test-only environment variable mutations under `rusty_fork`). The production panic surface consists of six provably infallible `expect`/`unwrap` sites (semaphore permit acquisition, fixed column layout indexing, `serde_json::to_string` on primitive maps, re-parsing of pre-validated regex patterns and byte sizes). No S3 response field is unwrapped: malformed rows missing key or timestamp fields are safely dropped (`convert_object`, `src/storage/s3/mod.rs:913-916`), missing `IsTruncated` defaults to false, and negative object sizes clamp to 0. This fail-safe design avoids crashes on malformed responses, though non-conforming third-party endpoints may result in dropped rows rather than loud errors. Release compilation profiles set `panic = "abort"`, ensuring any panic terminates the process without unwinding.
+
+#### Operational semantics
+
+- **Exit codes** (0, 1, 2) are pinned by integration tests: empty bucket or empty prefix matches return exit 0; S3 access errors and `NoSuchBucket` return exit 1; clap validation errors return exit 2. `BrokenPipe` from downstream pipeline tools (e.g. `| head`) exits 0 silently (`src/bin/s3ls/main.rs:66-69, 94-97`; `tests/e2e_edge_cases.rs:704-787`).
+- **Rate limiting** is exact: leaky-bucket token schedules are property-tested across all valid rates (10–65,535 rps), and limiter permit acquisition handles cancellation signals cleanly (`src/storage/s3/mod.rs:878-894, 2148-2182`).
+- **Memory usage:** Default sort mode buffers listing results in memory prior to sorting, with bounded intermediate channels (200,000 entries per stage) (`src/config/mod.rs:91`; `src/pipeline.rs:57-59`; `src/lister.rs:26`). Streaming mode (`--no-sort`) operates in near-constant memory while retaining full filtering capabilities (`tests/e2e_filters.rs:1070-1104`).
+
+#### Supply chain and CI
+
+The shipping TLS stack relies on `rustls 0.23.42` with `aws-lc-rs 1.17.3` and system trust anchors; the legacy `rustls 0.21` dependency is explicitly excluded to avoid RUSTSEC-2026-0098 (`Cargo.toml:31-37`), and `openssl-sys` is banned in `deny.toml`. `cargo deny check` runs on pull requests (`ci.yml`) and daily schedules (`cargo-deny.yml`) with zero ignored advisories. `Cargo.lock` is committed; release builds enforce `--locked` and emit OIDC build-provenance attestations (`actions/attest-build-provenance@v4`). CI tests 7 target architectures. Note: CI clippy checks omit `--all-targets`, missing 2 minor style-level warnings in test modules (`src/display/aligned.rs:154`, `src/display/tsv.rs:539`). Production code is clippy-clean under `-D warnings`.
+
+#### Coverage measurement
+
+`llvm-cov-report.txt` (and `lcov.info`) from combined unit + live-AWS e2e runs reports 97.51% region coverage (298/11,983 missed), 96.34% function coverage (28/764 missed), and 98.31% line coverage (140/8,299 missed). Critical paths exhibit high coverage: `storage/s3/mod.rs` (97.84% region / 98.60% line), `lister.rs` (96.55% region), `aggregate.rs` (99.08% region), and output formatters (`display/tsv.rs`, `aligned.rs`, `aligned_formatter.rs`, `one_line_formatter.rs`) at 100.00% region coverage. Weakest files are `bucket_lister.rs` (91.60% region, 82.22% function) and `tracing_init.rs` (82.50% region).
+
+#### Known limitations and findings of this assessment
+
+This from-scratch assessment identified no critical or high-severity security vulnerabilities at v1.2.0. Findings and design trade-offs confirmed:
+
+- **Ctrl-C (SIGINT) exits 0 with partial output (main finding).** SIGINT cancels the pipeline, and `S3lsError::Cancelled` maps to exit code 0 (`src/types/error.rs:19-25`; `src/bin/s3ls/main.rs:100-103`). An interrupted `s3ls --recursive > listing.txt` produces a partial output file and exit status 0, making it indistinguishable from successful completion for automated scripts checking exit codes. SIGTERM is unhandled (relying on default OS termination).
+- **Generic environment variable bindings on CLI options.** All long flags bind to generic env var names (`RECURSIVE`, `JSON`, `SORT`, `MAX_KEYS`, `HEADER`, etc.), meaning ambient environment variables can alter output formats or API call counts unless explicitly overridden on the command line.
+- **Fail-safe dropping of non-conforming S3 fields.** Missing object keys or timestamps are dropped silently without errors, prioritizing process stability over loud failure on malformed non-AWS endpoints.
+- `-qq` verbosity suppresses all error logging while preserving exit codes.
+- Sorting mode memory scales with total object count; streaming mode (`--no-sort`) is the recommended mitigation for massive buckets.
+- CI clippy check does not run with `--all-targets`, leaving 2 style warnings in test files unflagged in CI.
+
+#### Is the software reliable?
+
+For non-technical readers: "reliable" indicates whether an operator can rely on `s3ls` output — that listings are complete, correctly formatted, safe against credential leakage, and incapable of causing data damage.
+
+**Risk: data corruption or loss.** Structurally impossible. The binary contains only read-only S3 list operations. It has no code paths capable of writing, modifying, or deleting objects or buckets.
+
+**Risk: silently incomplete listings.** Safeguarded against pagination loops, worker panics, and filter failures, with set completeness verified against live S3 at 16,000-object scale. The single operational caveat is that Ctrl-C interrupts return exit status 0, so automation must not rely solely on exit code 0 if signals can interrupt execution.
+
+**Risk: misleading output / terminal injection.** Attacker-controlled object names cannot inject row delimiters or terminal control sequences in default text modes, and JSON output is safely escaped.
+
+**Risk: credential leakage.** Credentials are zeroized on drop and redacted in all logging, debug, and help displays.
+
+**Risk: runaway API costs.** Bounded parallelism, exact rate-limiting options, and API request counter logs (`-v`).
+
+**What this assessment cannot establish.** That the software is completely free of bugs, that non-AWS S3 endpoints behave identically in fail-safe edge cases, or that future dependencies will remain vulnerability-free. In conclusion, at v1.2.0 all major failure modes have tested, verifiable safeguards, and `s3ls` is reliable for production listing tasks provided operators manage generic environment variable risks and do not treat user-interrupted runs as complete inventories.
+
+</details>
+
 ## Scope
 
 s3ls is a listing-only tool. It is **not** intended to be a drop-in replacement for, or behaviorally compatible with, any other S3 client — examples include the AWS CLI (`aws s3`, `aws s3api`), `s5cmd`, `s3cmd`, `rclone`, `mc`, etc., but the same applies to any S3 listing or transfer tool. Its command-line flags, output columns, sort/filter semantics, and exit codes are designed around fast parallel listing and stable machine-readable output — not interoperability with another tool's interface. Output formats and flag names will not be adjusted to match any external tool, and scripts written against another S3 client should not be expected to work with s3ls unmodified. If you need full S3 functionality (copy, sync, presign, multipart upload, etc.) or compatibility with a specific tool's flag set, use that tool.
