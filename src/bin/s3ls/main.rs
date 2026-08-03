@@ -1,3 +1,5 @@
+use std::io::Write;
+
 use anyhow::Result;
 use clap::{CommandFactory, Parser};
 use clap_complete::generate;
@@ -22,14 +24,7 @@ async fn main() -> Result<()> {
     let config = load_config_exit_if_err();
 
     if let Some(shell) = config.auto_complete_shell {
-        generate(
-            shell,
-            &mut CLIArgs::command(),
-            "s3ls",
-            &mut std::io::stdout(),
-        );
-
-        return Ok(());
+        return print_completion_script(shell);
     }
 
     start_tracing_if_necessary(&config);
@@ -37,6 +32,25 @@ async fn main() -> Result<()> {
     trace!("config = {:?}", config);
 
     run(config).await
+}
+
+/// clap_complete's `generate` panics on any stdout write error, including
+/// the BrokenPipe raised when the reader of a pipe exits without consuming
+/// the script (`s3ls --auto-complete-shell bash | head -1`). Render the
+/// script into memory (infallible), then write it ourselves: a closed pipe
+/// is the normal end of a pipeline and exits 0, any other write failure
+/// (e.g. disk full on a redirect) is a real error.
+fn print_completion_script(shell: clap_complete::shells::Shell) -> Result<()> {
+    let mut script = Vec::new();
+    generate(shell, &mut CLIArgs::command(), "s3ls", &mut script);
+
+    let mut stdout = std::io::stdout().lock();
+    match stdout.write_all(&script).and_then(|()| stdout.flush()) {
+        Err(e) if e.kind() != std::io::ErrorKind::BrokenPipe => {
+            Err(anyhow::anyhow!("failed to write completion script: {e}"))
+        }
+        _ => Ok(()),
+    }
 }
 
 fn load_config_exit_if_err() -> Config {
