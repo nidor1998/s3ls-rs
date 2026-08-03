@@ -12,16 +12,17 @@ use std::process::{Command, Stdio};
 #[test]
 fn completion_script_to_closed_pipe_exits_zero() {
     for shell in ["bash", "zsh", "fish", "powershell", "elvish"] {
+        // Close the read end before the child is spawned so every stdout
+        // write is guaranteed to hit a pipe with no reader.
+        let (reader, writer) = std::io::pipe().expect("failed to create pipe");
+        drop(reader);
+
         let mut child = Command::new(env!("CARGO_BIN_EXE_s3ls"))
             .args(["--auto-complete-shell", shell])
-            .stdout(Stdio::piped())
+            .stdout(writer)
             .stderr(Stdio::piped())
             .spawn()
             .expect("failed to spawn s3ls");
-
-        // Close the read end immediately so the child's stdout writes hit a
-        // pipe with no reader.
-        drop(child.stdout.take());
 
         let status = child.wait().expect("failed to wait for s3ls");
         let mut stderr = String::new();
