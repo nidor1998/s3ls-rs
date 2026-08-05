@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-08-05
+
+### Fixed
+
+- [Breaking change] A listing interrupted by Ctrl+C (SIGINT) now exits with code 130 (128 + SIGINT, the conventional shell encoding for termination by signal) instead of 0. Previously an interrupted listing was indistinguishable from a successful one by its exit code; scripts that test the exit status should treat 130 as user interruption rather than success.
+
 ## [1.2.2] - 2026-08-03
 
 ### Fixed

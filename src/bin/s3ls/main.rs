@@ -15,6 +15,11 @@ use s3ls_rs::{
 mod ctrl_c_handler;
 mod tracing_init;
 
+/// Conventional exit code for termination by Ctrl+C: 128 + SIGINT(2), the
+/// shell encoding that lets scripts distinguish user interruption from
+/// real failures.
+const SIGINT_EXIT_CODE: i32 = 130;
+
 /// s3ls - Fast S3 object listing tool.
 ///
 /// This binary is a thin wrapper over the s3ls-rs library.
@@ -97,7 +102,18 @@ async fn run(config: Config) -> Result<()> {
 
     let pipeline = ListingPipeline::new(config, cancellation_token);
 
-    match pipeline.run().await {
+    let result = pipeline.run().await;
+
+    // Ctrl+C takes precedence over whatever the pipeline returned: once
+    // SIGINT is received the run is "interrupted", even if the shutdown
+    // also surfaced an error.
+    if ctrl_c_handler::is_ctrl_c_received() {
+        let duration_sec = format!("{:.3}", start_time.elapsed().as_secs_f32());
+        debug!(duration_sec = duration_sec, "listing cancelled by user.");
+        std::process::exit(SIGINT_EXIT_CODE);
+    }
+
+    match result {
         Ok(()) => {
             let duration_sec = format!("{:.3}", start_time.elapsed().as_secs_f32());
             debug!(duration_sec = duration_sec, "s3ls has been completed.");
@@ -120,5 +136,24 @@ async fn run(config: Config) -> Result<()> {
             error!("{}", e);
             std::process::exit(code);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sigint_exit_code_is_130() {
+        assert_eq!(SIGINT_EXIT_CODE, 130);
+    }
+
+    #[test]
+    #[cfg(target_family = "unix")]
+    fn sigint_exit_code_follows_128_plus_signal_number_convention() {
+        assert_eq!(
+            SIGINT_EXIT_CODE,
+            128 + nix::sys::signal::Signal::SIGINT as i32
+        );
     }
 }
