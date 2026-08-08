@@ -62,7 +62,13 @@ fn load_config_exit_if_err() -> Config {
     match Config::try_from(CLIArgs::parse()) {
         Ok(config) => config,
         Err(error_message) => {
-            clap::Error::raw(clap::error::ErrorKind::ValueValidation, error_message).exit();
+            // clap prints raw error messages verbatim, so terminate the line
+            // ourselves to keep the shell prompt off the message line.
+            clap::Error::raw(
+                clap::error::ErrorKind::ValueValidation,
+                format!("{error_message}\n"),
+            )
+            .exit();
         }
     }
 }
