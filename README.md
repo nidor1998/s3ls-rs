@@ -842,6 +842,7 @@ s3ls requires the following IAM permissions:
 | 0 | Success (also returned when no objects match the given prefix) |
 | 1 | General error |
 | 2 | Invalid command line arguments |
+| 130 | Interrupted by Ctrl+C (SIGINT); the output may be incomplete |
 
 ## Advanced options
 
