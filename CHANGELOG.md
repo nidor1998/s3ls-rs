@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.2] - 2026-08-21
+
+Monthly update.
+
+### Security
+
+- Updated `h2` to a patched version for RUSTSEC-2026-0258. The HTTP/2 stack used for S3 requests accepted and queued empty DATA frames without limit, which could grow memory usage without bound or panic on overflow if streams were not drained.
+
+### Changed
+
+- aws-sdk-s3 `v1.140.0 -> v1.143.0`
+- Updated other dependencies
+
 ## [1.3.1] - 2026-08-08
 
 ### Fixed
