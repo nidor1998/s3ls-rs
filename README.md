@@ -1198,14 +1198,14 @@ Human engineers authored the requirements, design specifications, and s3sync ref
 
 ### Quality verification (by AI self-assessment)
 
-Measurements below are taken at v1.2.0 (commit `568e981`, 2026-07-25). The coverage figures are sourced from `llvm-cov-report.txt` (`cargo llvm-cov`; `lcov.info` is the matching machine-readable LCOV artifact) and reflect a single combined run — `cargo llvm-cov` with `RUSTFLAGS="--cfg e2e_test"` on the maintainer's machine, 2026-07-25 — so both the unit tests and the live-AWS e2e suite are included in the report.
+Measurements below are taken at v1.3.2 (commit `263acdb`, 2026-09-13). The coverage figures are sourced from `llvm-cov-report.txt` (`cargo llvm-cov`; `lcov.info` is the matching machine-readable LCOV artifact) and reflect a single combined run — `cargo llvm-cov` with `RUSTFLAGS="--cfg e2e_test"` on the maintainer's machine, 2026-09-13 — so both the unit tests and the live-AWS e2e suite are included in the report.
 
 | Metric                         | Value                                                         |
 |--------------------------------|---------------------------------------------------------------|
-| Production code                | ~14,500 lines of Rust across 38 source files in `src/`        |
-| Unit tests (in `src/`)         | 514 `#[test]` / `#[tokio::test]` annotations                  |
+| Production code                | ~14,700 lines of Rust across 38 source files in `src/`        |
+| Unit tests (in `src/`)         | 519 `#[test]` / `#[tokio::test]` annotations                  |
 | E2E integration tests          | 113 annotations across 8 `tests/e2e_*.rs` files (gated behind `--cfg e2e_test`; run only by the maintainer against live AWS) |
-| Code coverage (llvm-cov, combined unit + e2e run) | 97.51% regions (298 / 11,983 missed), 96.34% functions (28 / 764 missed), 98.31% lines (140 / 8,299 missed) |
+| Code coverage (llvm-cov, combined unit + e2e run) | 97.55% regions (297 / 12,106 missed), 96.39% functions (28 / 776 missed), 98.33% lines (140 / 8,376 missed) |
 | Static analysis (clippy)       | 0 warnings (`cargo clippy --all-features`)                    |
 | Formatting                     | 0 diffs (`cargo fmt --all --check`)                           |
 | Supply chain (cargo-deny)      | Clean (`cargo deny -L error check`); runs per-PR in `ci.yml` and daily at 01:34 UTC in `cargo-deny.yml`; `advisories.ignore = []` |
