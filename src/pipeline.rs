@@ -216,7 +216,6 @@ impl ListingPipeline {
             self.config.display_config.show_owner,
             self.config.display_config.show_restore_status,
             self.config.rate_limit_api,
-            self.config.parallel_range_split_threshold,
         )
         .await;
 
