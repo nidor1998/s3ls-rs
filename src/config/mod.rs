@@ -38,6 +38,7 @@ pub struct Config {
     pub allow_parallel_listings_in_express_one_zone: bool,
     pub rate_limit_api: Option<u32>,
     pub parallel_sort_threshold: u32,
+    pub parallel_range_split_threshold: u32,
 
     // AWS Client
     pub target_client_config: Option<ClientConfig>,
@@ -92,6 +93,7 @@ impl Default for Config {
             allow_parallel_listings_in_express_one_zone: false,
             rate_limit_api: None,
             parallel_sort_threshold: 1_000_000,
+            parallel_range_split_threshold: 5000,
             target_client_config: None,
             max_keys: 1000,
             auto_complete_shell: None,
@@ -236,6 +238,7 @@ mod tests {
         assert!(!config.allow_parallel_listings_in_express_one_zone);
         assert!(config.rate_limit_api.is_none());
         assert_eq!(config.parallel_sort_threshold, 1_000_000);
+        assert_eq!(config.parallel_range_split_threshold, 5000);
 
         // AWS Client
         assert!(config.target_client_config.is_none());

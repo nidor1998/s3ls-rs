@@ -1,8 +1,9 @@
 pub mod client_builder;
 
+use std::collections::{BTreeSet, HashSet};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -21,7 +22,7 @@ use crate::storage::StorageTrait;
 use crate::types::token::PipelineCancellationToken;
 use crate::types::{ListEntry, S3Object, VersionInfo};
 use leaky_bucket::RateLimiter;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 const EXPRESS_ONEZONE_STORAGE_SUFFIX: &str = "--x-s3";
@@ -45,6 +46,10 @@ pub(crate) struct ListPage {
 
 /// Trait abstracting the page-fetching call so the listing algorithm can be tested
 /// without a real S3 client.
+///
+/// `continuation_token` and `start_after` apply to ListObjectsV2 (`start_after`
+/// only positions a request that carries no continuation token);
+/// `key_marker` / `version_id_marker` apply to ListObjectVersions.
 #[async_trait]
 #[allow(clippy::too_many_arguments)]
 pub(crate) trait PageFetcher: Send + Sync {
@@ -57,6 +62,7 @@ pub(crate) trait PageFetcher: Send + Sync {
         continuation_token: Option<&str>,
         key_marker: Option<&str>,
         version_id_marker: Option<&str>,
+        start_after: Option<&str>,
     ) -> Result<ListPage>;
 }
 
@@ -80,6 +86,7 @@ impl S3PageFetcher {
         prefix: Option<&str>,
         delimiter: Option<&str>,
         continuation_token: Option<&str>,
+        start_after: Option<&str>,
     ) -> Result<ListPage> {
         tracing::trace!(
             bucket = %self.bucket,
@@ -87,6 +94,7 @@ impl S3PageFetcher {
             delimiter = ?delimiter,
             max_keys,
             continuation_token = ?continuation_token,
+            start_after = ?start_after,
             "ListObjectsV2 request"
         );
         let mut req = self
@@ -103,6 +111,9 @@ impl S3PageFetcher {
         }
         if let Some(token) = continuation_token {
             req = req.continuation_token(token);
+        }
+        if let Some(start_after) = start_after {
+            req = req.start_after(start_after);
         }
         if let Some(ref payer) = self.request_payer {
             req = req.request_payer(payer.clone());
@@ -258,11 +269,18 @@ impl PageFetcher for S3PageFetcher {
         continuation_token: Option<&str>,
         key_marker: Option<&str>,
         version_id_marker: Option<&str>,
+        start_after: Option<&str>,
     ) -> Result<ListPage> {
         match mode {
             ListingMode::Objects => {
-                self.fetch_list_objects_page(max_keys, prefix, delimiter, continuation_token)
-                    .await
+                self.fetch_list_objects_page(
+                    max_keys,
+                    prefix,
+                    delimiter,
+                    continuation_token,
+                    start_after,
+                )
+                .await
             }
             ListingMode::Versions => {
                 self.fetch_list_versions_page(
@@ -276,6 +294,142 @@ impl PageFetcher for S3PageFetcher {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Key-range splitting
+// ---------------------------------------------------------------------------
+
+/// Upper bound on how many times one prefix may be re-split into key ranges
+/// (each split nests one level deeper). Every split first pages through at
+/// least `parallel_range_split_threshold` keys, so recursion always makes
+/// progress; this cap is only a defensive backstop.
+const MAX_RANGE_SPLIT_DEPTH: u16 = 32;
+
+/// Maximum number of key positions probed when locating where the keys of a
+/// range stop sharing a common prefix.
+const MAX_PROBE_POSITIONS: usize = 128;
+
+/// Maximum number of boundary probes fired per split. Larger observed
+/// alphabets are sampled evenly down to this many candidates.
+const MAX_BOUNDARY_PROBES: usize = 64;
+
+/// The portion of a key space one listing task is responsible for.
+///
+/// Bounds are exclusive at the start and inclusive at the end so that a key
+/// equal to a boundary belongs to exactly one range: `start-after` (and
+/// `key-marker`) skip the boundary key itself, and the range below stops only
+/// once it sees a key strictly greater than its `end_inclusive`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct KeyRange {
+    /// Start listing strictly after this key (`start-after` for
+    /// ListObjectsV2, `key-marker` for ListObjectVersions).
+    start_after: Option<String>,
+    /// Version-id marker paired with `start_after` (ListObjectVersions only).
+    /// When set, the listing resumes in the middle of `start_after`'s
+    /// versions, so entries whose key equals `start_after` are expected.
+    version_id_marker: Option<String>,
+    /// Stop once an entry's key exceeds this key.
+    end_inclusive: Option<String>,
+}
+
+impl KeyRange {
+    /// True if an endpoint honouring `start-after` could never have returned
+    /// `key` for this range.
+    fn is_before_start(&self, key: &str) -> bool {
+        match &self.start_after {
+            None => false,
+            Some(start) if self.version_id_marker.is_some() => key < start.as_str(),
+            Some(start) => key <= start.as_str(),
+        }
+    }
+
+    fn is_beyond_end(&self, key: &str) -> bool {
+        self.end_inclusive.as_deref().is_some_and(|end| key > end)
+    }
+}
+
+/// One unit of work for the parallel listing engine: a prefix, the key range
+/// within it, and where the task sits in the prefix tree and split chain.
+#[derive(Clone)]
+struct ListTask {
+    prefix: Option<String>,
+    /// Depth in the prefix tree (0 = the engine's own prefix).
+    depth: u16,
+    range: KeyRange,
+    /// How many range splits produced this task (0 = whole prefix).
+    split_depth: u16,
+    /// Synthetic `--max-depth` boundary prefixes already emitted for this
+    /// prefix. Shared by every range of the same prefix so a boundary
+    /// prefix whose keys straddle two ranges is emitted exactly once.
+    emitted_prefixes: Arc<Mutex<HashSet<String>>>,
+}
+
+/// Smallest Unicode scalar value greater than `c`, skipping the surrogate gap.
+fn next_char(c: char) -> Option<char> {
+    let code = c as u32 + 1;
+    let code = if (0xD800..=0xDFFF).contains(&code) {
+        0xE000
+    } else {
+        code
+    };
+    char::from_u32(code)
+}
+
+/// Longest common prefix, in chars, of all `keys`.
+fn common_prefix_chars(keys: &[&str]) -> Vec<char> {
+    let mut lcp: Vec<char> = match keys.first() {
+        Some(first) => first.chars().collect(),
+        None => return Vec::new(),
+    };
+    for key in &keys[1..] {
+        let shared = lcp
+            .iter()
+            .zip(key.chars())
+            .take_while(|(a, b)| **a == *b)
+            .count();
+        lcp.truncate(shared);
+        if lcp.is_empty() {
+            break;
+        }
+    }
+    lcp
+}
+
+/// Characters to probe for range boundaries after `after`: the characters
+/// the page itself uses (`alphabet`, everything seen at or beyond the branch
+/// position), plus the code point right after `after` so that at least one
+/// probe finds the next branch even when the page's alphabet is exhausted.
+/// Digits, hex, base64, a handful of CJK characters: whatever the keys are
+/// made of, the page shows it, and no probe is spent on characters the keys
+/// never use. Alphabets larger than `MAX_BOUNDARY_PROBES` are sampled evenly.
+///
+/// The probe set is only a balance heuristic: ranges are contiguous and the
+/// last one is open-ended, so an unrepresentative page costs an extra split
+/// later, never a key.
+fn candidate_boundary_chars(
+    after: Option<char>,
+    alphabet: &BTreeSet<char>,
+    delimiter_mode: bool,
+) -> Vec<char> {
+    let mut chars: Vec<char> = alphabet
+        .iter()
+        .copied()
+        .chain(after.and_then(next_char))
+        .filter(|c| after.is_none_or(|a| *c > a))
+        // With a "/" delimiter, a boundary ending in "/" could fall inside a
+        // common prefix and make two ranges report it.
+        .filter(|c| !(delimiter_mode && *c == '/'))
+        .collect();
+    chars.sort_unstable();
+    chars.dedup();
+    if chars.len() > MAX_BOUNDARY_PROBES {
+        let step = chars.len() as f64 / MAX_BOUNDARY_PROBES as f64;
+        chars = (0..MAX_BOUNDARY_PROBES)
+            .map(|i| chars[(i as f64 * step) as usize])
+            .collect();
+    }
+    chars
 }
 
 // ---------------------------------------------------------------------------
@@ -296,6 +450,14 @@ pub(crate) struct ListingEngine<F: PageFetcher + Clone> {
     max_depth: Option<u16>,
     rate_limiter: Option<Arc<RateLimiter>>,
     api_call_counter: Arc<AtomicU64>,
+    /// Keys a task pages through sequentially before its remainder is split
+    /// into key ranges. 0 disables range splitting.
+    parallel_range_split_threshold: u32,
+    /// Set once the endpoint is seen returning keys at or before
+    /// `start-after`; range splitting is disabled from then on.
+    range_split_unsupported: Arc<AtomicBool>,
+    /// Number of range splits performed (diagnostics and tests).
+    range_split_counter: Arc<AtomicU64>,
 }
 
 impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
@@ -325,7 +487,7 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
         &self,
         entries: Vec<ListEntry>,
         sender: &Sender<ListEntry>,
-        mut emitted_prefixes: Option<&mut std::collections::HashSet<String>>,
+        emitted_prefixes: Option<&Mutex<HashSet<String>>>,
     ) -> Result<bool> {
         for entry in entries {
             if self.cancellation_token.is_cancelled() {
@@ -338,14 +500,20 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
                 // Synthesize a CommonPrefix at the boundary depth
                 if let (Some(prefix_at_boundary), Some(seen)) = (
                     self.prefix_at_depth(entry.key(), max_depth),
-                    emitted_prefixes.as_deref_mut(),
-                ) && seen.insert(prefix_at_boundary.clone())
-                    && sender
-                        .send(ListEntry::CommonPrefix(prefix_at_boundary))
-                        .await
-                        .is_err()
-                {
-                    return Ok(true);
+                    emitted_prefixes,
+                ) {
+                    let is_new = seen
+                        .lock()
+                        .expect("emitted-prefix set poisoned")
+                        .insert(prefix_at_boundary.clone());
+                    if is_new
+                        && sender
+                            .send(ListEntry::CommonPrefix(prefix_at_boundary))
+                            .await
+                            .is_err()
+                    {
+                        return Ok(true);
+                    }
                 }
                 continue;
             }
@@ -417,6 +585,7 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
                 bucket = %self.bucket,
                 max_parallel = self.max_parallel_listings,
                 max_depth = self.max_parallel_listing_max_depth,
+                range_split_threshold = self.parallel_range_split_threshold,
                 "Using parallel listing"
             );
             let permit = self
@@ -425,7 +594,14 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
                 .acquire_owned()
                 .await
                 .expect("listing semaphore closed unexpectedly");
-            self.list_with_parallel(mode, sender, max_keys, self.prefix.clone(), 0, permit)
+            let task = ListTask {
+                prefix: self.prefix.clone(),
+                depth: 0,
+                range: KeyRange::default(),
+                split_depth: 0,
+                emitted_prefixes: Arc::new(Mutex::new(HashSet::new())),
+            };
+            self.list_with_parallel(mode, sender, max_keys, task, permit)
                 .await
         } else {
             debug!(bucket = %self.bucket, "Using sequential listing");
@@ -452,7 +628,7 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
         let mut continuation_token: Option<String> = None;
         let mut key_marker: Option<String> = None;
         let mut version_id_marker: Option<String> = None;
-        let mut emitted_prefixes = std::collections::HashSet::new();
+        let emitted_prefixes = Mutex::new(HashSet::new());
 
         loop {
             if self.cancellation_token.is_cancelled() {
@@ -475,12 +651,13 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
                     continuation_token.as_deref(),
                     key_marker.as_deref(),
                     version_id_marker.as_deref(),
+                    None,
                 )
                 .await?;
 
             // Send objects (with synthetic CommonPrefix for keys beyond max_depth)
             if self
-                .send_listed_entries(page.objects, sender, Some(&mut emitted_prefixes))
+                .send_listed_entries(page.objects, sender, Some(&emitted_prefixes))
                 .await?
             {
                 return Ok(());
@@ -493,7 +670,7 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
                 .map(|p| ListEntry::CommonPrefix(p.clone()))
                 .collect();
             if self
-                .send_listed_entries(prefix_entries, sender, Some(&mut emitted_prefixes))
+                .send_listed_entries(prefix_entries, sender, Some(&emitted_prefixes))
                 .await?
             {
                 return Ok(());
@@ -555,14 +732,323 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
         Ok(())
     }
 
-    /// Parallel listing using recursive prefix discovery with JoinSet.
+    /// Drop the entries of a page that fall outside `range`.
+    ///
+    /// Returns the clipped objects and sub-prefixes plus whether the page
+    /// crossed the range's upper bound (no further pages are needed).
+    /// Objects at or before the range start can only come from an endpoint
+    /// that ignores `start-after`; they are dropped and range splitting is
+    /// disabled for the rest of the run so the listing stays correct.
+    fn clip_page_to_range(
+        &self,
+        range: &KeyRange,
+        mut objects: Vec<ListEntry>,
+        mut sub_prefixes: Vec<String>,
+    ) -> (Vec<ListEntry>, Vec<String>, bool) {
+        let mut reached_end = false;
+        let mut start_after_ignored = false;
+        objects.retain(|entry| {
+            let key = entry.key();
+            if range.is_before_start(key) {
+                start_after_ignored = true;
+                false
+            } else if range.is_beyond_end(key) {
+                reached_end = true;
+                false
+            } else {
+                true
+            }
+        });
+        // A common prefix never straddles a range boundary (boundaries are
+        // placed at a character position above every prefix at this level),
+        // so comparing the prefix string itself is sufficient.
+        sub_prefixes.retain(|cp| {
+            if range.is_beyond_end(cp) {
+                reached_end = true;
+                false
+            } else {
+                true
+            }
+        });
+        if start_after_ignored && !self.range_split_unsupported.swap(true, Ordering::Relaxed) {
+            tracing::warn!(
+                bucket = %self.bucket,
+                "Endpoint returned keys at or before start-after; disabling key-range splitting"
+            );
+        }
+        (objects, sub_prefixes, reached_end)
+    }
+
+    /// Whether a task that has listed `listed_keys` keys should split the
+    /// rest of its range instead of continuing sequentially. `next_split_at`
+    /// is the key count at which the task may next try (initially the
+    /// threshold; a threshold later after an attempt found no boundary, so a
+    /// page that reveals new characters gets another chance without probing
+    /// on every page).
+    ///
+    /// Splitting only pays off when workers are idle: with every permit in
+    /// use, more tasks would just queue behind the semaphore while the probe
+    /// requests and per-range boundary pages add cost. `available_permits`
+    /// is therefore the trigger, which naturally covers both a flat bucket
+    /// (one task, many idle workers) and the tail of a skewed tree (one
+    /// huge leaf left after the small ones finish).
+    fn should_split_range(&self, task: &ListTask, listed_keys: u64, next_split_at: u64) -> bool {
+        self.parallel_range_split_threshold > 0
+            && task.split_depth < MAX_RANGE_SPLIT_DEPTH
+            && listed_keys >= next_split_at
+            // Directory buckets do not support start-after.
+            && !self.is_express_onezone_storage()
+            && !self.range_split_unsupported.load(Ordering::Relaxed)
+            && self.listing_worker_semaphore.available_permits() > 0
+    }
+
+    /// Smallest key strictly after `after` under `prefix`, or `None`.
+    /// One `max-keys=1` request; counts against the semaphore, the rate
+    /// limiter and the API call counter like any other listing request.
+    async fn probe_next_key(
+        &self,
+        mode: ListingMode,
+        prefix: Option<&str>,
+        after: &str,
+    ) -> Result<Option<String>> {
+        if self.cancellation_token.is_cancelled() {
+            return Ok(None);
+        }
+        let _permit = self
+            .listing_worker_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("listing semaphore closed unexpectedly");
+        if self.acquire_rate_limit().await {
+            return Ok(None);
+        }
+        self.api_call_counter.fetch_add(1, Ordering::Relaxed);
+        let page = match mode {
+            ListingMode::Objects => {
+                self.fetcher
+                    .fetch_page(mode, 1, prefix, None, None, None, None, Some(after))
+                    .await?
+            }
+            ListingMode::Versions => {
+                self.fetcher
+                    .fetch_page(mode, 1, prefix, None, None, Some(after), None, None)
+                    .await?
+            }
+        };
+        Ok(page
+            .objects
+            .iter()
+            .map(|entry| entry.key().to_string())
+            .min())
+    }
+
+    /// Run [`Self::probe_next_key`] for every target concurrently. The result
+    /// vector is aligned with `targets`.
+    async fn probe_next_keys(
+        &self,
+        mode: ListingMode,
+        prefix: Option<&str>,
+        targets: Vec<String>,
+    ) -> Result<Vec<Option<String>>> {
+        let mut results = vec![None; targets.len()];
+        let mut join_set = JoinSet::new();
+        for (index, target) in targets.into_iter().enumerate() {
+            let engine = self.clone();
+            let prefix = prefix.map(str::to_string);
+            join_set.spawn(async move {
+                engine
+                    .probe_next_key(mode, prefix.as_deref(), &target)
+                    .await
+                    .map(|found| (index, found))
+            });
+        }
+        while let Some(result) = join_set.join_next().await {
+            match result {
+                Ok(Ok((index, found))) => results[index] = found,
+                Ok(Err(e)) => {
+                    self.cancellation_token.cancel();
+                    return Err(e);
+                }
+                Err(join_err) => {
+                    self.cancellation_token.cancel();
+                    return Err(anyhow::anyhow!("Range probe task panicked: {}", join_err));
+                }
+            }
+        }
+        Ok(results)
+    }
+
+    /// Split the remainder of a range, `(cursor, end]`, into sub-ranges.
+    ///
+    /// A page only reveals the smallest keys of a range, so the distribution
+    /// beyond `cursor` is observed with `max-keys=1` probes (`start-after=X`
+    /// answers "what is the first key after X?"):
+    ///
+    /// 1. Take the longest common prefix `lcp` of the page's keys. For every
+    ///    position `q` in it, probe just past `lcp[..q]`; the smallest `q`
+    ///    whose answer still shares `lcp[..q]` is where the remaining keys
+    ///    really branch (`q*`). This skips shared runs like `file00` in one
+    ///    round instead of peeling them one character at a time.
+    /// 2. Probe `base + c` for every character `c` the page uses beyond that
+    ///    position that sorts after the character observed at `q*` (see
+    ///    [`candidate_boundary_chars`]). Each answer's character at `q*` is a
+    ///    real branch; the distinct ones become the boundaries.
+    ///
+    /// Ranges are contiguous and the last one keeps the parent's upper
+    /// bound, so keys with unexpected characters (any script, any byte) land
+    /// in some range regardless of how the probes were placed; a poor
+    /// placement only leaves a big range that splits again later.
+    ///
+    /// Returns `None` when no boundary was found, in which case the caller
+    /// keeps listing sequentially.
+    async fn plan_range_split(
+        &self,
+        mode: ListingMode,
+        prefix: Option<&str>,
+        delimiter_mode: bool,
+        cursor: KeyRange,
+        page_keys: &[String],
+    ) -> Result<Option<Vec<KeyRange>>> {
+        let p = prefix.unwrap_or("");
+        let cursor_key = cursor
+            .start_after
+            .clone()
+            .expect("range split cursor must carry a key");
+        let end = cursor.end_inclusive.clone();
+        let within_end = |key: &str| end.as_deref().is_none_or(|e| key <= e);
+
+        let relative_keys: Vec<&str> = page_keys.iter().filter_map(|k| k.strip_prefix(p)).collect();
+        let lcp = common_prefix_chars(&relative_keys);
+        let base_at = |q: usize| -> String {
+            let mut s = String::with_capacity(p.len() + q * 4);
+            s.push_str(p);
+            s.extend(lcp[..q].iter());
+            s
+        };
+
+        // Round 1: where do the remaining keys branch off the page's lcp?
+        let mut positions: Vec<usize> = Vec::new();
+        let mut targets: Vec<String> = Vec::new();
+        for (q, &ch) in lcp.iter().enumerate().take(MAX_PROBE_POSITIONS) {
+            if let Some(next) = next_char(ch) {
+                let mut target = base_at(q);
+                target.push(next);
+                if within_end(&target) {
+                    positions.push(q);
+                    targets.push(target);
+                }
+            }
+        }
+        let mut q_star = lcp.len();
+        for (q, found) in positions
+            .iter()
+            .zip(self.probe_next_keys(mode, prefix, targets).await?)
+        {
+            if let Some(key) = found
+                && within_end(&key)
+                && key.starts_with(&base_at(*q))
+            {
+                q_star = q_star.min(*q);
+            }
+        }
+        let base = base_at(q_star);
+        let observed_char = if q_star < lcp.len() {
+            Some(lcp[q_star])
+        } else {
+            cursor_key
+                .strip_prefix(base.as_str())
+                .and_then(|rest| rest.chars().next())
+        };
+
+        // Round 2: which characters actually occur at q* after the cursor?
+        let alphabet: BTreeSet<char> = relative_keys
+            .iter()
+            .flat_map(|key| key.chars().skip(q_star))
+            .collect();
+        let targets: Vec<String> =
+            candidate_boundary_chars(observed_char, &alphabet, delimiter_mode)
+                .into_iter()
+                .map(|c| {
+                    let mut target = base.clone();
+                    target.push(c);
+                    target
+                })
+                .filter(|target| within_end(target))
+                .collect();
+        let mut boundaries: Vec<String> = self
+            .probe_next_keys(mode, prefix, targets)
+            .await?
+            .into_iter()
+            .flatten()
+            .filter(|key| within_end(key))
+            .filter_map(|key| {
+                let ch = key.strip_prefix(base.as_str())?.chars().next()?;
+                (!(delimiter_mode && ch == '/')).then(|| {
+                    let mut boundary = base.clone();
+                    boundary.push(ch);
+                    boundary
+                })
+            })
+            // Always true for a compliant endpoint; guards against one that
+            // ignores start-after and answers with the first key overall.
+            .filter(|boundary| boundary.as_str() > cursor_key.as_str())
+            .collect();
+        boundaries.sort_unstable();
+        boundaries.dedup();
+
+        if boundaries.is_empty() {
+            debug!(
+                prefix = %p,
+                cursor = %cursor_key,
+                "No key-range boundaries found; continuing sequentially"
+            );
+            return Ok(None);
+        }
+
+        let mut ranges = Vec::with_capacity(boundaries.len() + 1);
+        let mut start_after = cursor.start_after;
+        let mut version_id_marker = cursor.version_id_marker;
+        for boundary in boundaries {
+            ranges.push(KeyRange {
+                start_after: start_after.take(),
+                version_id_marker: version_id_marker.take(),
+                end_inclusive: Some(boundary.clone()),
+            });
+            start_after = Some(boundary);
+        }
+        ranges.push(KeyRange {
+            start_after,
+            version_id_marker: None,
+            end_inclusive: end,
+        });
+
+        self.range_split_counter.fetch_add(1, Ordering::Relaxed);
+        debug!(
+            prefix = %p,
+            cursor = %cursor_key,
+            branch_position = q_star,
+            ranges = ranges.len(),
+            "Splitting key range"
+        );
+        Ok(Some(ranges))
+    }
+
+    /// Parallel listing: one task per (prefix, key range), recursive.
+    ///
+    /// Tasks at depths up to `max_parallel_listing_max_depth` list with a
+    /// "/" delimiter and spawn a child per discovered sub-prefix (prefix
+    /// discovery); deeper tasks list without a delimiter. Either kind, after
+    /// paging through `parallel_range_split_threshold` keys while workers are
+    /// idle, hands the rest of its range to concurrently listed sub-ranges
+    /// (see [`Self::plan_range_split`]). This keeps flat key spaces and
+    /// lopsided trees parallel even though they expose no sub-prefixes.
     fn list_with_parallel<'a>(
         &'a self,
         mode: ListingMode,
         sender: &'a Sender<ListEntry>,
         max_keys: i32,
-        prefix: Option<String>,
-        depth: u16,
+        task: ListTask,
         permit: tokio::sync::OwnedSemaphorePermit,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
@@ -573,34 +1059,29 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
             // Content depth limit: at recursion depth D, objects have key-depth D+1.
             // Stop fetching when key-depth would exceed max_depth.
             if let Some(max_depth) = self.max_depth
-                && depth >= max_depth
+                && task.depth >= max_depth
             {
                 return Ok(());
             }
 
-            // Beyond max parallel depth: switch to sequential with no
-            // delimiter. Hold `permit` across the entire sequential scan so
-            // this leaf listing counts against `max_parallel_listings`.
-            // Releasing it before the scan (as this once did) let an unbounded
-            // number of leaf scans run concurrently, ignoring the concurrency
-            // limit. This cannot deadlock: `list_sequential` never acquires
-            // another permit, and every parent task releases its own permit
-            // before awaiting its children.
-            if depth > self.max_parallel_listing_max_depth {
-                let result = self
-                    .list_sequential(mode, sender, max_keys, prefix, None)
-                    .await;
-                drop(permit);
-                return result;
-            }
+            let discovery = task.depth <= self.max_parallel_listing_max_depth;
+            let delimiter = if discovery { Some("/") } else { None };
+            let prefix = task.prefix.as_deref();
 
-            let mut current_permit = Some(permit);
+            // Hold `permit` across the whole pagination of this range so it
+            // counts against `max_parallel_listings`. It is released before
+            // probing or spawning children, and every child (probe, range,
+            // sub-prefix) acquires its own permit, so this cannot deadlock:
+            // nothing waits for a permit while holding one.
+            let mut permit = Some(permit);
 
-            // Paginate at this level with "/" delimiter to discover sub-prefixes
             let mut continuation_token: Option<String> = None;
-            let mut key_marker: Option<String> = None;
-            let mut version_id_marker: Option<String> = None;
+            let mut key_marker: Option<String> = task.range.start_after.clone();
+            let mut version_id_marker: Option<String> = task.range.version_id_marker.clone();
             let mut all_sub_prefixes: Vec<String> = Vec::new();
+            let mut listed_keys: u64 = 0;
+            let mut next_split_at = u64::from(self.parallel_range_split_threshold);
+            let mut range_children: Vec<KeyRange> = Vec::new();
 
             loop {
                 if self.cancellation_token.is_cancelled() {
@@ -611,88 +1092,182 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
                     return Ok(());
                 }
                 self.api_call_counter.fetch_add(1, Ordering::Relaxed);
-                let page = self
-                    .fetcher
-                    .fetch_page(
-                        mode,
-                        max_keys,
-                        prefix.as_deref(),
-                        Some("/"),
-                        continuation_token.as_deref(),
-                        key_marker.as_deref(),
-                        version_id_marker.as_deref(),
-                    )
-                    .await?;
+                let page = match mode {
+                    ListingMode::Objects => {
+                        // start-after positions only the first request; later
+                        // pages resume from the continuation token.
+                        let start_after = if continuation_token.is_none() {
+                            task.range.start_after.as_deref()
+                        } else {
+                            None
+                        };
+                        self.fetcher
+                            .fetch_page(
+                                mode,
+                                max_keys,
+                                prefix,
+                                delimiter,
+                                continuation_token.as_deref(),
+                                None,
+                                None,
+                                start_after,
+                            )
+                            .await?
+                    }
+                    ListingMode::Versions => {
+                        self.fetcher
+                            .fetch_page(
+                                mode,
+                                max_keys,
+                                prefix,
+                                delimiter,
+                                None,
+                                key_marker.as_deref(),
+                                version_id_marker.as_deref(),
+                                None,
+                            )
+                            .await?
+                    }
+                };
+                let (objects, sub_prefixes, reached_end) =
+                    self.clip_page_to_range(&task.range, page.objects, page.sub_prefixes);
+
+                listed_keys += objects.len() as u64;
+                let last_key: Option<String> = objects.last().map(|e| e.key().to_string());
+                let consider_split = last_key.is_some()
+                    && page.is_truncated
+                    && !reached_end
+                    && self.should_split_range(&task, listed_keys, next_split_at);
+                // Only materialised when a split is on the table.
+                let page_keys: Vec<String> = if consider_split {
+                    objects.iter().map(|e| e.key().to_string()).collect()
+                } else {
+                    Vec::new()
+                };
 
                 // Send objects at this level
-                if self.send_listed_entries(page.objects, sender, None).await? {
+                if self
+                    .send_listed_entries(objects, sender, Some(&task.emitted_prefixes))
+                    .await?
+                {
                     return Ok(());
                 }
 
-                // Collect sub-prefixes
-                all_sub_prefixes.extend(page.sub_prefixes);
+                // Collect sub-prefixes (discovery only; leaf pages have none)
+                if discovery {
+                    all_sub_prefixes.extend(sub_prefixes);
+                }
 
-                if page.is_truncated {
-                    match mode {
-                        ListingMode::Objects => {
-                            let next_token = page.continuation_token;
-                            if next_token.is_none() {
-                                anyhow::bail!(
-                                    "S3 returned truncated response but no continuation token for s3://{}/{}",
-                                    self.bucket,
-                                    self.prefix.as_deref().unwrap_or("")
-                                );
-                            }
-                            if next_token == continuation_token {
-                                anyhow::bail!(
-                                    "S3 returned the same continuation token twice for s3://{}/{}; \
-                                     refusing to loop. This is likely a bug in the S3-compatible endpoint.",
-                                    self.bucket,
-                                    self.prefix.as_deref().unwrap_or("")
-                                );
-                            }
-                            continuation_token = next_token;
+                if reached_end || !page.is_truncated {
+                    break;
+                }
+
+                match mode {
+                    ListingMode::Objects => {
+                        let next_token = page.continuation_token;
+                        if next_token.is_none() {
+                            anyhow::bail!(
+                                "S3 returned truncated response but no continuation token for s3://{}/{}",
+                                self.bucket,
+                                self.prefix.as_deref().unwrap_or("")
+                            );
                         }
-                        ListingMode::Versions => {
-                            let next_key_marker = page.key_marker;
-                            let next_version_id_marker = page.version_id_marker;
-                            if next_key_marker.is_none() {
-                                anyhow::bail!(
-                                    "S3 returned truncated response but no next key marker for s3://{}/{}",
-                                    self.bucket,
-                                    self.prefix.as_deref().unwrap_or("")
-                                );
-                            }
-                            if next_key_marker == key_marker
-                                && next_version_id_marker == version_id_marker
-                            {
-                                anyhow::bail!(
-                                    "S3 returned the same key/version marker twice for s3://{}/{}; \
-                                     refusing to loop. This is likely a bug in the S3-compatible endpoint.",
-                                    self.bucket,
-                                    self.prefix.as_deref().unwrap_or("")
-                                );
-                            }
-                            key_marker = next_key_marker;
-                            version_id_marker = next_version_id_marker;
+                        if next_token == continuation_token {
+                            anyhow::bail!(
+                                "S3 returned the same continuation token twice for s3://{}/{}; \
+                                 refusing to loop. This is likely a bug in the S3-compatible endpoint.",
+                                self.bucket,
+                                self.prefix.as_deref().unwrap_or("")
+                            );
+                        }
+                        continuation_token = next_token;
+                    }
+                    ListingMode::Versions => {
+                        let next_key_marker = page.key_marker;
+                        let next_version_id_marker = page.version_id_marker;
+                        if next_key_marker.is_none() {
+                            anyhow::bail!(
+                                "S3 returned truncated response but no next key marker for s3://{}/{}",
+                                self.bucket,
+                                self.prefix.as_deref().unwrap_or("")
+                            );
+                        }
+                        if next_key_marker == key_marker
+                            && next_version_id_marker == version_id_marker
+                        {
+                            anyhow::bail!(
+                                "S3 returned the same key/version marker twice for s3://{}/{}; \
+                                 refusing to loop. This is likely a bug in the S3-compatible endpoint.",
+                                self.bucket,
+                                self.prefix.as_deref().unwrap_or("")
+                            );
+                        }
+                        key_marker = next_key_marker;
+                        version_id_marker = next_version_id_marker;
+                    }
+                }
+
+                if !consider_split {
+                    continue;
+                }
+                let last_key = last_key.expect("consider_split requires a key");
+                // Where the next sequential page would start. For versions,
+                // only trust S3's marker when it points at the last version we
+                // saw; if the page ended on a common prefix the marker's
+                // meaning is endpoint-specific, so skip splitting this page.
+                let cursor = match mode {
+                    ListingMode::Objects => KeyRange {
+                        start_after: Some(last_key.clone()),
+                        version_id_marker: None,
+                        end_inclusive: task.range.end_inclusive.clone(),
+                    },
+                    ListingMode::Versions => {
+                        if key_marker.as_deref() != Some(last_key.as_str()) {
+                            continue;
+                        }
+                        KeyRange {
+                            start_after: key_marker.clone(),
+                            version_id_marker: version_id_marker.clone(),
+                            end_inclusive: task.range.end_inclusive.clone(),
                         }
                     }
-                } else {
-                    break;
+                };
+                next_split_at = listed_keys + u64::from(self.parallel_range_split_threshold);
+                // Probes need permits of their own.
+                drop(permit.take());
+                match self
+                    .plan_range_split(mode, prefix, discovery, cursor, &page_keys)
+                    .await?
+                {
+                    Some(ranges) => {
+                        // Sub-prefixes sorted after the cursor will be
+                        // rediscovered by the range that contains them.
+                        all_sub_prefixes.retain(|cp| cp.as_str() < last_key.as_str());
+                        range_children = ranges;
+                        break;
+                    }
+                    None => {
+                        permit = Some(
+                            self.listing_worker_semaphore
+                                .clone()
+                                .acquire_owned()
+                                .await
+                                .expect("listing semaphore closed unexpectedly"),
+                        );
+                    }
                 }
             }
 
             // Release permit before spawning sub-tasks
-            drop(current_permit.take());
+            drop(permit.take());
 
             // At max_depth boundary: emit sub-prefixes as CommonPrefix entries
             // instead of recursing into them, mimicking non-recursive listing.
             // Send directly to avoid depth filtering in send_listed_entries.
             if let Some(max_depth) = self.max_depth
-                && depth + 1 >= max_depth
-                && !all_sub_prefixes.is_empty()
+                && task.depth + 1 >= max_depth
             {
-                for sub_prefix in all_sub_prefixes {
+                for sub_prefix in all_sub_prefixes.drain(..) {
                     if self.cancellation_token.is_cancelled() {
                         return Ok(());
                     }
@@ -704,48 +1279,57 @@ impl<F: PageFetcher + Clone + 'static> ListingEngine<F> {
                         return Ok(());
                     }
                 }
+            }
+
+            if all_sub_prefixes.is_empty() && range_children.is_empty() {
                 return Ok(());
             }
 
-            // Spawn sub-tasks for each sub-prefix
-            if !all_sub_prefixes.is_empty() {
-                let mut join_set = JoinSet::new();
+            // Spawn sub-tasks: one per discovered sub-prefix, one per key range
+            let mut join_set = JoinSet::new();
+            let children = all_sub_prefixes
+                .into_iter()
+                .map(|sub_prefix| ListTask {
+                    prefix: Some(sub_prefix),
+                    depth: task.depth + 1,
+                    range: KeyRange::default(),
+                    split_depth: 0,
+                    emitted_prefixes: Arc::new(Mutex::new(HashSet::new())),
+                })
+                .chain(range_children.into_iter().map(|range| ListTask {
+                    prefix: task.prefix.clone(),
+                    depth: task.depth,
+                    range,
+                    split_depth: task.split_depth + 1,
+                    emitted_prefixes: task.emitted_prefixes.clone(),
+                }));
 
-                for sub_prefix in all_sub_prefixes {
-                    let engine = self.clone();
-                    let sender = sender.clone();
-                    let next_depth = depth + 1;
-                    let sem = self.listing_worker_semaphore.clone();
+            for child in children {
+                let engine = self.clone();
+                let sender = sender.clone();
+                let sem = self.listing_worker_semaphore.clone();
 
-                    join_set.spawn(async move {
-                        let sub_permit = sem
-                            .acquire_owned()
-                            .await
-                            .expect("listing semaphore closed unexpectedly");
-                        engine
-                            .list_with_parallel(
-                                mode,
-                                &sender,
-                                max_keys,
-                                Some(sub_prefix),
-                                next_depth,
-                                sub_permit,
-                            )
-                            .await
-                    });
-                }
+                join_set.spawn(async move {
+                    let sub_permit = sem
+                        .acquire_owned()
+                        .await
+                        .expect("listing semaphore closed unexpectedly");
+                    engine
+                        .list_with_parallel(mode, &sender, max_keys, child, sub_permit)
+                        .await
+                });
+            }
 
-                while let Some(result) = join_set.join_next().await {
-                    match result {
-                        Ok(Ok(())) => {}
-                        Ok(Err(e)) => {
-                            self.cancellation_token.cancel();
-                            return Err(e);
-                        }
-                        Err(join_err) => {
-                            self.cancellation_token.cancel();
-                            return Err(anyhow::anyhow!("Listing sub-task panicked: {}", join_err));
-                        }
+            while let Some(result) = join_set.join_next().await {
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        self.cancellation_token.cancel();
+                        return Err(e);
+                    }
+                    Err(join_err) => {
+                        self.cancellation_token.cancel();
+                        return Err(anyhow::anyhow!("Listing sub-task panicked: {}", join_err));
                     }
                 }
             }
@@ -787,6 +1371,7 @@ impl S3Storage {
         fetch_owner: bool,
         fetch_restore_status: bool,
         rate_limit_api: Option<u32>,
+        parallel_range_split_threshold: u32,
     ) -> Self {
         let client = client_config.create_client().await;
         let delimiter = if recursive {
@@ -831,6 +1416,9 @@ impl S3Storage {
             max_depth,
             rate_limiter,
             api_call_counter: Arc::new(AtomicU64::new(0)),
+            parallel_range_split_threshold,
+            range_split_unsupported: Arc::new(AtomicBool::new(false)),
+            range_split_counter: Arc::new(AtomicU64::new(0)),
         };
 
         Self { engine }
@@ -1040,14 +1628,18 @@ fn aws_datetime_to_chrono(dt: Option<&aws_smithy_types::DateTime>) -> Option<Dat
 mod tests {
     use super::*;
     use crate::types::token::create_pipeline_cancellation_token;
+    use proptest::prelude::*;
     use std::collections::HashMap;
-    use std::sync::Mutex;
 
     // -----------------------------------------------------------------------
     // MockPageFetcher
     // -----------------------------------------------------------------------
 
     type PageMap = HashMap<(Option<String>, Option<String>), Vec<ListPage>>;
+
+    /// Production default; the page-map mocks never list this many keys, so
+    /// range splitting stays inert unless a test opts in explicitly.
+    const TEST_RANGE_SPLIT_THRESHOLD: u32 = 5000;
 
     /// A mock page fetcher that returns pre-configured pages keyed by
     /// (prefix, delimiter) so parallel listing can get different results
@@ -1093,6 +1685,7 @@ mod tests {
             _continuation_token: Option<&str>,
             _key_marker: Option<&str>,
             _version_id_marker: Option<&str>,
+            _start_after: Option<&str>,
         ) -> Result<ListPage> {
             let key = (
                 prefix.map(|s| s.to_string()),
@@ -1136,6 +1729,7 @@ mod tests {
             continuation_token: Option<&str>,
             key_marker: Option<&str>,
             version_id_marker: Option<&str>,
+            start_after: Option<&str>,
         ) -> Result<ListPage> {
             if let Some(ref err_prefix) = self.error_prefix {
                 if prefix == Some(err_prefix.as_str()) {
@@ -1153,6 +1747,7 @@ mod tests {
                     continuation_token,
                     key_marker,
                     version_id_marker,
+                    start_after,
                 )
                 .await
         }
@@ -1227,6 +1822,9 @@ mod tests {
             max_depth: None,
             rate_limiter: None,
             api_call_counter: Arc::new(AtomicU64::new(0)),
+            parallel_range_split_threshold: TEST_RANGE_SPLIT_THRESHOLD,
+            range_split_unsupported: Arc::new(AtomicBool::new(false)),
+            range_split_counter: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -1888,6 +2486,9 @@ mod tests {
             max_depth: content_max_depth,
             rate_limiter: None,
             api_call_counter: Arc::new(AtomicU64::new(0)),
+            parallel_range_split_threshold: TEST_RANGE_SPLIT_THRESHOLD,
+            range_split_unsupported: Arc::new(AtomicBool::new(false)),
+            range_split_counter: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -2079,6 +2680,9 @@ mod tests {
             listing_worker_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
             rate_limiter: None,
             api_call_counter: Arc::new(AtomicU64::new(0)),
+            parallel_range_split_threshold: TEST_RANGE_SPLIT_THRESHOLD,
+            range_split_unsupported: Arc::new(AtomicBool::new(false)),
+            range_split_counter: Arc::new(AtomicU64::new(0)),
         };
         let entries = collect_entries(&engine, ListingMode::Objects, 1000)
             .await
@@ -2207,6 +2811,7 @@ mod tests {
             continuation_token: Option<&str>,
             key_marker: Option<&str>,
             version_id_marker: Option<&str>,
+            start_after: Option<&str>,
         ) -> Result<ListPage> {
             let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
             self.max_in_flight.fetch_max(now, Ordering::SeqCst);
@@ -2222,6 +2827,7 @@ mod tests {
                     continuation_token,
                     key_marker,
                     version_id_marker,
+                    start_after,
                 )
                 .await;
             self.in_flight.fetch_sub(1, Ordering::SeqCst);
@@ -2289,6 +2895,9 @@ mod tests {
             max_depth: None,
             rate_limiter: None,
             api_call_counter: Arc::new(AtomicU64::new(0)),
+            parallel_range_split_threshold: TEST_RANGE_SPLIT_THRESHOLD,
+            range_split_unsupported: Arc::new(AtomicBool::new(false)),
+            range_split_counter: Arc::new(AtomicU64::new(0)),
         };
 
         let entries = collect_entries(&engine, ListingMode::Objects, 1000)
@@ -2374,6 +2983,9 @@ mod tests {
             max_depth: None,
             rate_limiter: Some(rate_limiter),
             api_call_counter: Arc::new(AtomicU64::new(0)),
+            parallel_range_split_threshold: TEST_RANGE_SPLIT_THRESHOLD,
+            range_split_unsupported: Arc::new(AtomicBool::new(false)),
+            range_split_counter: Arc::new(AtomicU64::new(0)),
         };
 
         let entries = collect_entries(&engine, ListingMode::Objects, 1000)
@@ -2498,6 +3110,9 @@ mod tests {
             max_depth: None,
             rate_limiter: None,
             api_call_counter: counter.clone(),
+            parallel_range_split_threshold: TEST_RANGE_SPLIT_THRESHOLD,
+            range_split_unsupported: Arc::new(AtomicBool::new(false)),
+            range_split_counter: Arc::new(AtomicU64::new(0)),
         };
 
         let entries = collect_entries(&engine, ListingMode::Objects, 1000)
@@ -2554,6 +3169,9 @@ mod tests {
             max_depth: None,
             rate_limiter: None,
             api_call_counter: counter.clone(),
+            parallel_range_split_threshold: TEST_RANGE_SPLIT_THRESHOLD,
+            range_split_unsupported: Arc::new(AtomicBool::new(false)),
+            range_split_counter: Arc::new(AtomicU64::new(0)),
         };
 
         let entries = collect_entries(&engine, ListingMode::Objects, 1000)
@@ -2629,9 +3247,9 @@ mod tests {
         );
         let (tx, rx) = tokio::sync::mpsc::channel(1);
         drop(rx);
-        let mut seen = std::collections::HashSet::new();
+        let seen = Mutex::new(HashSet::new());
         let stop = engine
-            .send_listed_entries(vec![make_entry("p/a/b/c.txt")], &tx, Some(&mut seen))
+            .send_listed_entries(vec![make_entry("p/a/b/c.txt")], &tx, Some(&seen))
             .await
             .unwrap();
         assert!(stop, "boundary CommonPrefix send failure must signal stop");
@@ -3034,6 +3652,7 @@ mod tests {
             continuation_token: Option<&str>,
             key_marker: Option<&str>,
             version_id_marker: Option<&str>,
+            start_after: Option<&str>,
         ) -> Result<ListPage> {
             if prefix == Some(self.panic_prefix.as_str()) {
                 panic!("fetch boom");
@@ -3047,6 +3666,7 @@ mod tests {
                     continuation_token,
                     key_marker,
                     version_id_marker,
+                    start_after,
                 )
                 .await
         }
@@ -3189,6 +3809,497 @@ mod tests {
                 assert_eq!(o.version_id(), Some("v1"));
             }
             other => panic!("expected Object, got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Key-range splitting
+    // -----------------------------------------------------------------------
+
+    /// How an [`InMemoryFetcher`] treats `start-after`.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum StartAfterSupport {
+        /// Compliant endpoint.
+        Honor,
+        /// An endpoint that ignores `start-after` on page requests but
+        /// honours it for `max-keys=1` probes: splits get planned, and the
+        /// range tasks must notice that their lower bound was ignored.
+        IgnoreOnPages,
+    }
+
+    /// Simulates ListObjectsV2 / ListObjectVersions over a sorted key set:
+    /// prefix filtering, "/" delimiter roll-up, `max-keys` pagination with
+    /// continuation tokens / markers, and `start-after` / `key-marker`.
+    /// Every key has exactly one version.
+    #[derive(Clone)]
+    struct InMemoryFetcher {
+        keys: Arc<Vec<String>>,
+        start_after: StartAfterSupport,
+        calls: Arc<AtomicU64>,
+    }
+
+    impl InMemoryFetcher {
+        fn new(mut keys: Vec<String>) -> Self {
+            keys.sort();
+            keys.dedup();
+            Self {
+                keys: Arc::new(keys),
+                start_after: StartAfterSupport::Honor,
+                calls: Arc::new(AtomicU64::new(0)),
+            }
+        }
+
+        fn with_start_after(mut self, support: StartAfterSupport) -> Self {
+            self.start_after = support;
+            self
+        }
+    }
+
+    fn make_version_entry(key: &str) -> ListEntry {
+        match make_entry(key) {
+            ListEntry::Object(mut obj) => {
+                obj.version_info = Some(VersionInfo {
+                    version_id: "v1".to_string(),
+                    is_latest: true,
+                });
+                ListEntry::Object(obj)
+            }
+            other => other,
+        }
+    }
+
+    #[async_trait]
+    impl PageFetcher for InMemoryFetcher {
+        async fn fetch_page(
+            &self,
+            mode: ListingMode,
+            max_keys: i32,
+            prefix: Option<&str>,
+            delimiter: Option<&str>,
+            continuation_token: Option<&str>,
+            key_marker: Option<&str>,
+            _version_id_marker: Option<&str>,
+            start_after: Option<&str>,
+        ) -> Result<ListPage> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            let prefix = prefix.unwrap_or("");
+            let start_after = match self.start_after {
+                StartAfterSupport::Honor => start_after,
+                StartAfterSupport::IgnoreOnPages if max_keys == 1 => start_after,
+                StartAfterSupport::IgnoreOnPages => None,
+            };
+            let after = match mode {
+                ListingMode::Objects => continuation_token.or(start_after),
+                ListingMode::Versions => key_marker,
+            };
+            let first = after.map_or(0, |a| self.keys.partition_point(|k| k.as_str() <= a));
+            let max_keys = usize::try_from(max_keys).unwrap();
+
+            let mut objects = Vec::new();
+            let mut sub_prefixes: Vec<String> = Vec::new();
+            let mut last_consumed: Option<&str> = None;
+            let mut truncated = false;
+            for key in &self.keys[first..] {
+                let Some(rel) = key.strip_prefix(prefix) else {
+                    if key.as_str() > prefix {
+                        break;
+                    }
+                    continue;
+                };
+                let entries = objects.len() + sub_prefixes.len();
+                match delimiter.and_then(|d| rel.find(d).map(|i| i + d.len())) {
+                    Some(end) => {
+                        let cp = format!("{prefix}{}", &rel[..end]);
+                        if sub_prefixes.last() == Some(&cp) {
+                            last_consumed = Some(key);
+                            continue;
+                        }
+                        if entries == max_keys {
+                            truncated = true;
+                            break;
+                        }
+                        sub_prefixes.push(cp);
+                    }
+                    None => {
+                        if entries == max_keys {
+                            truncated = true;
+                            break;
+                        }
+                        objects.push(match mode {
+                            ListingMode::Objects => make_entry(key),
+                            ListingMode::Versions => make_version_entry(key),
+                        });
+                    }
+                }
+                last_consumed = Some(key);
+            }
+            let token = truncated
+                .then(|| last_consumed.map(str::to_string))
+                .flatten();
+            Ok(match mode {
+                ListingMode::Objects => ListPage {
+                    objects,
+                    sub_prefixes,
+                    is_truncated: truncated,
+                    continuation_token: token,
+                    key_marker: None,
+                    version_id_marker: None,
+                },
+                ListingMode::Versions => ListPage {
+                    objects,
+                    sub_prefixes,
+                    is_truncated: truncated,
+                    continuation_token: None,
+                    version_id_marker: token.as_ref().map(|_| "v1".to_string()),
+                    key_marker: token,
+                },
+            })
+        }
+    }
+
+    fn range_engine(
+        fetcher: InMemoryFetcher,
+        prefix: Option<&str>,
+        max_parallel: u16,
+        parallel_depth: u16,
+        threshold: u32,
+        content_max_depth: Option<u16>,
+    ) -> ListingEngine<InMemoryFetcher> {
+        let mut engine = make_engine_with_max_depth(
+            fetcher,
+            "bucket",
+            prefix,
+            None,
+            max_parallel,
+            parallel_depth,
+            false,
+            content_max_depth,
+        );
+        engine.parallel_range_split_threshold = threshold;
+        engine
+    }
+
+    /// Like `collect_entries`, but drains the channel concurrently so large
+    /// listings cannot block on the channel capacity. Returns sorted object
+    /// keys and sorted common prefixes, failing on any duplicate.
+    async fn collect_sorted(
+        engine: &ListingEngine<InMemoryFetcher>,
+        mode: ListingMode,
+        max_keys: i32,
+    ) -> (Vec<String>, Vec<String>) {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        let drain = tokio::spawn(async move {
+            let mut entries = Vec::new();
+            while let Some(e) = rx.recv().await {
+                entries.push(e);
+            }
+            entries
+        });
+        engine.list_dispatch(mode, &tx, max_keys).await.unwrap();
+        drop(tx);
+        let entries = drain.await.unwrap();
+
+        let mut objects = Vec::new();
+        let mut prefixes = Vec::new();
+        for entry in entries {
+            match entry {
+                ListEntry::CommonPrefix(p) => prefixes.push(p),
+                other => objects.push(other.key().to_string()),
+            }
+        }
+        for list in [&mut objects, &mut prefixes] {
+            list.sort();
+            let before = list.len();
+            list.dedup();
+            assert_eq!(before, list.len(), "duplicate entries emitted");
+        }
+        (objects, prefixes)
+    }
+
+    fn sorted(mut keys: Vec<String>) -> Vec<String> {
+        keys.sort();
+        keys.dedup();
+        keys
+    }
+
+    #[tokio::test]
+    async fn range_split_lists_flat_bucket_completely() {
+        let keys: Vec<String> = (0..12_000).map(|i| format!("file{i:05}.dat")).collect();
+        let engine = range_engine(InMemoryFetcher::new(keys.clone()), None, 8, 2, 1000, None);
+
+        let (objects, prefixes) = collect_sorted(&engine, ListingMode::Objects, 1000).await;
+
+        assert_eq!(objects, keys);
+        assert!(prefixes.is_empty());
+        assert!(
+            engine.range_split_counter.load(Ordering::Relaxed) >= 1,
+            "a flat 12k-key bucket must be range-split"
+        );
+    }
+
+    #[tokio::test]
+    async fn range_split_handles_unicode_keys() {
+        let scripts = ["東京", "大阪", "名古屋", "Москва", "😀", "abc", "ÄÖÜ", "z"];
+        let keys: Vec<String> = (0..4000)
+            .map(|i| format!("{}{:04}", scripts[i % scripts.len()], i))
+            .collect();
+        let engine = range_engine(InMemoryFetcher::new(keys.clone()), None, 8, 2, 200, None);
+
+        let (objects, _) = collect_sorted(&engine, ListingMode::Objects, 100).await;
+
+        assert_eq!(objects, sorted(keys));
+        assert!(engine.range_split_counter.load(Ordering::Relaxed) >= 1);
+    }
+
+    #[tokio::test]
+    async fn range_split_in_discovery_mode_rediscovers_sub_prefixes_once() {
+        // Sub-prefixes interleave with keys on every page, so the cursor of a
+        // split sits below some already-seen prefixes: those must be dropped
+        // by the parent and found again by exactly one range.
+        let mut keys: Vec<String> = Vec::new();
+        for i in 0..3000 {
+            keys.push(format!("k{i:04}"));
+            if i % 3 == 0 {
+                keys.push(format!("k{i:04}d/inner"));
+            }
+        }
+        let engine = range_engine(InMemoryFetcher::new(keys.clone()), None, 8, 2, 300, None);
+
+        let (objects, prefixes) = collect_sorted(&engine, ListingMode::Objects, 100).await;
+
+        assert_eq!(objects, sorted(keys));
+        assert!(prefixes.is_empty());
+        assert!(engine.range_split_counter.load(Ordering::Relaxed) >= 1);
+    }
+
+    #[tokio::test]
+    async fn range_split_emits_max_depth_boundary_prefix_once() {
+        // Leaf "dNN/" lists without a delimiter; keys at depth 3 collapse to
+        // boundary prefixes "dNN/xMM/" which straddle range boundaries.
+        let mut keys: Vec<String> = Vec::new();
+        for d in 0..12 {
+            for x in 0..60 {
+                for y in 0..3 {
+                    keys.push(format!("d{d:02}/x{x:02}/y{y}"));
+                }
+            }
+        }
+        let engine = range_engine(InMemoryFetcher::new(keys), None, 8, 0, 50, Some(2));
+
+        let (objects, prefixes) = collect_sorted(&engine, ListingMode::Objects, 20).await;
+
+        let expected: Vec<String> = (0..12)
+            .flat_map(|d| (0..60).map(move |x| format!("d{d:02}/x{x:02}/")))
+            .collect();
+        assert!(objects.is_empty());
+        assert_eq!(prefixes, sorted(expected));
+        assert!(engine.range_split_counter.load(Ordering::Relaxed) >= 1);
+    }
+
+    #[tokio::test]
+    async fn range_split_disabled_when_threshold_is_zero() {
+        let keys: Vec<String> = (0..3000).map(|i| format!("file{i:05}")).collect();
+        let fetcher = InMemoryFetcher::new(keys.clone());
+        let engine = range_engine(fetcher.clone(), None, 8, 2, 0, None);
+
+        let (objects, _) = collect_sorted(&engine, ListingMode::Objects, 1000).await;
+
+        assert_eq!(objects, keys);
+        assert_eq!(engine.range_split_counter.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            fetcher.calls.load(Ordering::Relaxed),
+            3,
+            "plain pagination only"
+        );
+    }
+
+    #[tokio::test]
+    async fn range_split_not_used_for_express_one_zone() {
+        let keys: Vec<String> = (0..3000).map(|i| format!("file{i:05}")).collect();
+        let mut engine = range_engine(InMemoryFetcher::new(keys.clone()), None, 8, 2, 1000, None);
+        engine.bucket = "bucket--usw2-az1--x-s3".to_string();
+        engine.allow_parallel_listings_in_express_one_zone = true;
+
+        let (objects, _) = collect_sorted(&engine, ListingMode::Objects, 1000).await;
+
+        assert_eq!(objects, keys);
+        assert_eq!(engine.range_split_counter.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn range_split_falls_back_when_endpoint_ignores_start_after() {
+        let keys: Vec<String> = (0..6000).map(|i| format!("file{i:05}")).collect();
+        let fetcher =
+            InMemoryFetcher::new(keys.clone()).with_start_after(StartAfterSupport::IgnoreOnPages);
+        let engine = range_engine(fetcher, None, 8, 2, 1000, None);
+
+        let (objects, _) = collect_sorted(&engine, ListingMode::Objects, 1000).await;
+
+        assert_eq!(objects, keys, "listing stays complete and duplicate-free");
+        assert!(engine.range_split_unsupported.load(Ordering::Relaxed));
+        assert_eq!(
+            engine.range_split_counter.load(Ordering::Relaxed),
+            1,
+            "no further splits once the endpoint is known to ignore start-after"
+        );
+    }
+
+    #[tokio::test]
+    async fn range_split_lists_versions() {
+        let keys: Vec<String> = (0..4000).map(|i| format!("file{i:05}")).collect();
+        let engine = range_engine(InMemoryFetcher::new(keys.clone()), None, 8, 2, 1000, None);
+
+        let (objects, _) = collect_sorted(&engine, ListingMode::Versions, 1000).await;
+
+        assert_eq!(objects, keys);
+        assert!(engine.range_split_counter.load(Ordering::Relaxed) >= 1);
+    }
+
+    #[tokio::test]
+    async fn range_split_parallelizes_skewed_tree_leaf() {
+        let mut keys: Vec<String> = (0..6000).map(|i| format!("a/big/{i:05}")).collect();
+        keys.extend((0..10).map(|i| format!("b/small/{i:02}")));
+        let engine = range_engine(InMemoryFetcher::new(keys.clone()), None, 8, 1, 1000, None);
+
+        let (objects, _) = collect_sorted(&engine, ListingMode::Objects, 1000).await;
+
+        assert_eq!(objects, sorted(keys));
+        assert!(
+            engine.range_split_counter.load(Ordering::Relaxed) >= 1,
+            "the oversized leaf must be range-split"
+        );
+    }
+
+    #[tokio::test]
+    async fn range_split_respects_engine_prefix() {
+        let mut keys: Vec<String> = (0..3000).map(|i| format!("p/file{i:05}")).collect();
+        keys.extend((0..3000).map(|i| format!("q/file{i:05}")));
+        keys.push("p".to_string());
+        keys.push("p0".to_string());
+        let engine = range_engine(
+            InMemoryFetcher::new(keys.clone()),
+            Some("p/"),
+            8,
+            2,
+            500,
+            None,
+        );
+
+        let (objects, _) = collect_sorted(&engine, ListingMode::Objects, 250).await;
+
+        let expected: Vec<String> = keys.into_iter().filter(|k| k.starts_with("p/")).collect();
+        assert_eq!(objects, sorted(expected));
+        assert!(engine.range_split_counter.load(Ordering::Relaxed) >= 1);
+    }
+
+    #[test]
+    fn next_char_skips_surrogates_and_ends_at_max() {
+        assert_eq!(next_char('a'), Some('b'));
+        assert_eq!(next_char('\u{D7FF}'), Some('\u{E000}'));
+        assert_eq!(next_char(char::MAX), None);
+    }
+
+    #[test]
+    fn common_prefix_chars_is_char_aligned() {
+        assert_eq!(
+            common_prefix_chars(&["file001", "file002"]),
+            "file00".chars().collect::<Vec<_>>()
+        );
+        assert_eq!(common_prefix_chars(&["東京1", "東京2", "東大"]), vec!['東']);
+        assert_eq!(common_prefix_chars(&["a"]), vec!['a']);
+        assert!(common_prefix_chars(&["a", "b"]).is_empty());
+        assert!(common_prefix_chars(&[]).is_empty());
+    }
+
+    #[test]
+    fn candidate_boundary_chars_follow_observed_alphabet() {
+        let hex: BTreeSet<char> = "0123456789abcdef".chars().collect();
+        let chars = candidate_boundary_chars(Some('3'), &hex, false);
+        assert_eq!(chars, "456789abcdef".chars().collect::<Vec<_>>());
+
+        // Alphabet exhausted: the successor of `after` is still probed.
+        assert_eq!(candidate_boundary_chars(Some('f'), &hex, false), vec!['g']);
+        // No observed character at all: only the successor.
+        assert_eq!(
+            candidate_boundary_chars(Some('東'), &BTreeSet::new(), false),
+            vec![next_char('東').unwrap()]
+        );
+        // Nothing known: alphabet only.
+        assert_eq!(candidate_boundary_chars(None, &hex, false).len(), 16);
+
+        let with_slash: BTreeSet<char> = "./0".chars().collect();
+        assert_eq!(
+            candidate_boundary_chars(Some('.'), &with_slash, true),
+            vec!['0']
+        );
+        assert_eq!(
+            candidate_boundary_chars(Some('.'), &with_slash, false),
+            vec!['/', '0']
+        );
+
+        let big: BTreeSet<char> = (0x4E00..0x4E00 + 500).filter_map(char::from_u32).collect();
+        let sampled = candidate_boundary_chars(None, &big, false);
+        assert_eq!(sampled.len(), MAX_BOUNDARY_PROBES);
+        assert!(sampled.windows(2).all(|w| w[0] < w[1]));
+    }
+
+    #[test]
+    fn key_range_bounds() {
+        let range = KeyRange {
+            start_after: Some("b".to_string()),
+            version_id_marker: None,
+            end_inclusive: Some("d".to_string()),
+        };
+        assert!(range.is_before_start("a"));
+        assert!(range.is_before_start("b"));
+        assert!(!range.is_before_start("c"));
+        assert!(!range.is_beyond_end("d"));
+        assert!(range.is_beyond_end("d0"));
+
+        let mid_key = KeyRange {
+            version_id_marker: Some("v".to_string()),
+            ..range.clone()
+        };
+        assert!(
+            !mid_key.is_before_start("b"),
+            "resuming inside b's versions"
+        );
+        assert!(mid_key.is_before_start("a"));
+
+        assert!(!KeyRange::default().is_before_start(""));
+        assert!(!KeyRange::default().is_beyond_end("\u{10FFFF}"));
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(48))]
+
+        /// Every key comes out exactly once regardless of key shape, page
+        /// size, split threshold, worker count, or discovery depth.
+        #[test]
+        fn proptest_range_split_lists_every_key(
+            keys in proptest::collection::vec("[ab/東😀-]{1,6}", 0..300),
+            max_keys in 1i32..12,
+            threshold in 1u32..40,
+            max_parallel in 2u16..6,
+            parallel_depth in 0u16..3,
+            versions in any::<bool>(),
+        ) {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            runtime.block_on(async {
+                let engine = range_engine(
+                    InMemoryFetcher::new(keys.clone()),
+                    None,
+                    max_parallel,
+                    parallel_depth,
+                    threshold,
+                    None,
+                );
+                let mode = if versions { ListingMode::Versions } else { ListingMode::Objects };
+                let (objects, prefixes) = collect_sorted(&engine, mode, max_keys).await;
+                prop_assert_eq!(objects, sorted(keys));
+                prop_assert!(prefixes.is_empty());
+                Ok(())
+            })?;
         }
     }
 }

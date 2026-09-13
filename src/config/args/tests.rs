@@ -969,6 +969,28 @@ fn perf_allow_parallel_listings_in_express_one_zone() {
 }
 
 #[test]
+fn perf_parallel_range_split_threshold() {
+    let cli = parse_from_args(args(&[
+        "s3://bucket",
+        "--parallel-range-split-threshold",
+        "20000",
+    ]))
+    .unwrap();
+    assert_eq!(cli.parallel_range_split_threshold, 20000);
+}
+
+#[test]
+fn perf_parallel_range_split_threshold_zero_disables() {
+    let cli = parse_from_args(args(&[
+        "s3://bucket",
+        "--parallel-range-split-threshold",
+        "0",
+    ]))
+    .unwrap();
+    assert_eq!(cli.parallel_range_split_threshold, 0);
+}
+
+#[test]
 fn perf_reject_zero_max_parallel_listings() {
     let result = parse_from_args(args(&["s3://bucket", "--max-parallel-listings", "0"]));
     assert!(result.is_err());
@@ -1177,6 +1199,7 @@ fn verify_all_defaults() {
     assert_eq!(cli.max_parallel_listing_max_depth, 2);
     assert_eq!(cli.object_listing_queue_size, 200000);
     assert!(!cli.allow_parallel_listings_in_express_one_zone);
+    assert_eq!(cli.parallel_range_split_threshold, 5000);
 
     // Retry
     assert_eq!(cli.aws_max_attempts, 10);

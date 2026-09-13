@@ -78,6 +78,7 @@ This demo shows listing approximately 360,000 objects per second, listing 1,100,
 - [Advanced options](#advanced-options)
     * [--max-parallel-listings](#--max-parallel-listings)
     * [--max-parallel-listing-max-depth](#--max-parallel-listing-max-depth)
+    * [--parallel-range-split-threshold](#--parallel-range-split-threshold)
     * [--no-sort](#--no-sort)
     * [--tsv](#--tsv)
     * [--max-keys](#--max-keys)
@@ -139,10 +140,11 @@ s3ls lists approximately 360,000 objects per second through parallel S3 API call
 
 - Up to 64 concurrent listing operations by default (configurable up to 65,535)
 - Parallel prefix discovery at configurable depth
+- Key-range splitting for flat key spaces and lopsided hierarchies
 - Parallel sorting for large result sets (threshold: 1,000,000 objects)
 - Tested with buckets containing over 1 million objects
 
-Parallel listing relies on the S3 delimiter feature to discover common prefixes (virtual directories) and list each one concurrently. If a bucket stores a large number of objects without any prefix hierarchy (e.g., all keys are flat like `file1.txt`, `file2.txt`, ... with no `/` separators), there are no sub-prefixes to split work across, and listing falls back to sequential pagination.
+Parallel listing first relies on the S3 delimiter feature to discover common prefixes (virtual directories) and list each one concurrently. When that is not enough — all keys are flat like `file1.txt`, `file2.txt`, ... with no `/` separators, or one prefix holds most of the objects — s3ls splits the remaining key range of such a prefix into sub-ranges (using `start-after`) and lists those concurrently as well. See [Parallel listing architecture](#parallel-listing-architecture).
 
 ### Powerful filtering
 
@@ -648,7 +650,13 @@ s3ls uses a two-phase architecture for recursive listing:
 
 Non-recursive listing always uses a single sequential listing operation.
 
-**Limitation:** Parallel listing depends on discovering common prefixes (virtual directories separated by `/`). If a bucket contains a large number of objects stored without any prefix hierarchy — for example, all keys are flat like `file1.txt`, `file2.txt`, ... with no `/` separators — the discovery phase finds zero sub-prefixes, and the entire listing falls back to sequential pagination. The parallel infrastructure provides the most benefit on buckets with well-distributed prefix hierarchies.
+**Key-range splitting.** Prefix discovery alone cannot parallelize a flat key space (no `/` separators, so no sub-prefixes) or a lopsided tree (one prefix holds most of the objects and every other worker finishes early). In either case a single listing operation ends up paging through the bulk of the bucket sequentially. s3ls handles both with the same mechanism: once one listing operation has paged through `--parallel-range-split-threshold` objects (default: 5,000) while other workers are idle, the rest of its key range is split into sub-ranges that are listed concurrently.
+
+- The boundaries are found by observation, not by guessing an alphabet. The last page shows which characters the keys are made of; `max-keys=1` probe requests with `start-after` then reveal which of those characters actually occur next in the key space, and where the remaining keys branch off the page's common prefix. Only characters the keys really use become boundaries, so a bucket of hex names splits 16 ways, one of numbered files 10 ways, and one of Japanese names along the characters that occur.
+- Sub-ranges are contiguous and the last one is open-ended, so every key — any script, any byte sequence, keys the probes never saw — lands in exactly one range. A poorly placed boundary only leaves a large sub-range, which is split again once it crosses the threshold.
+- Splitting only happens when the semaphore has idle permits. A tree with thousands of small prefixes already keeps every worker busy; there, splitting would add requests without adding throughput, so it is not attempted.
+- Each split costs a few dozen probe requests, and each sub-range may read one partial page at its upper boundary. Set `--parallel-range-split-threshold 0` to disable splitting, for example on rate-limited S3-compatible endpoints.
+- Splitting is never used on Express One Zone (directory) buckets, which do not support `start-after`. If an S3-compatible endpoint is seen ignoring `start-after`, s3ls disables splitting for the rest of the run; the listing stays complete either way.
 
 ### API request calculation
 
@@ -658,7 +666,7 @@ s3ls sends one S3 API call per page of results. Each page returns up to `--max-k
 
 #### Sequential listing
 
-Sequential listing is used for non-recursive listing, `--max-parallel-listings 1`, or when parallel listing falls back to sequential (flat key structures, Express One Zone).
+Sequential listing is used for non-recursive listing, `--max-parallel-listings 1`, or when parallel listing falls back to sequential (Express One Zone, or `--parallel-range-split-threshold 0` on a flat key structure).
 
 ```
 API requests = ceil(total_objects / max_keys)
@@ -688,9 +696,19 @@ Requests per leaf prefix = ceil(objects_under_prefix / max_keys)
 Total non-delimiter requests = sum across all leaf prefixes
 ```
 
-**Total API requests = delimiter requests + non-delimiter requests**
+**Key-range splitting** (either phase, when a prefix crosses `--parallel-range-split-threshold` and workers are idle):
 
-Parallel listing may send more API requests than sequential listing because delimiter-based pages contain a mix of objects and prefixes (reducing effective objects-per-request), but the requests execute concurrently, which is why throughput is higher.
+Each split sends one probe request per character position in the page's common prefix, plus one per candidate boundary character (at most 64), each with `max-keys=1`. Every resulting sub-range then paginates on its own and may read one extra partial page at its upper boundary.
+
+```
+Requests per split ≈ common_prefix_length + candidate_characters + number_of_sub_ranges
+```
+
+On a flat bucket of 200,000 hexadecimal keys this roughly doubles the request count compared to sequential pagination (about 400 instead of 200) while turning 200 dependent round-trips into a handful of parallel ones.
+
+**Total API requests = delimiter requests + non-delimiter requests + key-range split requests**
+
+Parallel listing may send more API requests than sequential listing because delimiter-based pages contain a mix of objects and prefixes (reducing effective objects-per-request) and because key-range splitting adds probe requests, but the requests execute concurrently, which is why throughput is higher.
 
 #### Version listing
 
@@ -864,6 +882,20 @@ A value of 2 means s3ls discovers prefixes up to 2 levels deep, then lists each 
 
 ```bash
 s3ls --recursive --max-parallel-listing-max-depth 3 s3://my-bucket/
+```
+
+### --parallel-range-split-threshold
+
+Number of objects one listing operation pages through sequentially within a single prefix before the rest of that prefix's key range is split into sub-ranges listed in parallel. Default: 5000. `0` disables key-range splitting.
+
+Splitting kicks in only when other workers are idle, so it targets flat key spaces (no `/` hierarchy) and lopsided hierarchies where one prefix holds most of the objects. Lower the value to start splitting sooner on buckets known to be flat; raise it, or disable it, on rate-limited S3-compatible endpoints where the extra probe requests matter more than latency. See [Parallel listing architecture](#parallel-listing-architecture).
+
+```bash
+# Flat bucket with millions of keys and no prefixes: split after the first page
+s3ls --recursive --parallel-range-split-threshold 1000 s3://my-flat-bucket/
+
+# Rate-limited endpoint: never split
+s3ls --recursive --parallel-range-split-threshold 0 --rate-limit-api 50 s3://my-bucket/
 ```
 
 ### --no-sort
@@ -1096,6 +1128,8 @@ Performance:
           Internal queue size for object listing [env: OBJECT_LISTING_QUEUE_SIZE=] [default: 200000]
       --allow-parallel-listings-in-express-one-zone
           Allow parallel listings in Express One Zone storage [env: ALLOW_PARALLEL_LISTINGS_IN_EXPRESS_ONE_ZONE=]
+      --parallel-range-split-threshold <PARALLEL_RANGE_SPLIT_THRESHOLD>
+          Objects listed sequentially from one prefix before the rest is split into parallel key ranges (0 disables) [env: PARALLEL_RANGE_SPLIT_THRESHOLD=] [default: 5000]
       --rate-limit-api <RATE_LIMIT_API>
           Maximum S3 API requests per second for object listing operations [env: RATE_LIMIT_API=]
       --parallel-sort-threshold <PARALLEL_SORT_THRESHOLD>

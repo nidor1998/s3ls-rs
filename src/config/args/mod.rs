@@ -22,6 +22,7 @@ mod tests;
 
 const DEFAULT_MAX_PARALLEL_LISTINGS: u16 = 64;
 const DEFAULT_PARALLEL_LISTING_MAX_DEPTH: u16 = 2;
+const DEFAULT_PARALLEL_RANGE_SPLIT_THRESHOLD: u32 = 5000;
 const DEFAULT_OBJECT_LISTING_QUEUE_SIZE: u32 = 200000;
 const DEFAULT_PARALLEL_SORT_THRESHOLD: u32 = 1_000_000;
 const DEFAULT_AWS_MAX_ATTEMPTS: u32 = 10;
@@ -513,6 +514,10 @@ pub struct CLIArgs {
     #[arg(long, env, default_value_t = false, help_heading = "Performance")]
     pub allow_parallel_listings_in_express_one_zone: bool,
 
+    /// Objects listed sequentially from one prefix before the rest is split into parallel key ranges (0 disables)
+    #[arg(long, env, default_value_t = DEFAULT_PARALLEL_RANGE_SPLIT_THRESHOLD, help_heading = "Performance")]
+    pub parallel_range_split_threshold: u32,
+
     /// Maximum S3 API requests per second for object listing operations
     #[arg(long, env, value_parser = clap::value_parser!(u32).range(10..), help_heading = "Performance")]
     pub rate_limit_api: Option<u32>,
@@ -872,6 +877,7 @@ impl TryFrom<CLIArgs> for crate::config::Config {
             object_listing_queue_size: args.object_listing_queue_size,
             allow_parallel_listings_in_express_one_zone: args
                 .allow_parallel_listings_in_express_one_zone,
+            parallel_range_split_threshold: args.parallel_range_split_threshold,
             rate_limit_api: args.rate_limit_api,
             parallel_sort_threshold: args.parallel_sort_threshold,
             target_client_config,
