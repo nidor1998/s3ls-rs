@@ -390,9 +390,16 @@ mod tests {
             !date_field.ends_with('Z'),
             "local time should not end with Z, got: {date_field}"
         );
-        assert!(
-            date_field.contains("2024-01-01"),
-            "should still contain the date, got: {date_field}"
+        // The rendered date depends on the machine's timezone (a UTC-8
+        // runner prints 2023-12-31T16:00:00-08:00), so compare instants
+        // rather than substrings.
+        let parsed = chrono::DateTime::parse_from_rfc3339(date_field)
+            .unwrap_or_else(|e| panic!("local time should be RFC 3339, got: {date_field}: {e}"));
+        let expected = chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+        assert_eq!(
+            parsed.with_timezone(&chrono::Utc),
+            expected,
+            "local time should denote the same instant, got: {date_field}"
         );
     }
 

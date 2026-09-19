@@ -149,6 +149,7 @@ fn spawn_s3ls(endpoint: &str, extra_args: &[&str], stdout: Stdio) -> Child {
 /// Wait until the fake endpoint has served at least `pages` pages, so the
 /// child is provably inside the listing loop (its Ctrl+C handler is
 /// installed before the pipeline starts, thus long since registered).
+#[cfg(target_family = "unix")]
 fn wait_for_pages_served(fake: &FakeS3, pages: usize) {
     let deadline = Instant::now() + Duration::from_secs(30);
     while fake.pages_served.load(Ordering::SeqCst) < pages {
