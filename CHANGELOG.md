@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.3] - 2026-09-19
+
+Monthly update.
+
+### Security
+
+- Updated `rustls` to a patched version for RUSTSEC-2026-0285. The TLS 1.3 stack used for S3 requests accepted handshake messages sent at the wrong encryption level when they followed a key-changing message in the same record, contrary to RFC 8446 section 5.1. The handshake transcript is still authenticated, so a network attacker cannot alter or complete a handshake; the practical effect was that a peer could send handshake messages that should have been encrypted in plaintext without the connection being rejected.
+
+### Changed
+
+- aws-sdk-s3 `v1.143.0 -> v1.146.1`
+- Updated other dependencies
+
 ## [1.3.2] - 2026-08-21
 
 Monthly update.
