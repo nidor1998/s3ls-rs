@@ -273,7 +273,7 @@ The following flags are available for connecting to S3-compatible storage servic
 - Anonymous (unsigned) requests via `--target-no-sign-request` for public buckets
 - HTTP/HTTPS proxy via standard environment variables (`HTTPS_PROXY`, `HTTP_PROXY`)
 
-> **S3-compatible storage is not supported.** These flags remain available and may work, but their use against non-Amazon services is provided **as-is** — no testing, no support, no fixes for service-specific issues. See [About testing](#about-testing) for details.
+> **S3-compatible storage is supported on a best-effort basis.** These flags are generally usable against non-Amazon services, but such services are not part of the official test matrix, so behavior can differ between them and change between releases. See [About testing](#about-testing) for details.
 
 s3ls is performance-tuned for Amazon S3, which supports high request rates. S3-compatible storage services may have lower rate limits. If you encounter throttling errors, use `--rate-limit-api` to cap the number of S3 API requests per second, or reduce concurrency with `--max-parallel-listings`:
 
@@ -1170,11 +1170,15 @@ s3ls --auto-complete-shell fish > ~/.config/fish/completions/s3ls.fish
 
 ## About testing
 
-**Supported target: Amazon S3 only.**
+**Primary target: Amazon S3.**
 
-S3-compatible storage is **not supported**. The custom-endpoint flags (`--target-endpoint-url`, `--target-force-path-style`, etc.) remain available and may work in practice, but any use against non-Amazon services is provided strictly **as-is** — no testing is performed, no support is offered, and bug reports or feature requests specific to S3-compatible storage will be closed without investigation.
+s3ls has unit tests, property-based tests (proptest), and end-to-end integration tests, all run exclusively against Amazon S3, and it is performance-tuned for Amazon S3. Since there is no official certification for S3-compatible storage, comprehensive testing across implementations is not possible.
 
-s3ls has unit tests, property-based tests (proptest), and end-to-end integration tests, all run exclusively against Amazon S3. Since there is no official certification for S3-compatible storage, comprehensive testing across implementations is not possible.
+S3-compatible storage (MinIO, Cloudflare R2, Backblaze B2, Wasabi, Ceph RGW, DigitalOcean Spaces, IBM COS, and similar) is supported on a **best-effort basis**. Such services are generally usable via `--target-endpoint-url` (and `--target-force-path-style` when path-style addressing is required), but they are not part of the official test matrix, so behavior can differ between services and change between releases.
+
+This is a structural consequence of building on `aws-sdk-rust`, which is generated from AWS service models and assumes Amazon S3 semantics (endpoint resolution, signing variants, response schemas). Features that depend on AWS-specific behavior may be unavailable or behave differently against non-AWS endpoints — notably S3 Express One Zone directory buckets (`--list-express-one-zone-buckets`, `ListDirectoryBuckets`), `--show-bucket-arn`, `--show-restore-status`, the checksum columns (`--show-checksum-algorithm`, `--show-checksum-type`, including CRC64NVME), `--target-accelerate`, and `--target-request-payer`. Core listing of objects, versions, and buckets, together with the filtering, sorting, and output formats built on it, is the most likely to work as documented.
+
+Bug reports about S3-compatible storage are welcome and will be looked at on a best-effort basis, but they are lower priority than Amazon S3 issues, fixes are not guaranteed, and problems that originate in the storage service itself belong with that service's operator.
 
 ## Security assumptions
 
@@ -1424,20 +1428,18 @@ For non-technical readers: "reliable" indicates whether an operator can rely on 
 
 ## Scope
 
-s3ls is a listing-only tool. It is **not** intended to be a drop-in replacement for, or behaviorally compatible with, any other S3 client — examples include the AWS CLI (`aws s3`, `aws s3api`), `s5cmd`, `s3cmd`, `rclone`, `mc`, etc., but the same applies to any S3 listing or transfer tool. Its command-line flags, output columns, sort/filter semantics, and exit codes are designed around fast parallel listing and stable machine-readable output — not interoperability with another tool's interface. Output formats and flag names will not be adjusted to match any external tool, and scripts written against another S3 client should not be expected to work with s3ls unmodified. If you need full S3 functionality (copy, sync, presign, multipart upload, etc.) or compatibility with a specific tool's flag set, use that tool.
+s3ls is a listing-only tool, and it targets **Amazon S3** as its primary platform. S3-compatible storage is supported on a best-effort basis — see [About testing](#about-testing). It is **not** intended to be a drop-in replacement for, or behaviorally compatible with, any other S3 client — examples include the AWS CLI (`aws s3`, `aws s3api`), `s5cmd`, `s3cmd`, `rclone`, `mc`, etc., but the same applies to any S3 listing or transfer tool. Its command-line flags, output columns, sort/filter semantics, and exit codes are designed around fast parallel listing and stable machine-readable output — not interoperability with another tool's interface. Output formats and flag names will not be adjusted to match any external tool, and scripts written against another S3 client should not be expected to work with s3ls unmodified. If you need full S3 functionality (copy, sync, presign, multipart upload, etc.) or compatibility with a specific tool's flag set, use that tool.
 
 ## Non-Goals
 
-The following are explicitly out of scope and will not be added, regardless of demand:
+The following are outside s3ls's scope:
 
 - Object or bucket modification (copy, sync, move, delete, presign, multipart upload, tagging, policy, etc.). s3ls is read-only; for transfers use [s3sync](https://github.com/nidor1998/s3sync) or [s3util](https://github.com/nidor1998/s3util-rs), and for general S3 operations use the [s7cmd](https://github.com/nidor1998/s7cmd).
 - Per-object `HeadObject` or `GetObject` calls. All metadata in the output comes from the list response itself — s3ls will not issue a second request to enrich a single row.
 - APIs other than `ListObjectsV2`, `ListObjectVersions`, and `ListBuckets`. s3ls intentionally restricts itself to these three list APIs; `ListMultipartUploads`, `HeadObject`, `GetObject`, and others are out of scope.
 - Glob or wildcard expansion in S3 prefixes. The prefix you specify is passed to S3 as a literal string match. For pattern-based matching, use `--filter-include-regex` / `--filter-exclude-regex`, evaluated client-side after listing.
-- Compatibility with other S3 clients — neither in flag names and behavior, nor in feature coverage. The presence of a feature, flag, or output format in `aws s3`, `aws s3api`, `s5cmd`, `s3cmd`, `rclone`, `mc`, or any other S3 tool is not, by itself, a reason to add or change it in s3ls. Each request is evaluated only against s3ls's own scope and design principles. Use that other tool if you need its specific surface.
+- Compatibility with other S3 clients — neither in flag names and behavior, nor in feature coverage. The presence of a feature, flag, or output format in `aws s3`, `aws s3api`, `s5cmd`, `s3cmd`, `rclone`, `mc`, or any other S3 tool is not, by itself, a reason to add or change it in s3ls. Each request is evaluated only against s3ls's own scope and design principles. If you need another tool's specific surface, use that tool.
 - A plugin or extension mechanism.
-
-Issues and pull requests requesting any of the above will be closed.
 
 ## Contributing
 
@@ -1445,8 +1447,13 @@ Issues and pull requests requesting any of the above will be closed.
 - Since this project is considered functionally complete, I will not accept any feature requests.
 - If you find this project useful, feel free to fork and modify it as you wish.
 
-🔒 I consider this project “complete” and will maintain it only minimally going forward.
-However, I intend to keep the AWS SDK for Rust and other dependencies up to date monthly.
+**Dependency update policy**
+
+The AWS SDK for Rust and the other dependencies are updated on a regular, roughly monthly cadence, and sooner when a security advisory requires it.
+
+When an update introduces new S3 list-API features, response fields, or client settings, they are evaluated and adopted as needed — that is, when they matter for correctness, safety, or the existing feature set. Not every new SDK capability will be surfaced as an s3ls option; additions that fall outside the [Scope](#scope) above are intentionally left out.
+
+Critical bug fixes are applied on a best-effort basis.
 
 **Issue and PR lifecycle**
 
