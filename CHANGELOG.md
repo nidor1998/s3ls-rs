@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.4] - 2026-09-22
+
+Documentation-only release. No code changes; behavior is identical to 1.3.3.
+
+### Changed
+
+- S3-compatible storage (MinIO, Cloudflare R2, Backblaze B2, Wasabi, Ceph RGW, DigitalOcean Spaces, IBM COS, and similar) is now documented as supported on a **best-effort basis** rather than as unsupported. Amazon S3 remains the primary target and the only platform the test suite runs against, so behavior against other services can differ between them and change between releases. The README now also names the areas most likely to be unavailable or to behave differently against non-AWS endpoints — S3 Express One Zone directory buckets (`--list-express-one-zone-buckets`), `--show-bucket-arn`, `--show-restore-status`, the checksum columns (`--show-checksum-algorithm`, `--show-checksum-type`), `--target-accelerate`, and `--target-request-payer` — while core object, version, and bucket listing with its filtering, sorting, and output formats is the most likely to work as documented.
+- Bug reports about S3-compatible storage are now welcome and looked at on a best-effort basis, instead of being closed without investigation. They remain lower priority than Amazon S3 issues, fixes are not guaranteed, and problems originating in the storage service itself belong with that service's operator.
+- Relaxed the Scope and Non-Goals wording: the listed items are described as outside s3ls's scope rather than as permanently rejected, and the blanket statement that issues and pull requests requesting them will be closed has been removed.
+- Replaced the "minimal maintenance" note with an explicit dependency update policy: the AWS SDK for Rust and other dependencies are updated on a roughly monthly cadence and sooner when a security advisory requires it, new S3 list-API features and client settings from those updates are adopted when they matter for correctness, safety, or the existing feature set, and critical bug fixes are applied on a best-effort basis.
+
 ## [1.3.3] - 2026-09-19
 
 Monthly update.
