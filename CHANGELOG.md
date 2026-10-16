@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.5] - 2026-10-17
+
+Security and dependency update release.
+
+### Security
+
+- Updated `rustls` to a patched version for RUSTSEC-2026-0349. The TLS client used for S3 requests remembered which key exchange group a server selected before that server had been authenticated, and used it to choose the key share sent on later connections to the same endpoint. A network attacker who answered one connection attempt could make subsequent connections to that endpoint offer only classical X25519 instead of the post-quantum hybrid X25519MLKEM768, so a server that accepted the share completed the handshake without post-quantum protection. There was no key compromise or authentication bypass; the impact was loss of post-quantum confidentiality for the affected connections.
+
+### Changed
+
+- aws-sdk-s3 `v1.146.1 -> v1.152.0`
+- Updated other dependencies
+
 ## [1.3.4] - 2026-09-22
 
 Documentation-only release. No code changes; behavior is identical to 1.3.3.
