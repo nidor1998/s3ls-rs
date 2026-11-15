@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.6] - 2026-11-15
+
+Dependency and security update release. No changes to s3ls's own code.
+
+### Security
+
+- Updated `rustls-webpki` to a patched version for RUSTSEC-2026-0382. Certificate verification for S3 TLS connections could accept certificate chains containing distrusted emSign intermediate certificates, whose private keys are now publicly known. Patched versions reject chains containing those intermediates.
+- Updated `crypto-bigint` to a patched version for RUSTSEC-2026-0387, and `ctutils` for RUSTSEC-2026-0385. Several operations intended to run in constant time could branch on secret values depending on the compiler and target CPU, which can leak information through timing side channels. `crypto-bigint` is used by the AWS request signer for SigV4a signing-key derivation.
+- Updated `libz-sys` to a patched version for RUSTSEC-2026-0418. When building s3ls from source (for example with `cargo install`) on a Unix host, the `libz-sys` build script, pulled in by the build-time version information, printed the full build environment, including any secrets in it, to build-script output saved under `target/`. Prebuilt release binaries are unaffected at runtime.
+- Updated `tokio` to a version that addresses RUSTSEC-2026-0386, an I/O-safety soundness issue in the `AsyncFd` constructors. s3ls does not use `AsyncFd`.
+- Updated `aws-smithy-runtime` so the dependency graph no longer includes `pin-utils`, which is unmaintained (RUSTSEC-2026-0441).
+
+### Changed
+
+- aws-sdk-s3 `v1.152.0 -> v1.157.0`
+- Updated other dependencies
+
 ## [1.3.5] - 2026-10-17
 
 Monthly update.
