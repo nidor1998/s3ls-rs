@@ -119,14 +119,12 @@ fn write_rfc3339(dt: &OffsetDateTime, fraction: bool, use_z: bool) -> String {
     if use_z && offset.is_utc() {
         s.push('Z');
     } else {
-        let (hours, minutes, _) = offset.as_hms();
-        let sign = if offset.is_negative() { '-' } else { '+' };
-        let _ = write!(
-            s,
-            "{sign}{:02}:{:02}",
-            hours.unsigned_abs(),
-            minutes.unsigned_abs()
-        );
+        // Round to the nearest minute, as chrono does (e.g. a historical
+        // `+00:19:32` local mean time is written as `+00:20`).
+        let total = offset.whole_seconds();
+        let sign = if total < 0 { '-' } else { '+' };
+        let minutes = (total.unsigned_abs() + 30) / 60;
+        let _ = write!(s, "{sign}{:02}:{:02}", minutes / 60, minutes % 60);
     }
     s
 }
@@ -262,6 +260,76 @@ mod tests {
         let local = format_rfc3339_secs(&dt, true);
         assert!(!local.ends_with('Z'), "got: {local}");
         assert_eq!(parse_rfc3339_utc(&local).unwrap(), dt);
+    }
+
+    #[test]
+    fn offset_seconds_round_to_nearest_minute() {
+        let at = |h: i8, m: i8, s: i8| {
+            let dt =
+                utc_ymd_hms(2024, 1, 1, 0, 0, 0).to_offset(UtcOffset::from_hms(h, m, s).unwrap());
+            write_rfc3339(&dt, false, false)
+        };
+        assert!(at(0, 19, 32).ends_with("+00:20"));
+        assert!(at(0, 19, 29).ends_with("+00:19"));
+        assert!(at(0, 59, 30).ends_with("+01:00"));
+        assert!(at(-4, -56, -2).ends_with("-04:56"));
+        assert!(at(-4, -56, -30).ends_with("-04:57"));
+        assert!(at(5, 30, 0).ends_with("+05:30"));
+    }
+
+    /// Environment variable that marks the child process spawned by
+    /// [`local_offset_honors_dst_in_isolated_tz`].
+    #[cfg(unix)]
+    const DST_CHILD_ENV: &str = "S3LS_RS_DST_TEST_CHILD";
+
+    /// Runs [`local_offset_honors_dst_child`] in a separate process with a fixed
+    /// `TZ`, so the other tests in this process are unaffected. The POSIX TZ
+    /// string needs no installed tz database. Unix only: Windows ignores `TZ`.
+    #[cfg(unix)]
+    #[test]
+    fn local_offset_honors_dst_in_isolated_tz() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "types::datetime::tests::local_offset_honors_dst_child",
+                "--exact",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("TZ", "PST8PDT,M3.2.0,M11.1.0")
+            .env(DST_CHILD_ENV, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "child test failed:\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+    }
+
+    /// Only meaningful when spawned by [`local_offset_honors_dst_in_isolated_tz`].
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "run via local_offset_honors_dst_in_isolated_tz"]
+    fn local_offset_honors_dst_child() {
+        if std::env::var_os(DST_CHILD_ENV).is_none() {
+            return;
+        }
+        // Look up the offset from a worker thread, as tokio does.
+        std::thread::spawn(|| {
+            let winter = utc_ymd_hms(2024, 1, 15, 12, 0, 0);
+            let summer = utc_ymd_hms(2024, 7, 15, 12, 0, 0);
+            assert_eq!(
+                format_rfc3339_secs(&winter, true),
+                "2024-01-15T04:00:00-08:00"
+            );
+            assert_eq!(
+                format_rfc3339_secs(&summer, true),
+                "2024-07-15T05:00:00-07:00"
+            );
+        })
+        .join()
+        .unwrap();
     }
 
     #[test]
