@@ -908,13 +908,39 @@ fn extract_sdk_error_details<
     }
 }
 
+/// Converts an entry's `LastModified` to [`OffsetDateTime`], warning when the
+/// value is outside the supported range (years -9999 to 9999). The entry is
+/// then skipped by the caller, so the warning is the only trace of it.
+fn entry_last_modified(
+    last_modified: Option<&aws_smithy_types::DateTime>,
+    key: &str,
+    version_id: Option<&str>,
+) -> Option<time::OffsetDateTime> {
+    let dt = last_modified?;
+    let converted = crate::types::datetime::from_aws_datetime(dt);
+    if converted.is_none() {
+        match version_id {
+            Some(version_id) => tracing::warn!(
+                key,
+                version_id,
+                last_modified_secs = dt.secs(),
+                "skipping entry: LastModified is outside the supported range (years -9999 to 9999)"
+            ),
+            None => tracing::warn!(
+                key,
+                last_modified_secs = dt.secs(),
+                "skipping entry: LastModified is outside the supported range (years -9999 to 9999)"
+            ),
+        }
+    }
+    converted
+}
+
 /// Convert an AWS SDK `Object` into a [`ListEntry`].
 fn convert_object(object: &aws_sdk_s3::types::Object) -> Option<ListEntry> {
     let key = object.key()?.to_string();
     let size = object.size().unwrap_or(0).max(0) as u64;
-    let last_modified = object
-        .last_modified()
-        .and_then(crate::types::datetime::from_aws_datetime)?;
+    let last_modified = entry_last_modified(object.last_modified(), &key, None)?;
     let e_tag = object.e_tag().unwrap_or_default().to_string();
     let storage_class = object.storage_class().map(|sc| sc.as_str().to_string());
     let checksum_algorithm: Vec<String> = object
@@ -958,9 +984,7 @@ fn convert_object_version(version: &aws_sdk_s3::types::ObjectVersion) -> Option<
     let key = version.key()?.to_string();
     let version_id = version.version_id().unwrap_or("null").to_string();
     let size = version.size().unwrap_or(0).max(0) as u64;
-    let last_modified = version
-        .last_modified()
-        .and_then(crate::types::datetime::from_aws_datetime)?;
+    let last_modified = entry_last_modified(version.last_modified(), &key, Some(&version_id))?;
     let e_tag = version.e_tag().unwrap_or_default().to_string();
     let is_latest = version.is_latest().unwrap_or(false);
     let storage_class = version.storage_class().map(|sc| sc.as_str().to_string());
@@ -1007,9 +1031,7 @@ fn convert_object_version(version: &aws_sdk_s3::types::ObjectVersion) -> Option<
 fn convert_delete_marker(marker: &aws_sdk_s3::types::DeleteMarkerEntry) -> Option<ListEntry> {
     let key = marker.key()?.to_string();
     let version_id = marker.version_id().unwrap_or("null").to_string();
-    let last_modified = marker
-        .last_modified()
-        .and_then(crate::types::datetime::from_aws_datetime)?;
+    let last_modified = entry_last_modified(marker.last_modified(), &key, Some(&version_id))?;
     let is_latest = marker.is_latest().unwrap_or(false);
     let owner_display_name = marker
         .owner()
@@ -3132,6 +3154,39 @@ mod tests {
     // =======================================================================
     // convert_object / convert_object_version: restore-status mapping
     // =======================================================================
+
+    #[test]
+    fn convert_skips_entries_with_out_of_range_last_modified() {
+        use aws_sdk_s3::types::{DeleteMarkerEntry, Object, ObjectVersion};
+        use aws_smithy_types::DateTime as SmithyDateTime;
+
+        // 10000-01-01T00:00:00Z: one second past what `time` can represent.
+        let too_late = SmithyDateTime::from_secs(253_402_300_800);
+
+        let obj = Object::builder()
+            .key("k.txt")
+            .last_modified(too_late)
+            .build();
+        assert!(convert_object(&obj).is_none());
+
+        let version = ObjectVersion::builder()
+            .key("k.txt")
+            .version_id("v1")
+            .last_modified(too_late)
+            .build();
+        assert!(convert_object_version(&version).is_none());
+
+        let marker = DeleteMarkerEntry::builder()
+            .key("k.txt")
+            .version_id("v1")
+            .last_modified(too_late)
+            .build();
+        assert!(convert_delete_marker(&marker).is_none());
+
+        // The last representable second still converts.
+        let max = SmithyDateTime::from_secs(253_402_300_799);
+        assert!(entry_last_modified(Some(&max), "k.txt", None).is_some());
+    }
 
     #[test]
     fn convert_object_maps_restore_status() {

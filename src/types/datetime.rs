@@ -354,6 +354,18 @@ mod tests {
     }
 
     #[test]
+    fn leap_second_is_checked_in_utc() {
+        // 2016-12-31T23:59:60Z expressed with a +09:00 offset: accepted.
+        let dt = parse_rfc3339_utc("2017-01-01T08:59:60+09:00").unwrap();
+        assert_eq!(
+            dt,
+            parse_rfc3339_utc("2016-12-31T23:59:59.999999999Z").unwrap()
+        );
+        // 23:59:60 local time with an offset is not a UTC leap second: rejected.
+        assert!(parse_rfc3339_utc("2016-12-31T23:59:60+09:00").is_err());
+    }
+
+    #[test]
     fn from_aws_datetime_range() {
         let dt = aws_smithy_types::DateTime::from_millis(1_674_237_397_552);
         assert_eq!(

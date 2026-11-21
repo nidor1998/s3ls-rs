@@ -6,6 +6,25 @@ use aws_smithy_types::error::display::DisplayErrorContext;
 use std::io::Write;
 use time::OffsetDateTime;
 
+/// Converts a bucket's `CreationDate`, warning when the value is outside the
+/// supported range (years -9999 to 9999). The bucket is still listed, without
+/// a creation date.
+fn bucket_creation_date(
+    name: Option<&str>,
+    creation_date: Option<&aws_smithy_types::DateTime>,
+) -> Option<OffsetDateTime> {
+    let dt = creation_date?;
+    let converted = crate::types::datetime::from_aws_datetime(dt);
+    if converted.is_none() {
+        tracing::warn!(
+            bucket = name.unwrap_or_default(),
+            creation_date_secs = dt.secs(),
+            "CreationDate is outside the supported range (years -9999 to 9999); showing the bucket without it"
+        );
+    }
+    converted
+}
+
 struct BucketEntry {
     name: String,
     creation_date: Option<OffsetDateTime>,
@@ -321,9 +340,7 @@ async fn list_general_buckets(
         for b in resp.buckets() {
             entries.push(BucketEntry {
                 name: b.name().unwrap_or_default().to_string(),
-                creation_date: b
-                    .creation_date()
-                    .and_then(crate::types::datetime::from_aws_datetime),
+                creation_date: bucket_creation_date(b.name(), b.creation_date()),
                 region: b.bucket_region().map(|r| r.to_string()),
                 bucket_arn: b.bucket_arn().map(|s| s.to_string()),
                 owner_display_name: owner_display_name.clone(),
@@ -370,9 +387,7 @@ async fn list_directory_buckets(client: &Client) -> Result<Vec<BucketEntry>> {
         for b in resp.buckets() {
             entries.push(BucketEntry {
                 name: b.name().unwrap_or_default().to_string(),
-                creation_date: b
-                    .creation_date()
-                    .and_then(crate::types::datetime::from_aws_datetime),
+                creation_date: bucket_creation_date(b.name(), b.creation_date()),
                 region: b.bucket_region().map(|r| r.to_string()),
                 bucket_arn: b.bucket_arn().map(|s| s.to_string()),
                 owner_display_name: None,
@@ -406,6 +421,16 @@ async fn list_directory_buckets(client: &Client) -> Result<Vec<BucketEntry>> {
 #[cfg(test)]
 mod aligned_tests {
     use super::*;
+
+    #[test]
+    fn bucket_creation_date_out_of_range_is_none() {
+        use aws_smithy_types::DateTime as SmithyDateTime;
+        let too_late = SmithyDateTime::from_secs(253_402_300_800);
+        assert!(bucket_creation_date(Some("b"), Some(&too_late)).is_none());
+        let ok = SmithyDateTime::from_secs(1_700_000_000);
+        assert!(bucket_creation_date(Some("b"), Some(&ok)).is_some());
+        assert!(bucket_creation_date(Some("b"), None).is_none());
+    }
 
     fn entry() -> BucketEntry {
         BucketEntry {
