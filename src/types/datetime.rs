@@ -22,7 +22,8 @@ pub fn parse_rfc3339_utc(value: &str) -> Result<OffsetDateTime, String> {
             "invalid RFC 3339 date-time (expected 'T' between date and time): {value}"
         ));
     }
-    let dt = OffsetDateTime::parse(value, &Rfc3339).map_err(|e| e.to_string())?;
+    let dt = OffsetDateTime::parse(value, &Rfc3339)
+        .map_err(|e| format!("invalid RFC 3339 date-time ({e}): {value}"))?;
     dt.checked_to_offset(UtcOffset::UTC)
         .ok_or_else(|| format!("date-time out of range after conversion to UTC: {value}"))
 }
@@ -188,6 +189,13 @@ mod tests {
         assert!(parse_rfc3339_utc("2023-02-19T12:00:00").is_err());
         assert!(parse_rfc3339_utc("2023-02-19X12:00:00Z").is_err());
         assert!(parse_rfc3339_utc("2023-02-19_12:00:00Z").is_err());
+    }
+
+    #[test]
+    fn parse_error_includes_value() {
+        let err = parse_rfc3339_utc("2023-02-19T12:00:00+0900").unwrap_err();
+        assert!(err.starts_with("invalid RFC 3339 date-time ("), "{err}");
+        assert!(err.ends_with("): 2023-02-19T12:00:00+0900"), "{err}");
     }
 
     #[test]

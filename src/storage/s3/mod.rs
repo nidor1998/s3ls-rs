@@ -936,6 +936,37 @@ fn entry_last_modified(
     converted
 }
 
+/// Converts an entry's `RestoreStatus.RestoreExpiryDate` to its listing
+/// string, warning when the value is outside the supported range (years
+/// -9999 to 9999). The field is then omitted, so the warning is the only
+/// trace of it.
+fn entry_restore_expiry_date(
+    restore_expiry_date: Option<&aws_smithy_types::DateTime>,
+    key: &str,
+    version_id: Option<&str>,
+) -> Option<String> {
+    let dt = restore_expiry_date?;
+    let Some(converted) = crate::types::datetime::from_aws_datetime(dt) else {
+        match version_id {
+            Some(version_id) => tracing::warn!(
+                key,
+                version_id,
+                restore_expiry_date_secs = dt.secs(),
+                "omitting RestoreExpiryDate: outside the supported range (years -9999 to 9999)"
+            ),
+            None => tracing::warn!(
+                key,
+                restore_expiry_date_secs = dt.secs(),
+                "omitting RestoreExpiryDate: outside the supported range (years -9999 to 9999)"
+            ),
+        }
+        return None;
+    };
+    Some(crate::types::datetime::format_rfc3339_secs(
+        &converted, false,
+    ))
+}
+
 /// Convert an AWS SDK `Object` into a [`ListEntry`].
 fn convert_object(object: &aws_sdk_s3::types::Object) -> Option<ListEntry> {
     let key = object.key()?.to_string();
@@ -957,11 +988,13 @@ fn convert_object(object: &aws_sdk_s3::types::Object) -> Option<ListEntry> {
     let is_restore_in_progress = object
         .restore_status()
         .and_then(|rs| rs.is_restore_in_progress());
-    let restore_expiry_date = object
-        .restore_status()
-        .and_then(|rs| rs.restore_expiry_date())
-        .and_then(crate::types::datetime::from_aws_datetime)
-        .map(|dt| crate::types::datetime::format_rfc3339_secs(&dt, false));
+    let restore_expiry_date = entry_restore_expiry_date(
+        object
+            .restore_status()
+            .and_then(|rs| rs.restore_expiry_date()),
+        &key,
+        None,
+    );
 
     Some(ListEntry::Object(S3Object {
         key,
@@ -1002,11 +1035,13 @@ fn convert_object_version(version: &aws_sdk_s3::types::ObjectVersion) -> Option<
     let is_restore_in_progress = version
         .restore_status()
         .and_then(|rs| rs.is_restore_in_progress());
-    let restore_expiry_date = version
-        .restore_status()
-        .and_then(|rs| rs.restore_expiry_date())
-        .and_then(crate::types::datetime::from_aws_datetime)
-        .map(|dt| crate::types::datetime::format_rfc3339_secs(&dt, false));
+    let restore_expiry_date = entry_restore_expiry_date(
+        version
+            .restore_status()
+            .and_then(|rs| rs.restore_expiry_date()),
+        &key,
+        Some(&version_id),
+    );
 
     Some(ListEntry::Object(S3Object {
         key,
@@ -3186,6 +3221,33 @@ mod tests {
         // The last representable second still converts.
         let max = SmithyDateTime::from_secs(253_402_300_799);
         assert!(entry_last_modified(Some(&max), "k.txt", None).is_some());
+    }
+
+    #[test]
+    fn convert_object_omits_out_of_range_restore_expiry_date() {
+        use aws_sdk_s3::types::{Object, RestoreStatus};
+        use aws_smithy_types::DateTime as SmithyDateTime;
+
+        // 10000-01-01T00:00:00Z, one past the supported range.
+        let obj = Object::builder()
+            .key("k.txt")
+            .size(10)
+            .last_modified(SmithyDateTime::from_secs(1_700_000_000))
+            .restore_status(
+                RestoreStatus::builder()
+                    .is_restore_in_progress(false)
+                    .restore_expiry_date(SmithyDateTime::from_secs(253_402_300_800))
+                    .build(),
+            )
+            .build();
+
+        match convert_object(&obj).expect("object should still convert") {
+            ListEntry::Object(o) => {
+                assert_eq!(o.is_restore_in_progress, Some(false));
+                assert_eq!(o.restore_expiry_date, None);
+            }
+            other => panic!("expected Object, got {other:?}"),
+        }
     }
 
     #[test]
