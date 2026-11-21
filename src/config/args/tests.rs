@@ -154,6 +154,40 @@ fn filter_mtime_after() {
 }
 
 #[test]
+fn filter_mtime_normalizes_offset_to_utc() {
+    let cli = parse_from_args(args(&[
+        "s3://bucket",
+        "--filter-mtime-before",
+        "2024-06-01T09:00:00+09:00",
+        "--filter-mtime-after",
+        "2024-01-01 00:00:00.123Z",
+    ]))
+    .unwrap();
+    let before = cli.filter_mtime_before.unwrap();
+    let after = cli.filter_mtime_after.unwrap();
+    assert_eq!(before.offset(), time::UtcOffset::UTC);
+    assert_eq!(before.unix_timestamp(), 1_717_200_000);
+    assert_eq!(after.unix_timestamp_nanos(), 1_704_067_200_123_000_000);
+}
+
+#[test]
+fn filter_mtime_rejects_invalid_values() {
+    for value in [
+        "2024-06-01",
+        "2024-06-01T00:00:00",
+        "2024-06-01X00:00:00Z",
+        "not a date",
+    ] {
+        for flag in ["--filter-mtime-before", "--filter-mtime-after"] {
+            assert!(
+                parse_from_args(args(&["s3://bucket", flag, value])).is_err(),
+                "{flag} accepted {value}"
+            );
+        }
+    }
+}
+
+#[test]
 fn filter_smaller_size() {
     let cli = parse_from_args(args(&["s3://bucket", "--filter-smaller-size", "10MiB"])).unwrap();
     assert_eq!(cli.filter_smaller_size.as_deref(), Some("10MiB"));

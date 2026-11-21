@@ -176,15 +176,12 @@ mod tests {
     use super::*;
     use crate::display::FormatOptions;
     use crate::types::{ListEntry, S3Object, VersionInfo};
-    use chrono::TimeZone;
 
     fn make_entry_dated(key: &str, size: u64, year: i32, month: u32) -> ListEntry {
         ListEntry::Object(S3Object {
             key: key.to_string(),
             size,
-            last_modified: chrono::Utc
-                .with_ymd_and_hms(year, month, 1, 0, 0, 0)
-                .unwrap(),
+            last_modified: crate::types::datetime::utc_ymd_hms(year, month, 1, 0, 0, 0),
             e_tag: "\"e\"".to_string(),
             storage_class: Some("STANDARD".to_string()),
             checksum_algorithm: vec![],
@@ -201,7 +198,7 @@ mod tests {
         ListEntry::Object(S3Object {
             key: key.to_string(),
             size: 100,
-            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            last_modified: crate::types::datetime::utc_ymd_hms(2024, 1, 1, 0, 0, 0),
             e_tag: "\"e\"".to_string(),
             storage_class: Some("STANDARD".to_string()),
             checksum_algorithm: checksums.iter().map(|s| s.to_string()).collect(),
@@ -243,7 +240,7 @@ mod tests {
                 version_id: "v1".to_string(),
                 is_latest: true,
             },
-            last_modified: chrono::Utc::now(),
+            last_modified: time::OffsetDateTime::now_utc(),
             owner_display_name: None,
             owner_id: None,
         };
@@ -261,7 +258,7 @@ mod tests {
         let entry = ListEntry::Object(S3Object {
             key: "evil\nkey".to_string(),
             size: 100,
-            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            last_modified: crate::types::datetime::utc_ymd_hms(2024, 1, 1, 0, 0, 0),
             e_tag: "\"e\"".to_string(),
             storage_class: Some("STANDARD".to_string()),
             checksum_algorithm: vec![],
@@ -342,7 +339,7 @@ mod tests {
                 version_id: "v1".to_string(),
                 is_latest: true,
             },
-            last_modified: chrono::Utc::now(),
+            last_modified: time::OffsetDateTime::now_utc(),
             owner_display_name: None,
             owner_id: None,
         };
@@ -364,7 +361,7 @@ mod tests {
                 version_id: "v1".to_string(),
                 is_latest: true,
             },
-            last_modified: chrono::Utc::now(),
+            last_modified: time::OffsetDateTime::now_utc(),
             owner_display_name: Some("alice".to_string()),
             owner_id: Some("id123".to_string()),
         };
@@ -394,7 +391,7 @@ mod tests {
         let entry = ListEntry::Object(S3Object {
             key: "archived.dat".to_string(),
             size: 500,
-            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            last_modified: crate::types::datetime::utc_ymd_hms(2024, 1, 1, 0, 0, 0),
             e_tag: "\"abc\"".to_string(),
             storage_class: Some("GLACIER".to_string()),
             checksum_algorithm: vec![],
@@ -418,7 +415,7 @@ mod tests {
         let entry = ListEntry::Object(S3Object {
             key: "k".to_string(),
             size: 0,
-            last_modified: chrono::Utc::now(),
+            last_modified: time::OffsetDateTime::now_utc(),
             e_tag: "\"e\"".to_string(),
             storage_class: None,
             checksum_algorithm: vec![],
@@ -445,7 +442,7 @@ mod tests {
                 version_id: "v-dm".to_string(),
                 is_latest: true,
             },
-            last_modified: chrono::Utc.with_ymd_and_hms(2024, 6, 1, 0, 0, 0).unwrap(),
+            last_modified: crate::types::datetime::utc_ymd_hms(2024, 6, 1, 0, 0, 0),
             owner_display_name: Some("bob".to_string()),
             owner_id: Some("id-bob".to_string()),
         };
@@ -465,7 +462,7 @@ mod tests {
         let entry = ListEntry::Object(S3Object {
             key: "owned.txt".to_string(),
             size: 10,
-            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            last_modified: crate::types::datetime::utc_ymd_hms(2024, 1, 1, 0, 0, 0),
             e_tag: "\"e\"".to_string(),
             storage_class: None,
             checksum_algorithm: vec![],
@@ -489,7 +486,7 @@ mod tests {
         let entry = ListEntry::Object(S3Object {
             key: "k".to_string(),
             size: 0,
-            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            last_modified: crate::types::datetime::utc_ymd_hms(2024, 1, 1, 0, 0, 0),
             e_tag: "\"e\"".to_string(),
             storage_class: None,
             checksum_algorithm: vec![],

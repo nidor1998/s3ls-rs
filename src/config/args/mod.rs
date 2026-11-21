@@ -1,9 +1,9 @@
-use chrono::{DateTime, Utc};
 use clap::builder::NonEmptyStringValueParser;
 use clap::{Parser, ValueEnum};
 use clap_verbosity_flag::{Verbosity, WarnLevel};
 use std::ffi::OsString;
 use std::path::PathBuf;
+use time::OffsetDateTime;
 
 #[cfg(feature = "version")]
 use shadow_rs::shadow;
@@ -167,19 +167,21 @@ pub struct CLIArgs {
     #[arg(
         long,
         env,
+        value_parser = crate::types::datetime::parse_rfc3339_utc,
         help_heading = "Filtering",
         long_help = "List only objects modified before the given time (RFC 3339 format).\nExample: 2023-02-19T12:00:00Z"
     )]
-    pub filter_mtime_before: Option<DateTime<Utc>>,
+    pub filter_mtime_before: Option<OffsetDateTime>,
 
     /// List only objects modified at or after this time
     #[arg(
         long,
         env,
+        value_parser = crate::types::datetime::parse_rfc3339_utc,
         help_heading = "Filtering",
         long_help = "List only objects modified at or after the given time (RFC 3339 format).\nExample: 2023-02-19T12:00:00Z"
     )]
-    pub filter_mtime_after: Option<DateTime<Utc>>,
+    pub filter_mtime_after: Option<OffsetDateTime>,
 
     /// List only objects smaller than this size
     #[arg(

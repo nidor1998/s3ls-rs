@@ -72,13 +72,12 @@ mod tests {
     use crate::display::json::JsonFormatter;
     use crate::display::tsv::TsvFormatter;
     use crate::types::{ListEntry, ListingStatistics, S3Object};
-    use chrono::TimeZone;
 
     fn make_entry(key: &str, size: u64) -> ListEntry {
         ListEntry::Object(S3Object {
             key: key.to_string(),
             size,
-            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            last_modified: crate::types::datetime::utc_ymd_hms(2024, 1, 1, 0, 0, 0),
             e_tag: "\"e\"".to_string(),
             storage_class: Some("STANDARD".to_string()),
             checksum_algorithm: vec![],

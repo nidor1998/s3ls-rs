@@ -166,13 +166,8 @@ pub(crate) fn format_key_display(entry_key: &str, opts: &FormatOptions) -> Strin
     }
 }
 
-pub(crate) fn format_rfc3339(dt: &chrono::DateTime<chrono::Utc>, local: bool) -> String {
-    if local {
-        let local_dt: chrono::DateTime<chrono::Local> = dt.with_timezone(&chrono::Local);
-        local_dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, false)
-    } else {
-        dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
-    }
+pub(crate) fn format_rfc3339(dt: &time::OffsetDateTime, local: bool) -> String {
+    crate::types::datetime::format_rfc3339_secs(dt, local)
 }
 
 /// Incrementally accumulate statistics for a single entry (streaming mode).
@@ -218,15 +213,12 @@ pub fn compute_statistics(entries: &[ListEntry]) -> ListingStatistics {
 mod tests {
     use super::*;
     use crate::types::{ListEntry, S3Object};
-    use chrono::TimeZone;
 
     fn make_entry_dated(key: &str, size: u64, year: i32, month: u32) -> ListEntry {
         ListEntry::Object(S3Object {
             key: key.to_string(),
             size,
-            last_modified: chrono::Utc
-                .with_ymd_and_hms(year, month, 1, 0, 0, 0)
-                .unwrap(),
+            last_modified: crate::types::datetime::utc_ymd_hms(year, month, 1, 0, 0, 0),
             e_tag: "\"e\"".to_string(),
             storage_class: Some("STANDARD".to_string()),
             checksum_algorithm: vec![],
@@ -399,7 +391,7 @@ mod tests {
                     version_id: "v1".to_string(),
                     is_latest: true,
                 },
-                last_modified: chrono::Utc::now(),
+                last_modified: time::OffsetDateTime::now_utc(),
                 owner_display_name: None,
                 owner_id: None,
             },

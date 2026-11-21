@@ -102,7 +102,6 @@ mod tests {
     use super::*;
     use crate::storage::MockStorage;
     use crate::types::{ListEntry, S3Object};
-    use chrono::Utc;
 
     use crate::filters::FilterChain;
     use crate::types::token::create_pipeline_cancellation_token;
@@ -112,7 +111,7 @@ mod tests {
             ListEntry::Object(S3Object {
                 key: "file1.txt".to_string(),
                 size: 100,
-                last_modified: Utc::now(),
+                last_modified: time::OffsetDateTime::now_utc(),
                 e_tag: "\"abc\"".to_string(),
                 storage_class: Some("STANDARD".to_string()),
                 checksum_algorithm: vec![],
@@ -178,7 +177,7 @@ mod tests {
                 ListEntry::Object(S3Object {
                     key: format!("file_{i}.txt"),
                     size: 100,
-                    last_modified: Utc::now(),
+                    last_modified: time::OffsetDateTime::now_utc(),
                     e_tag: "\"e\"".to_string(),
                     storage_class: Some("STANDARD".to_string()),
                     checksum_algorithm: vec![],

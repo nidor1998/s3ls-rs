@@ -355,8 +355,9 @@ async fn e2e_filter_larger_size() {
 /// deterministic pivots for each sub-assertion.
 #[tokio::test]
 async fn e2e_filter_mtime_before() {
-    use chrono::{DateTime, Utc};
+    use s3ls_rs::types::datetime::Rfc3339Ext;
     use std::time::Duration;
+    use time::OffsetDateTime;
     use tokio::time::sleep;
 
     let helper = TestHelper::new().await;
@@ -382,13 +383,13 @@ async fn e2e_filter_mtime_before() {
             .await
             .expect("list_objects_v2 failed");
 
-        let mut timestamps: Vec<(String, DateTime<Utc>)> = resp
+        let mut timestamps: Vec<(String, OffsetDateTime)> = resp
             .contents()
             .iter()
             .map(|obj| {
                 let key = obj.key().expect("object missing key").to_string();
                 let lm = obj.last_modified().expect("object missing last_modified");
-                let dt = DateTime::<Utc>::from_timestamp(lm.secs(), lm.subsec_nanos())
+                let dt = s3ls_rs::types::datetime::from_aws_datetime(lm)
                     .expect("invalid timestamp from S3");
                 (key, dt)
             })
@@ -468,8 +469,10 @@ async fn e2e_filter_mtime_before() {
 /// with 1.5s sleeps guarantee distinct S3-second timestamps.
 #[tokio::test]
 async fn e2e_filter_mtime_after() {
-    use chrono::{DateTime, Duration as ChronoDuration, Utc};
+    use s3ls_rs::types::datetime::Rfc3339Ext;
     use std::time::Duration;
+    use time::Duration as TimeDuration;
+    use time::OffsetDateTime;
     use tokio::time::sleep;
 
     let helper = TestHelper::new().await;
@@ -495,13 +498,13 @@ async fn e2e_filter_mtime_after() {
             .await
             .expect("list_objects_v2 failed");
 
-        let mut timestamps: Vec<(String, DateTime<Utc>)> = resp
+        let mut timestamps: Vec<(String, OffsetDateTime)> = resp
             .contents()
             .iter()
             .map(|obj| {
                 let key = obj.key().expect("object missing key").to_string();
                 let lm = obj.last_modified().expect("object missing last_modified");
-                let dt = DateTime::<Utc>::from_timestamp(lm.secs(), lm.subsec_nanos())
+                let dt = s3ls_rs::types::datetime::from_aws_datetime(lm)
                     .expect("invalid timestamp from S3");
                 (key, dt)
             })
@@ -537,7 +540,7 @@ async fn e2e_filter_mtime_after() {
         );
 
         // Sub-assertion 2: pivot = t3 + 1s. Nothing at or after that.
-        let after_max = t3 + ChronoDuration::seconds(1);
+        let after_max = t3 + TimeDuration::seconds(1);
         let pivot_str = after_max.to_rfc3339();
         let output = TestHelper::run_s3ls(&[
             target.as_str(),
@@ -676,8 +679,10 @@ async fn e2e_filter_storage_class() {
 /// following second even with clock skew.
 #[tokio::test]
 async fn e2e_filter_combo_all_seven() {
-    use chrono::{DateTime, Duration as ChronoDuration, Utc};
+    use s3ls_rs::types::datetime::Rfc3339Ext;
     use std::time::Duration;
+    use time::Duration as TimeDuration;
+    use time::OffsetDateTime;
     use tokio::time::sleep;
 
     let helper = TestHelper::new().await;
@@ -717,13 +722,13 @@ async fn e2e_filter_combo_all_seven() {
             .await
             .expect("list_objects_v2 failed");
 
-        let mut old_lm: Option<DateTime<Utc>> = None;
-        let mut batch2_min: Option<DateTime<Utc>> = None;
+        let mut old_lm: Option<OffsetDateTime> = None;
+        let mut batch2_min: Option<OffsetDateTime> = None;
         for obj in resp.contents() {
             let key = obj.key().expect("object missing key");
             let lm = obj.last_modified().expect("object missing last_modified");
-            let dt = DateTime::<Utc>::from_timestamp(lm.secs(), lm.subsec_nanos())
-                .expect("invalid timestamp from S3");
+            let dt =
+                s3ls_rs::types::datetime::from_aws_datetime(lm).expect("invalid timestamp from S3");
             if key == "old.csv" {
                 old_lm = Some(dt);
             } else {
@@ -743,7 +748,7 @@ async fn e2e_filter_combo_all_seven() {
         );
 
         let mtime_after = t_pivot.to_rfc3339();
-        let mtime_before = (t_pivot + ChronoDuration::hours(1)).to_rfc3339();
+        let mtime_before = (t_pivot + TimeDuration::hours(1)).to_rfc3339();
 
         let target = format!("s3://{bucket}/");
 
@@ -866,8 +871,9 @@ async fn e2e_filter_pair_include_and_exclude_regex() {
 /// is the batch-2 STANDARD object.
 #[tokio::test]
 async fn e2e_filter_pair_mtime_and_storage_class() {
-    use chrono::{DateTime, Utc};
+    use s3ls_rs::types::datetime::Rfc3339Ext;
     use std::time::Duration;
+    use time::OffsetDateTime;
     use tokio::time::sleep;
 
     let helper = TestHelper::new().await;
@@ -904,13 +910,13 @@ async fn e2e_filter_pair_mtime_and_storage_class() {
             .await
             .expect("list_objects_v2 failed");
 
-        let mut old_max: Option<DateTime<Utc>> = None;
-        let mut new_min: Option<DateTime<Utc>> = None;
+        let mut old_max: Option<OffsetDateTime> = None;
+        let mut new_min: Option<OffsetDateTime> = None;
         for obj in resp.contents() {
             let key = obj.key().expect("object missing key");
             let lm = obj.last_modified().expect("object missing last_modified");
-            let dt = DateTime::<Utc>::from_timestamp(lm.secs(), lm.subsec_nanos())
-                .expect("invalid timestamp from S3");
+            let dt =
+                s3ls_rs::types::datetime::from_aws_datetime(lm).expect("invalid timestamp from S3");
             if key.starts_with("old_") {
                 old_max = Some(match old_max {
                     None => dt,

@@ -52,15 +52,12 @@ impl EntryFormatter for AlignedFormatter {
 mod tests {
     use super::*;
     use crate::types::{ListEntry, S3Object, VersionInfo};
-    use chrono::TimeZone;
 
     fn make_entry_dated(key: &str, size: u64, year: i32, month: u32) -> ListEntry {
         ListEntry::Object(S3Object {
             key: key.to_string(),
             size,
-            last_modified: chrono::Utc
-                .with_ymd_and_hms(year, month, 1, 0, 0, 0)
-                .unwrap(),
+            last_modified: crate::types::datetime::utc_ymd_hms(year, month, 1, 0, 0, 0),
             e_tag: "\"e\"".to_string(),
             storage_class: Some("STANDARD".to_string()),
             checksum_algorithm: vec![],
@@ -122,7 +119,7 @@ mod tests {
                 version_id: "v1".to_string(),
                 is_latest: false,
             },
-            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            last_modified: crate::types::datetime::utc_ymd_hms(2024, 1, 1, 0, 0, 0),
             owner_display_name: None,
             owner_id: None,
         };
@@ -142,7 +139,7 @@ mod tests {
         let entry = ListEntry::Object(S3Object {
             key: "f.txt".to_string(),
             size: 1,
-            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            last_modified: crate::types::datetime::utc_ymd_hms(2024, 1, 1, 0, 0, 0),
             e_tag: "\"e\"".to_string(),
             storage_class: Some("STANDARD".to_string()),
             checksum_algorithm: vec![],
@@ -167,7 +164,7 @@ mod tests {
         let entry = ListEntry::Object(S3Object {
             key: "evil\nkey".to_string(),
             size: 1,
-            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            last_modified: crate::types::datetime::utc_ymd_hms(2024, 1, 1, 0, 0, 0),
             e_tag: "\"e\"".to_string(),
             storage_class: Some("STANDARD".to_string()),
             checksum_algorithm: vec![],
@@ -209,7 +206,7 @@ mod tests {
         let entry = ListEntry::Object(S3Object {
             key: "f.txt".to_string(),
             size: 10,
-            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            last_modified: crate::types::datetime::utc_ymd_hms(2024, 1, 1, 0, 0, 0),
             e_tag: "\"abc\"".to_string(),
             storage_class: Some("STANDARD".to_string()),
             checksum_algorithm: vec!["CRC32".to_string()],

@@ -54,13 +54,12 @@ impl EntryFormatter for OneLineFormatter {
 mod tests {
     use super::*;
     use crate::types::{S3Object, VersionInfo};
-    use chrono::TimeZone;
 
     fn make_object(key: &str) -> ListEntry {
         ListEntry::Object(S3Object {
             key: key.to_string(),
             size: 100,
-            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            last_modified: crate::types::datetime::utc_ymd_hms(2024, 1, 1, 0, 0, 0),
             e_tag: "\"e\"".to_string(),
             storage_class: Some("STANDARD".to_string()),
             checksum_algorithm: vec![],
@@ -96,7 +95,7 @@ mod tests {
                 version_id: "v1".to_string(),
                 is_latest: true,
             },
-            last_modified: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            last_modified: crate::types::datetime::utc_ymd_hms(2024, 1, 1, 0, 0, 0),
             owner_display_name: None,
             owner_id: None,
         };

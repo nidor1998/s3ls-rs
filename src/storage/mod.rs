@@ -50,14 +50,13 @@ impl StorageTrait for MockStorage {
 mod tests {
     use super::*;
     use crate::types::{ListEntry, S3Object};
-    use chrono::Utc;
 
     fn sample_entries() -> Vec<ListEntry> {
         vec![
             ListEntry::Object(S3Object {
                 key: "file1.txt".to_string(),
                 size: 100,
-                last_modified: Utc::now(),
+                last_modified: time::OffsetDateTime::now_utc(),
                 e_tag: "\"abc\"".to_string(),
                 storage_class: Some("STANDARD".to_string()),
                 checksum_algorithm: vec![],
@@ -75,7 +74,7 @@ mod tests {
                     version_id: "v1".to_string(),
                     is_latest: true,
                 },
-                last_modified: Utc::now(),
+                last_modified: time::OffsetDateTime::now_utc(),
                 owner_display_name: None,
                 owner_id: None,
             },

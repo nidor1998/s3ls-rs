@@ -2,8 +2,8 @@ pub mod args;
 
 use crate::config::args::SortField;
 use crate::types::{ClientConfigLocation, S3Credentials, S3Target};
-use chrono::{DateTime, Utc};
 use fancy_regex::Regex;
+use time::OffsetDateTime;
 
 /// Main configuration for the s3ls-rs listing pipeline.
 #[derive(Debug, Clone)]
@@ -105,8 +105,8 @@ impl Default for Config {
 pub struct FilterConfig {
     pub include_regex: Option<Regex>,
     pub exclude_regex: Option<Regex>,
-    pub mtime_before: Option<DateTime<Utc>>,
-    pub mtime_after: Option<DateTime<Utc>>,
+    pub mtime_before: Option<OffsetDateTime>,
+    pub mtime_after: Option<OffsetDateTime>,
     pub smaller_size: Option<u64>,
     pub larger_size: Option<u64>,
     pub storage_class: Option<Vec<String>>,

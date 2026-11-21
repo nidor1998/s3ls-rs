@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+
+- Replaced the unmaintained `chrono` crate with `time`
+  ([RUSTSEC-2026-0543](https://rustsec.org/advisories/RUSTSEC-2026-0543)).
+- Updated `libz-sys` to `v1.1.33` to address
+  [RUSTSEC-2026-0544](https://rustsec.org/advisories/RUSTSEC-2026-0544).
+
+### Changed
+
+- [Breaking change] `--filter-mtime-before` and `--filter-mtime-after` (and their environment variables) now accept
+  only strict RFC 3339 timestamps. Inputs that were previously accepted, such as an offset without a colon
+  (`2023-02-19T12:00:00+0900`), a ` UTC` suffix (`2023-02-19T12:00:00 UTC`) or leading whitespace, are now rejected
+  with an argument error. A leap second (`:60`) is accepted only if it falls at 23:59:60 UTC on the last day of a month
+  (after applying the input's offset), and is treated as `23:59:59.999999999` UTC; elsewhere it is rejected. For
+  example, `2017-01-01T08:59:60+09:00` is accepted, but `2016-12-31T23:59:60+09:00` is not. Standard RFC 3339
+  timestamps such as `2023-02-19T12:00:00Z` and `2023-02-19T12:00:00+09:00` work as before.
+- [Breaking change] Library API: timestamp fields are now `time::OffsetDateTime` instead of
+  `chrono::DateTime<chrono::Utc>`. This affects `S3Object::last_modified`, `ListEntry::DeleteMarker::last_modified`,
+  `ListEntry::last_modified()`, `FilterConfig::mtime_before` / `FilterConfig::mtime_after`,
+  `CLIArgs::filter_mtime_before` / `CLIArgs::filter_mtime_after`, and `MtimeBeforeFilter::new` /
+  `MtimeAfterFilter::new`.
+- Supported timestamps are now limited to years -9999 to 9999. An object, version or delete marker whose
+  `LastModified` falls outside this range is skipped with a warning, and a bucket whose `CreationDate` falls outside it
+  is listed without a creation date, also with a warning.
+- Listing output is unchanged, including `--show-local-time`, which still shows each timestamp in local time with the
+  offset (including daylight saving time) in effect at that moment.
+
 ## [1.3.6] - 2026-11-15
 
 Dependency and security update release. No changes to s3ls's own code.

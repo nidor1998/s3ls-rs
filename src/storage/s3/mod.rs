@@ -11,7 +11,6 @@ use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::types::RequestPayer;
 use aws_smithy_types::error::display::DisplayErrorContext;
 use aws_smithy_types::error::metadata::ProvideErrorMetadata;
-use chrono::{DateTime, Utc};
 use tokio::sync::mpsc::Sender;
 use tokio::task::JoinSet;
 use tracing::debug;
@@ -909,11 +908,70 @@ fn extract_sdk_error_details<
     }
 }
 
+/// Converts an entry's `LastModified` to [`OffsetDateTime`], warning when the
+/// value is outside the supported range (years -9999 to 9999). The entry is
+/// then skipped by the caller, so the warning is the only trace of it.
+fn entry_last_modified(
+    last_modified: Option<&aws_smithy_types::DateTime>,
+    key: &str,
+    version_id: Option<&str>,
+) -> Option<time::OffsetDateTime> {
+    let dt = last_modified?;
+    let converted = crate::types::datetime::from_aws_datetime(dt);
+    if converted.is_none() {
+        match version_id {
+            Some(version_id) => tracing::warn!(
+                key,
+                version_id,
+                last_modified_secs = dt.secs(),
+                "skipping entry: LastModified is outside the supported range (years -9999 to 9999)"
+            ),
+            None => tracing::warn!(
+                key,
+                last_modified_secs = dt.secs(),
+                "skipping entry: LastModified is outside the supported range (years -9999 to 9999)"
+            ),
+        }
+    }
+    converted
+}
+
+/// Converts an entry's `RestoreStatus.RestoreExpiryDate` to its listing
+/// string, warning when the value is outside the supported range (years
+/// -9999 to 9999). The field is then omitted, so the warning is the only
+/// trace of it.
+fn entry_restore_expiry_date(
+    restore_expiry_date: Option<&aws_smithy_types::DateTime>,
+    key: &str,
+    version_id: Option<&str>,
+) -> Option<String> {
+    let dt = restore_expiry_date?;
+    let Some(converted) = crate::types::datetime::from_aws_datetime(dt) else {
+        match version_id {
+            Some(version_id) => tracing::warn!(
+                key,
+                version_id,
+                restore_expiry_date_secs = dt.secs(),
+                "omitting RestoreExpiryDate: outside the supported range (years -9999 to 9999)"
+            ),
+            None => tracing::warn!(
+                key,
+                restore_expiry_date_secs = dt.secs(),
+                "omitting RestoreExpiryDate: outside the supported range (years -9999 to 9999)"
+            ),
+        }
+        return None;
+    };
+    Some(crate::types::datetime::format_rfc3339_secs(
+        &converted, false,
+    ))
+}
+
 /// Convert an AWS SDK `Object` into a [`ListEntry`].
 fn convert_object(object: &aws_sdk_s3::types::Object) -> Option<ListEntry> {
     let key = object.key()?.to_string();
     let size = object.size().unwrap_or(0).max(0) as u64;
-    let last_modified = aws_datetime_to_chrono(object.last_modified())?;
+    let last_modified = entry_last_modified(object.last_modified(), &key, None)?;
     let e_tag = object.e_tag().unwrap_or_default().to_string();
     let storage_class = object.storage_class().map(|sc| sc.as_str().to_string());
     let checksum_algorithm: Vec<String> = object
@@ -930,11 +988,13 @@ fn convert_object(object: &aws_sdk_s3::types::Object) -> Option<ListEntry> {
     let is_restore_in_progress = object
         .restore_status()
         .and_then(|rs| rs.is_restore_in_progress());
-    let restore_expiry_date = object
-        .restore_status()
-        .and_then(|rs| rs.restore_expiry_date())
-        .and_then(|dt| aws_datetime_to_chrono(Some(dt)))
-        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+    let restore_expiry_date = entry_restore_expiry_date(
+        object
+            .restore_status()
+            .and_then(|rs| rs.restore_expiry_date()),
+        &key,
+        None,
+    );
 
     Some(ListEntry::Object(S3Object {
         key,
@@ -957,7 +1017,7 @@ fn convert_object_version(version: &aws_sdk_s3::types::ObjectVersion) -> Option<
     let key = version.key()?.to_string();
     let version_id = version.version_id().unwrap_or("null").to_string();
     let size = version.size().unwrap_or(0).max(0) as u64;
-    let last_modified = aws_datetime_to_chrono(version.last_modified())?;
+    let last_modified = entry_last_modified(version.last_modified(), &key, Some(&version_id))?;
     let e_tag = version.e_tag().unwrap_or_default().to_string();
     let is_latest = version.is_latest().unwrap_or(false);
     let storage_class = version.storage_class().map(|sc| sc.as_str().to_string());
@@ -975,11 +1035,13 @@ fn convert_object_version(version: &aws_sdk_s3::types::ObjectVersion) -> Option<
     let is_restore_in_progress = version
         .restore_status()
         .and_then(|rs| rs.is_restore_in_progress());
-    let restore_expiry_date = version
-        .restore_status()
-        .and_then(|rs| rs.restore_expiry_date())
-        .and_then(|dt| aws_datetime_to_chrono(Some(dt)))
-        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+    let restore_expiry_date = entry_restore_expiry_date(
+        version
+            .restore_status()
+            .and_then(|rs| rs.restore_expiry_date()),
+        &key,
+        Some(&version_id),
+    );
 
     Some(ListEntry::Object(S3Object {
         key,
@@ -1004,7 +1066,7 @@ fn convert_object_version(version: &aws_sdk_s3::types::ObjectVersion) -> Option<
 fn convert_delete_marker(marker: &aws_sdk_s3::types::DeleteMarkerEntry) -> Option<ListEntry> {
     let key = marker.key()?.to_string();
     let version_id = marker.version_id().unwrap_or("null").to_string();
-    let last_modified = aws_datetime_to_chrono(marker.last_modified())?;
+    let last_modified = entry_last_modified(marker.last_modified(), &key, Some(&version_id))?;
     let is_latest = marker.is_latest().unwrap_or(false);
     let owner_display_name = marker
         .owner()
@@ -1022,14 +1084,6 @@ fn convert_delete_marker(marker: &aws_sdk_s3::types::DeleteMarkerEntry) -> Optio
         owner_display_name,
         owner_id,
     })
-}
-
-/// Convert an AWS SDK `DateTime` to a `chrono::DateTime<Utc>`.
-fn aws_datetime_to_chrono(dt: Option<&aws_smithy_types::DateTime>) -> Option<DateTime<Utc>> {
-    let dt = dt?;
-    let epoch_secs = dt.secs();
-    let subsec_nanos = dt.subsec_nanos();
-    DateTime::from_timestamp(epoch_secs, subsec_nanos)
 }
 
 // ---------------------------------------------------------------------------
@@ -1166,7 +1220,7 @@ mod tests {
         ListEntry::Object(S3Object {
             key: key.to_string(),
             size: 100,
-            last_modified: chrono::Utc::now(),
+            last_modified: time::OffsetDateTime::now_utc(),
             e_tag: "\"e\"".to_string(),
             storage_class: None,
             checksum_algorithm: vec![],
@@ -2318,7 +2372,7 @@ mod tests {
                     ListEntry::Object(S3Object {
                         key: "prefix/a.txt".to_string(),
                         size: 10,
-                        last_modified: chrono::Utc::now(),
+                        last_modified: time::OffsetDateTime::now_utc(),
                         e_tag: "\"e\"".to_string(),
                         storage_class: Some("STANDARD".to_string()),
                         checksum_algorithm: vec![],
@@ -2332,7 +2386,7 @@ mod tests {
                     ListEntry::Object(S3Object {
                         key: "prefix/b.txt".to_string(),
                         size: 20,
-                        last_modified: chrono::Utc::now(),
+                        last_modified: time::OffsetDateTime::now_utc(),
                         e_tag: "\"e\"".to_string(),
                         storage_class: Some("STANDARD".to_string()),
                         checksum_algorithm: vec![],
@@ -2394,7 +2448,7 @@ mod tests {
                 objects: vec![ListEntry::Object(S3Object {
                     key: "prefix/file.txt".to_string(),
                     size: 10,
-                    last_modified: chrono::Utc::now(),
+                    last_modified: time::OffsetDateTime::now_utc(),
                     e_tag: "\"e\"".to_string(),
                     storage_class: Some("STANDARD".to_string()),
                     checksum_algorithm: vec![],
@@ -2442,7 +2496,7 @@ mod tests {
                     objects: vec![ListEntry::Object(S3Object {
                         key: "p/a.txt".to_string(),
                         size: 10,
-                        last_modified: chrono::Utc::now(),
+                        last_modified: time::OffsetDateTime::now_utc(),
                         e_tag: "\"e\"".to_string(),
                         storage_class: Some("STANDARD".to_string()),
                         checksum_algorithm: vec![],
@@ -2463,7 +2517,7 @@ mod tests {
                     objects: vec![ListEntry::Object(S3Object {
                         key: "p/b.txt".to_string(),
                         size: 20,
-                        last_modified: chrono::Utc::now(),
+                        last_modified: time::OffsetDateTime::now_utc(),
                         e_tag: "\"e\"".to_string(),
                         storage_class: Some("STANDARD".to_string()),
                         checksum_algorithm: vec![],
@@ -2520,7 +2574,7 @@ mod tests {
                 objects: vec![ListEntry::Object(S3Object {
                     key: "p/file.txt".to_string(),
                     size: 10,
-                    last_modified: chrono::Utc::now(),
+                    last_modified: time::OffsetDateTime::now_utc(),
                     e_tag: "\"e\"".to_string(),
                     storage_class: Some("STANDARD".to_string()),
                     checksum_algorithm: vec![],
@@ -3135,6 +3189,66 @@ mod tests {
     // =======================================================================
     // convert_object / convert_object_version: restore-status mapping
     // =======================================================================
+
+    #[test]
+    fn convert_skips_entries_with_out_of_range_last_modified() {
+        use aws_sdk_s3::types::{DeleteMarkerEntry, Object, ObjectVersion};
+        use aws_smithy_types::DateTime as SmithyDateTime;
+
+        // 10000-01-01T00:00:00Z: one second past what `time` can represent.
+        let too_late = SmithyDateTime::from_secs(253_402_300_800);
+
+        let obj = Object::builder()
+            .key("k.txt")
+            .last_modified(too_late)
+            .build();
+        assert!(convert_object(&obj).is_none());
+
+        let version = ObjectVersion::builder()
+            .key("k.txt")
+            .version_id("v1")
+            .last_modified(too_late)
+            .build();
+        assert!(convert_object_version(&version).is_none());
+
+        let marker = DeleteMarkerEntry::builder()
+            .key("k.txt")
+            .version_id("v1")
+            .last_modified(too_late)
+            .build();
+        assert!(convert_delete_marker(&marker).is_none());
+
+        // The last representable second still converts.
+        let max = SmithyDateTime::from_secs(253_402_300_799);
+        assert!(entry_last_modified(Some(&max), "k.txt", None).is_some());
+    }
+
+    #[test]
+    fn convert_object_omits_out_of_range_restore_expiry_date() {
+        use aws_sdk_s3::types::{Object, RestoreStatus};
+        use aws_smithy_types::DateTime as SmithyDateTime;
+
+        // 10000-01-01T00:00:00Z, one past the supported range.
+        let obj = Object::builder()
+            .key("k.txt")
+            .size(10)
+            .last_modified(SmithyDateTime::from_secs(1_700_000_000))
+            .restore_status(
+                RestoreStatus::builder()
+                    .is_restore_in_progress(false)
+                    .restore_expiry_date(SmithyDateTime::from_secs(253_402_300_800))
+                    .build(),
+            )
+            .build();
+
+        match convert_object(&obj).expect("object should still convert") {
+            ListEntry::Object(o) => {
+                assert_eq!(o.is_restore_in_progress, Some(false));
+                assert_eq!(o.restore_expiry_date, None);
+            }
+            other => panic!("expected Object, got {other:?}"),
+        }
+    }
 
     #[test]
     fn convert_object_maps_restore_status() {

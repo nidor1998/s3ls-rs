@@ -5,17 +5,18 @@
 
 use crate::filters::ObjectFilter;
 use crate::types::ListEntry;
-use chrono::{DateTime, Utc};
+use crate::types::datetime::Rfc3339Ext;
+use time::OffsetDateTime;
 use tracing::debug;
 
 const FILTER_NAME: &str = "MtimeBeforeFilter";
 
 pub struct MtimeBeforeFilter {
-    before: DateTime<Utc>,
+    before: OffsetDateTime,
 }
 
 impl MtimeBeforeFilter {
-    pub fn new(before: DateTime<Utc>) -> Self {
+    pub fn new(before: OffsetDateTime) -> Self {
         Self { before }
     }
 }
@@ -48,9 +49,9 @@ mod tests {
     use super::*;
     use crate::filters::ObjectFilter;
     use crate::types::{ListEntry, S3Object};
-    use chrono::{Duration, Utc};
+    use time::Duration;
 
-    fn make_entry_at(time: DateTime<Utc>) -> ListEntry {
+    fn make_entry_at(time: OffsetDateTime) -> ListEntry {
         ListEntry::Object(S3Object {
             key: "test.txt".to_string(),
             size: 100,
@@ -69,7 +70,7 @@ mod tests {
 
     #[test]
     fn matches_older_entries() {
-        let now = Utc::now();
+        let now = time::OffsetDateTime::now_utc();
         let filter = MtimeBeforeFilter::new(now);
         assert!(
             filter
@@ -85,14 +86,14 @@ mod tests {
 
     #[test]
     fn exact_time_does_not_match() {
-        let now = Utc::now();
+        let now = time::OffsetDateTime::now_utc();
         let filter = MtimeBeforeFilter::new(now);
         assert!(!filter.matches(&make_entry_at(now)).unwrap());
     }
 
     #[test]
     fn common_prefix_passes() {
-        let filter = MtimeBeforeFilter::new(Utc::now());
+        let filter = MtimeBeforeFilter::new(time::OffsetDateTime::now_utc());
         let entry = ListEntry::CommonPrefix("logs/".to_string());
         assert!(filter.matches(&entry).unwrap());
     }
