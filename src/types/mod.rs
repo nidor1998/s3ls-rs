@@ -1,10 +1,11 @@
+pub mod datetime;
 pub mod error;
 pub mod token;
 
-use chrono::{DateTime, Utc};
 use std::fmt;
 use std::fmt::{Display, Formatter};
 use std::path::PathBuf;
+use time::OffsetDateTime;
 
 // ---------------------------------------------------------------------------
 // S3Credentials / AccessKeys
@@ -172,7 +173,7 @@ pub enum ListEntry {
     DeleteMarker {
         key: String,
         version_info: VersionInfo,
-        last_modified: DateTime<Utc>,
+        last_modified: OffsetDateTime,
         owner_display_name: Option<String>,
         owner_id: Option<String>,
     },
@@ -196,7 +197,7 @@ pub struct VersionInfo {
 pub struct S3Object {
     pub key: String,
     pub size: u64,
-    pub last_modified: DateTime<Utc>,
+    pub last_modified: OffsetDateTime,
     pub e_tag: String,
     pub storage_class: Option<String>,
     pub checksum_algorithm: Vec<String>,
@@ -235,7 +236,7 @@ impl ListEntry {
         }
     }
 
-    pub fn last_modified(&self) -> Option<&DateTime<Utc>> {
+    pub fn last_modified(&self) -> Option<&OffsetDateTime> {
         match self {
             Self::Object(obj) => Some(&obj.last_modified),
             Self::CommonPrefix(_) => None,
@@ -391,7 +392,7 @@ mod tests {
         let obj = S3Object {
             key: "test/key.txt".to_string(),
             size: 1024,
-            last_modified: Utc::now(),
+            last_modified: time::OffsetDateTime::now_utc(),
             e_tag: "\"abc123\"".to_string(),
             storage_class: Some("STANDARD".to_string()),
             checksum_algorithm: vec![],
@@ -415,7 +416,7 @@ mod tests {
         let obj = S3Object {
             key: "test/key.txt".to_string(),
             size: 2048,
-            last_modified: Utc::now(),
+            last_modified: time::OffsetDateTime::now_utc(),
             e_tag: "\"def456\"".to_string(),
             storage_class: Some("GLACIER".to_string()),
             checksum_algorithm: vec!["SHA256".to_string()],
@@ -443,7 +444,7 @@ mod tests {
         let entry = ListEntry::Object(S3Object {
             key: "file.txt".to_string(),
             size: 100,
-            last_modified: Utc::now(),
+            last_modified: time::OffsetDateTime::now_utc(),
             e_tag: "\"e\"".to_string(),
             storage_class: None,
             checksum_algorithm: vec![],
@@ -475,7 +476,7 @@ mod tests {
                 version_id: "dm-v1".to_string(),
                 is_latest: true,
             },
-            last_modified: Utc::now(),
+            last_modified: time::OffsetDateTime::now_utc(),
             owner_display_name: None,
             owner_id: None,
         };
@@ -524,7 +525,7 @@ mod tests {
         let obj = S3Object {
             key: "k".to_string(),
             size: 0,
-            last_modified: Utc::now(),
+            last_modified: time::OffsetDateTime::now_utc(),
             e_tag: "\"e\"".to_string(),
             storage_class: None,
             checksum_algorithm: vec![],
@@ -547,7 +548,7 @@ mod tests {
         let obj = S3Object {
             key: "k".to_string(),
             size: 0,
-            last_modified: Utc::now(),
+            last_modified: time::OffsetDateTime::now_utc(),
             e_tag: "\"e\"".to_string(),
             storage_class: None,
             checksum_algorithm: vec![],
@@ -573,7 +574,7 @@ mod tests {
         let obj_entry = ListEntry::Object(S3Object {
             key: "a".to_string(),
             size: 0,
-            last_modified: Utc::now(),
+            last_modified: time::OffsetDateTime::now_utc(),
             e_tag: "\"e\"".to_string(),
             storage_class: None,
             checksum_algorithm: vec![],
@@ -592,7 +593,7 @@ mod tests {
                 version_id: "dm-v1".to_string(),
                 is_latest: true,
             },
-            last_modified: Utc::now(),
+            last_modified: time::OffsetDateTime::now_utc(),
             owner_display_name: None,
             owner_id: None,
         };
@@ -610,7 +611,7 @@ mod tests {
                 version_id: "v".to_string(),
                 is_latest: false,
             },
-            last_modified: Utc::now(),
+            last_modified: time::OffsetDateTime::now_utc(),
             owner_display_name: None,
             owner_id: None,
         };
@@ -619,7 +620,7 @@ mod tests {
         let obj = ListEntry::Object(S3Object {
             key: "k".to_string(),
             size: 0,
-            last_modified: Utc::now(),
+            last_modified: time::OffsetDateTime::now_utc(),
             e_tag: "\"e\"".to_string(),
             storage_class: None,
             checksum_algorithm: vec![],

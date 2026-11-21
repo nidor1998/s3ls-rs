@@ -244,8 +244,9 @@ async fn e2e_versioned_storage_class_passes_delete_markers() {
 ///     creation time, not the original object's)
 #[tokio::test]
 async fn e2e_versioned_mtime_filter_applies_to_delete_markers() {
-    use chrono::{DateTime, Duration as ChronoDuration, Utc};
+    use s3ls_rs::types::datetime::Rfc3339Ext;
     use std::time::Duration;
+    use time::Duration as TimeDuration;
     use tokio::time::sleep;
 
     let helper = TestHelper::new().await;
@@ -281,12 +282,11 @@ async fn e2e_versioned_mtime_filter_applies_to_delete_markers() {
             .find(|v| v.key() == Some("old.bin"))
             .and_then(|v| v.last_modified())
             .map(|lm| {
-                DateTime::<Utc>::from_timestamp(lm.secs(), lm.subsec_nanos())
-                    .expect("invalid timestamp from S3")
+                s3ls_rs::types::datetime::from_aws_datetime(lm).expect("invalid timestamp from S3")
             })
             .expect("old.bin v1 not found in listing");
 
-        let pivot = old_lm + ChronoDuration::seconds(1);
+        let pivot = old_lm + TimeDuration::seconds(1);
         let mtime_after = pivot.to_rfc3339();
         let target = format!("s3://{bucket}/");
 

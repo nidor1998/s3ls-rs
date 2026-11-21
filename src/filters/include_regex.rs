@@ -72,7 +72,7 @@ mod tests {
         ListEntry::Object(S3Object {
             key: key.to_string(),
             size: 100,
-            last_modified: chrono::Utc::now(),
+            last_modified: time::OffsetDateTime::now_utc(),
             e_tag: "\"e\"".to_string(),
             storage_class: None,
             checksum_algorithm: vec![],
@@ -101,7 +101,7 @@ mod tests {
                 version_id: "v1".to_string(),
                 is_latest: true,
             },
-            last_modified: chrono::Utc::now(),
+            last_modified: time::OffsetDateTime::now_utc(),
             owner_display_name: None,
             owner_id: None,
         };

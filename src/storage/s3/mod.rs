@@ -11,7 +11,6 @@ use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::types::RequestPayer;
 use aws_smithy_types::error::display::DisplayErrorContext;
 use aws_smithy_types::error::metadata::ProvideErrorMetadata;
-use chrono::{DateTime, Utc};
 use tokio::sync::mpsc::Sender;
 use tokio::task::JoinSet;
 use tracing::debug;
@@ -913,7 +912,9 @@ fn extract_sdk_error_details<
 fn convert_object(object: &aws_sdk_s3::types::Object) -> Option<ListEntry> {
     let key = object.key()?.to_string();
     let size = object.size().unwrap_or(0).max(0) as u64;
-    let last_modified = aws_datetime_to_chrono(object.last_modified())?;
+    let last_modified = object
+        .last_modified()
+        .and_then(crate::types::datetime::from_aws_datetime)?;
     let e_tag = object.e_tag().unwrap_or_default().to_string();
     let storage_class = object.storage_class().map(|sc| sc.as_str().to_string());
     let checksum_algorithm: Vec<String> = object
@@ -933,8 +934,8 @@ fn convert_object(object: &aws_sdk_s3::types::Object) -> Option<ListEntry> {
     let restore_expiry_date = object
         .restore_status()
         .and_then(|rs| rs.restore_expiry_date())
-        .and_then(|dt| aws_datetime_to_chrono(Some(dt)))
-        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+        .and_then(crate::types::datetime::from_aws_datetime)
+        .map(|dt| crate::types::datetime::format_rfc3339_secs(&dt, false));
 
     Some(ListEntry::Object(S3Object {
         key,
@@ -957,7 +958,9 @@ fn convert_object_version(version: &aws_sdk_s3::types::ObjectVersion) -> Option<
     let key = version.key()?.to_string();
     let version_id = version.version_id().unwrap_or("null").to_string();
     let size = version.size().unwrap_or(0).max(0) as u64;
-    let last_modified = aws_datetime_to_chrono(version.last_modified())?;
+    let last_modified = version
+        .last_modified()
+        .and_then(crate::types::datetime::from_aws_datetime)?;
     let e_tag = version.e_tag().unwrap_or_default().to_string();
     let is_latest = version.is_latest().unwrap_or(false);
     let storage_class = version.storage_class().map(|sc| sc.as_str().to_string());
@@ -978,8 +981,8 @@ fn convert_object_version(version: &aws_sdk_s3::types::ObjectVersion) -> Option<
     let restore_expiry_date = version
         .restore_status()
         .and_then(|rs| rs.restore_expiry_date())
-        .and_then(|dt| aws_datetime_to_chrono(Some(dt)))
-        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+        .and_then(crate::types::datetime::from_aws_datetime)
+        .map(|dt| crate::types::datetime::format_rfc3339_secs(&dt, false));
 
     Some(ListEntry::Object(S3Object {
         key,
@@ -1004,7 +1007,9 @@ fn convert_object_version(version: &aws_sdk_s3::types::ObjectVersion) -> Option<
 fn convert_delete_marker(marker: &aws_sdk_s3::types::DeleteMarkerEntry) -> Option<ListEntry> {
     let key = marker.key()?.to_string();
     let version_id = marker.version_id().unwrap_or("null").to_string();
-    let last_modified = aws_datetime_to_chrono(marker.last_modified())?;
+    let last_modified = marker
+        .last_modified()
+        .and_then(crate::types::datetime::from_aws_datetime)?;
     let is_latest = marker.is_latest().unwrap_or(false);
     let owner_display_name = marker
         .owner()
@@ -1022,14 +1027,6 @@ fn convert_delete_marker(marker: &aws_sdk_s3::types::DeleteMarkerEntry) -> Optio
         owner_display_name,
         owner_id,
     })
-}
-
-/// Convert an AWS SDK `DateTime` to a `chrono::DateTime<Utc>`.
-fn aws_datetime_to_chrono(dt: Option<&aws_smithy_types::DateTime>) -> Option<DateTime<Utc>> {
-    let dt = dt?;
-    let epoch_secs = dt.secs();
-    let subsec_nanos = dt.subsec_nanos();
-    DateTime::from_timestamp(epoch_secs, subsec_nanos)
 }
 
 // ---------------------------------------------------------------------------
@@ -1166,7 +1163,7 @@ mod tests {
         ListEntry::Object(S3Object {
             key: key.to_string(),
             size: 100,
-            last_modified: chrono::Utc::now(),
+            last_modified: time::OffsetDateTime::now_utc(),
             e_tag: "\"e\"".to_string(),
             storage_class: None,
             checksum_algorithm: vec![],
@@ -2318,7 +2315,7 @@ mod tests {
                     ListEntry::Object(S3Object {
                         key: "prefix/a.txt".to_string(),
                         size: 10,
-                        last_modified: chrono::Utc::now(),
+                        last_modified: time::OffsetDateTime::now_utc(),
                         e_tag: "\"e\"".to_string(),
                         storage_class: Some("STANDARD".to_string()),
                         checksum_algorithm: vec![],
@@ -2332,7 +2329,7 @@ mod tests {
                     ListEntry::Object(S3Object {
                         key: "prefix/b.txt".to_string(),
                         size: 20,
-                        last_modified: chrono::Utc::now(),
+                        last_modified: time::OffsetDateTime::now_utc(),
                         e_tag: "\"e\"".to_string(),
                         storage_class: Some("STANDARD".to_string()),
                         checksum_algorithm: vec![],
@@ -2394,7 +2391,7 @@ mod tests {
                 objects: vec![ListEntry::Object(S3Object {
                     key: "prefix/file.txt".to_string(),
                     size: 10,
-                    last_modified: chrono::Utc::now(),
+                    last_modified: time::OffsetDateTime::now_utc(),
                     e_tag: "\"e\"".to_string(),
                     storage_class: Some("STANDARD".to_string()),
                     checksum_algorithm: vec![],
@@ -2442,7 +2439,7 @@ mod tests {
                     objects: vec![ListEntry::Object(S3Object {
                         key: "p/a.txt".to_string(),
                         size: 10,
-                        last_modified: chrono::Utc::now(),
+                        last_modified: time::OffsetDateTime::now_utc(),
                         e_tag: "\"e\"".to_string(),
                         storage_class: Some("STANDARD".to_string()),
                         checksum_algorithm: vec![],
@@ -2463,7 +2460,7 @@ mod tests {
                     objects: vec![ListEntry::Object(S3Object {
                         key: "p/b.txt".to_string(),
                         size: 20,
-                        last_modified: chrono::Utc::now(),
+                        last_modified: time::OffsetDateTime::now_utc(),
                         e_tag: "\"e\"".to_string(),
                         storage_class: Some("STANDARD".to_string()),
                         checksum_algorithm: vec![],
@@ -2520,7 +2517,7 @@ mod tests {
                 objects: vec![ListEntry::Object(S3Object {
                     key: "p/file.txt".to_string(),
                     size: 10,
-                    last_modified: chrono::Utc::now(),
+                    last_modified: time::OffsetDateTime::now_utc(),
                     e_tag: "\"e\"".to_string(),
                     storage_class: Some("STANDARD".to_string()),
                     checksum_algorithm: vec![],

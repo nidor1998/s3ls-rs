@@ -3,12 +3,12 @@ use crate::config::args::SortField;
 use anyhow::Result;
 use aws_sdk_s3::Client;
 use aws_smithy_types::error::display::DisplayErrorContext;
-use chrono::{DateTime, Utc};
 use std::io::Write;
+use time::OffsetDateTime;
 
 struct BucketEntry {
     name: String,
-    creation_date: Option<DateTime<Utc>>,
+    creation_date: Option<OffsetDateTime>,
     region: Option<String>,
     bucket_arn: Option<String>,
     owner_display_name: Option<String>,
@@ -321,7 +321,9 @@ async fn list_general_buckets(
         for b in resp.buckets() {
             entries.push(BucketEntry {
                 name: b.name().unwrap_or_default().to_string(),
-                creation_date: b.creation_date().and_then(aws_datetime_to_chrono),
+                creation_date: b
+                    .creation_date()
+                    .and_then(crate::types::datetime::from_aws_datetime),
                 region: b.bucket_region().map(|r| r.to_string()),
                 bucket_arn: b.bucket_arn().map(|s| s.to_string()),
                 owner_display_name: owner_display_name.clone(),
@@ -368,7 +370,9 @@ async fn list_directory_buckets(client: &Client) -> Result<Vec<BucketEntry>> {
         for b in resp.buckets() {
             entries.push(BucketEntry {
                 name: b.name().unwrap_or_default().to_string(),
-                creation_date: b.creation_date().and_then(aws_datetime_to_chrono),
+                creation_date: b
+                    .creation_date()
+                    .and_then(crate::types::datetime::from_aws_datetime),
                 region: b.bucket_region().map(|r| r.to_string()),
                 bucket_arn: b.bucket_arn().map(|s| s.to_string()),
                 owner_display_name: None,
@@ -399,21 +403,15 @@ async fn list_directory_buckets(client: &Client) -> Result<Vec<BucketEntry>> {
     Ok(entries)
 }
 
-fn aws_datetime_to_chrono(dt: &aws_smithy_types::DateTime) -> Option<DateTime<Utc>> {
-    let epoch_secs = dt.secs();
-    chrono::DateTime::from_timestamp(epoch_secs, dt.subsec_nanos())
-}
-
 #[cfg(test)]
 mod aligned_tests {
     use super::*;
-    use chrono::TimeZone;
 
     fn entry() -> BucketEntry {
         BucketEntry {
             name: "mybucket".to_string(),
             region: Some("us-east-1".to_string()),
-            creation_date: Some(chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap()),
+            creation_date: Some(crate::types::datetime::utc_ymd_hms(2024, 1, 1, 0, 0, 0)),
             bucket_arn: Some("arn:aws:s3:::mybucket".to_string()),
             owner_display_name: Some("alice".to_string()),
             owner_id: Some("id-alice".to_string()),
@@ -500,12 +498,9 @@ mod aligned_tests {
             "expected explicit offset, got UTC 'Z': {date_field}"
         );
 
-        let parsed = chrono::DateTime::parse_from_rfc3339(date_field)
+        let parsed = crate::types::datetime::parse_rfc3339_utc(date_field)
             .unwrap_or_else(|e| panic!("failed to parse {date_field}: {e}"));
-        assert_eq!(
-            parsed.with_timezone(&chrono::Utc),
-            entry().creation_date.unwrap()
-        );
+        assert_eq!(parsed, entry().creation_date.unwrap());
     }
 
     #[test]
