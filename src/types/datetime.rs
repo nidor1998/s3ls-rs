@@ -43,8 +43,14 @@ pub fn from_aws_datetime(dt: &aws_smithy_types::DateTime) -> Option<OffsetDateTi
 ///   offset (never `Z`), e.g. `2024-01-01T09:00:00+09:00`. The offset is
 ///   looked up for that instant, so daylight saving time is honored. If the
 ///   local offset cannot be determined, UTC is used (`+00:00`).
+///
+/// If `dt` cannot be represented in UTC, it is formatted in its own offset.
 pub fn format_rfc3339_secs(dt: &OffsetDateTime, local: bool) -> String {
-    let utc = dt.checked_to_offset(UtcOffset::UTC).unwrap_or(*dt);
+    let Some(utc) = dt.checked_to_offset(UtcOffset::UTC) else {
+        // Never pass such a value to `local_offset_at`: on Windows, `time`
+        // converts its argument with the panicking `to_offset(UtcOffset::UTC)`.
+        return write_rfc3339(dt, false, !local);
+    };
     if local {
         let offset = UtcOffset::local_offset_at(utc).unwrap_or(UtcOffset::UTC);
         let local_dt = utc.checked_to_offset(offset).unwrap_or(utc);
@@ -237,8 +243,11 @@ mod tests {
         assert!(max.checked_to_offset(UtcOffset::UTC).is_none());
         assert_eq!(max.to_rfc3339(), "9999-12-31T23:59:59.999999999-01:30");
         // Must not panic in either mode.
-        let _ = format_rfc3339_secs(&max, false);
-        let _ = format_rfc3339_secs(&max, true);
+        assert_eq!(
+            format_rfc3339_secs(&max, false),
+            "9999-12-31T23:59:59-01:30"
+        );
+        assert_eq!(format_rfc3339_secs(&max, true), "9999-12-31T23:59:59-01:30");
     }
 
     #[test]
