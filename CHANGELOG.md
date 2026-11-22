@@ -5,7 +5,9 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.4.0] - 2026-11-22
+
+Update for the end of life (EOL) of the `chrono` crate.
 
 ### Security
 
@@ -13,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ([RUSTSEC-2026-0543](https://rustsec.org/advisories/RUSTSEC-2026-0543)).
 - Updated `libz-sys` to `v1.1.33` to address
   [RUSTSEC-2026-0544](https://rustsec.org/advisories/RUSTSEC-2026-0544).
+- Shortened the minimum publish age for dependency resolution (`.cargo/min-publish-age.toml`) from 7 days to 3 days
+  so that security fixes in dependencies can be adopted sooner.
 
 ### Changed
 
@@ -33,6 +37,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is listed without a creation date, also with a warning.
 - Listing output is unchanged, including `--show-local-time`, which still shows each timestamp in local time with the
   offset (including daylight saving time) in effect at that moment.
+- aws-sdk-s3 `v1.157.0 -> v1.161.0`
+- MSRV `1.94.1 -> 1.99.0`
+- Updated other dependencies
 
 ## [1.3.6] - 2026-11-15
 
