@@ -14,7 +14,7 @@ thiserror = "2.0.21"
 clap = { version = "4.6.8", features = ["derive", "env", "cargo", "string"] }
 clap_complete = "4.6.12"
 clap-verbosity-flag = "3.0.4"
-fancy-regex = "0.19.2"
+fancy-regex = "0.20.2"
 byte-unit = "5.2.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
