@@ -150,7 +150,7 @@ Multiple filter types can be combined with AND logic:
 
 - **Regex include/exclude** — Filter object keys using regular expressions (`--filter-include-regex`, `--filter-exclude-regex`)
 - **Modified time range** — Filter by modification time using RFC 3339 format. `--filter-mtime-before` matches strictly before the given time; `--filter-mtime-after` matches at or after the given time
-- **Size range** — Filter by object size with human-readable suffixes (KB, KiB, MB, MiB, GB, GiB, TB, TiB). `--filter-smaller-size` matches objects strictly smaller than the threshold; `--filter-larger-size` matches objects greater than or equal to the threshold
+- **Size range** — Filter by object size with human-readable suffixes (KB, KiB, MB, MiB, GB, GiB, TB, TiB). `--filter-smaller-size` matches objects strictly smaller than the threshold; `--filter-larger-size` matches objects greater than or equal to the threshold. The last letter of the suffix is case-sensitive: an uppercase `B` means bytes, and a lowercase `b` means bits (see [Filter by size](#filter-by-size))
 - **Storage class** — Filter by storage class (`--storage-class STANDARD,GLACIER,DEEP_ARCHIVE`)
 
 ### S3 versioning
@@ -345,6 +345,8 @@ $ s3ls s3://my-bucket/data
 $ s3ls s3://my-bucket/data/
 ```
 
+Everything after the `/` that ends the bucket name is the prefix, exactly as given: `?` and `#` are part of the prefix, percent escapes such as `%20` are not decoded, and `.` / `..` segments are not collapsed. `?` or `#` directly after the bucket name (e.g. `s3://my-bucket?x`) is rejected with an argument error; write `s3://my-bucket/?x` to list keys that start with `?x`.
+
 If you specify a prefix that does not exist, S3 simply returns an empty result and s3ls exits with code 0 (success). There is no "not found" error — in object storage, a prefix is not a resource that exists or doesn't exist, it is just a filter applied to key names.
 
 This is not a quirk of s3ls — it is how the S3 `ListObjectsV2` API works. When in doubt, include the trailing slash to scope the listing to a specific "directory."
@@ -387,6 +389,21 @@ s3ls --recursive --filter-larger-size 100MiB s3://my-bucket/
 # Files strictly smaller than 1 KiB (<)
 s3ls --recursive --filter-smaller-size 1KiB s3://my-bucket/
 ```
+
+The last letter of a size suffix is case-sensitive: an uppercase `B` means bytes, and a lowercase `b` means bits.
+A value written with a lowercase `b` is parsed as bits, so it is one eighth of the value written with an uppercase `B`.
+
+| Value  | Meaning     | Bytes         |
+|--------|-------------|---------------|
+| `8MiB` | 8 mebibytes | 8,388,608     |
+| `8MB`  | 8 megabytes | 8,000,000     |
+| `8Mib` | 8 mebibits  | 1,048,576     |
+| `8mb`  | 8 megabits  | 1,000,000     |
+| `5GiB` | 5 gibibytes | 5,368,709,120 |
+| `5gib` | 5 gibibits  | 671,088,640   |
+
+For example, `--filter-larger-size 100mb` matches objects of 12.5MB or larger, not 100MB.
+Always write the suffix with an uppercase `B` (`KB`, `KiB`, `MB`, `MiB`, `GB`, `GiB`, `TB`, `TiB`) unless you intend bits.
 
 ### Filter by modified time
 
@@ -991,7 +1008,7 @@ Fast S3 object listing tool
 Usage: s3ls [OPTIONS] [TARGET]
 
 Arguments:
-  [TARGET]  S3 target path: s3://<BUCKET_NAME>[/prefix] (omit to list buckets) [env: TARGET=] [default: ""]
+  [TARGET]  S3 target path: s3://<BUCKET_NAME>[/prefix] (omit to list buckets) [default: ""]
 
 Options:
   -v, --verbose...  Increase logging verbosity

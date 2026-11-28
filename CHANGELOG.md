@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `?` or `#` directly after the bucket name of the target (e.g. `s3://bucket?x`) is now rejected with an argument
+  error. Previously, it was treated as part of the bucket name, so the listing failed later with an error that did
+  not name the cause. To list a prefix that starts with `?` or `#`, put it after the `/` (e.g. `s3://bucket/?x`).
+
+### Changed
+
+- MSRV `1.99.0 -> 1.100.0`
+- Documented that size suffixes are case-sensitive in the help text of `--filter-smaller-size` and
+  `--filter-larger-size`, and in the `Filter by size` section of `README.md`. A suffix ending in a lowercase `b` means
+  bits, not bytes (e.g. `8mb` is 1MB). The behavior is unchanged.
+- Added tests to pin that the prefix of the target (`s3://bucket/prefix`) is used exactly as given: `?` and `#` are
+  part of the prefix, percent escapes are not decoded, and `.` / `..` segments are not collapsed. The behavior of
+  the prefix is unchanged.
+
 ## [1.4.0] - 2026-11-22
 
 Update for the end of life (EOL) of the `chrono` crate.

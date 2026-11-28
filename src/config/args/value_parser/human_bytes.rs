@@ -55,6 +55,18 @@ mod tests {
     }
 
     #[test]
+    fn parse_lowercase_b_suffix_as_bits() {
+        // The last letter of the suffix is case-sensitive: "B" is bytes, "b" is bits.
+        assert_eq!(8_000_000, parse_human_bytes("8MB").unwrap());
+        assert_eq!(1_000_000, parse_human_bytes("8Mb").unwrap());
+        assert_eq!(1_000_000, parse_human_bytes("8mb").unwrap());
+        assert_eq!(8 * 1024 * 1024, parse_human_bytes("8MiB").unwrap());
+        assert_eq!(1024 * 1024, parse_human_bytes("8Mib").unwrap());
+        assert_eq!(5 * 1024 * 1024 * 1024, parse_human_bytes("5GiB").unwrap());
+        assert_eq!(671_088_640, parse_human_bytes("5gib").unwrap());
+    }
+
+    #[test]
     fn parse_zero() {
         assert_eq!(0, parse_human_bytes("0").unwrap());
     }

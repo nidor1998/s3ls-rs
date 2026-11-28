@@ -1143,6 +1143,105 @@ fn target_bucket_with_trailing_slash() {
     assert_eq!(cli.target, "s3://mybucket/");
 }
 
+#[test]
+fn target_bucket_with_special_characters_in_prefix() {
+    // '?', '#', '%' and dot segments are valid in S3 keys, so the CLI must accept them as given.
+    for target in [
+        "s3://mybucket/data#old/",
+        "s3://mybucket/data?old/",
+        "s3://mybucket/a?b#c?d#e/",
+        "s3://mybucket/#top",
+        "s3://mybucket/?top",
+        "s3://mybucket/%FF",
+        "s3://mybucket/100%",
+        "s3://mybucket/a%20b c",
+        "s3://mybucket/a/../b",
+        "s3://mybucket/./a/./b/",
+        "s3://mybucket//",
+    ] {
+        let cli = parse_from_args(args(&[target])).unwrap();
+        assert_eq!(cli.target, target);
+    }
+}
+
+#[test]
+fn target_rejects_question_mark_or_hash_after_bucket() {
+    // Without '/' after the bucket name, there is no prefix to attach '?' or '#' to.
+    for target in [
+        "s3://mybucket?old",
+        "s3://mybucket#old",
+        "s3://mybucket?",
+        "s3://mybucket#",
+        "s3://mybucket?old/",
+        "s3://mybucket#old/",
+        "s3://mybucket?a/b#c",
+        "s3://mybucket#a/b?c",
+        "s3://mybucket?#",
+        "s3://?",
+        "s3://#old/",
+    ] {
+        let error = parse_from_args(args(&[target])).unwrap_err();
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::ValueValidation,
+            "target: {target}"
+        );
+        assert_eq!(error.exit_code(), 2, "target: {target}");
+        assert!(
+            error
+                .to_string()
+                .contains("'?' or '#' directly after the bucket name is not allowed"),
+            "target: {target}, error: {error}"
+        );
+
+        // build_config_from_args() reports the same argument error.
+        let message = build_config_from_args(args(&[target])).unwrap_err();
+        assert!(
+            message.contains("'?' or '#' directly after the bucket name is not allowed"),
+            "target: {target}, message: {message}"
+        );
+    }
+}
+
+#[test]
+fn check_s3_target_rejects_question_mark_or_hash_after_bucket() {
+    for target in ["s3://mybucket?old", "s3://mybucket#old"] {
+        assert_eq!(
+            check_s3_target(target).unwrap_err(),
+            ERROR_MESSAGE_QUERY_OR_FRAGMENT_AFTER_BUCKET,
+            "target: {target}"
+        );
+    }
+}
+
+#[test]
+fn check_s3_target_accepts_question_mark_or_hash_after_slash() {
+    for target in [
+        "",
+        "s3://mybucket",
+        "s3://mybucket/",
+        "s3://mybucket/?old",
+        "s3://mybucket/#old",
+        "s3://mybucket/?",
+        "s3://mybucket/#",
+        "s3://mybucket/a?b#c",
+    ] {
+        assert_eq!(check_s3_target(target).unwrap(), target, "target: {target}");
+    }
+}
+
+#[test]
+fn check_s3_target_invalid_scheme_keeps_generic_message() {
+    // A target that is not an S3 path is reported as such, even if it contains '?' or '#'.
+    for target in ["mybucket?old", "s3://", "s3:/mybucket#old", "?", "#"] {
+        assert_eq!(
+            check_s3_target(target).unwrap_err(),
+            ERROR_MESSAGE_INVALID_TARGET,
+            "target: {target}"
+        );
+    }
+}
+
 // ===========================================================================
 // 13. Defaults
 // ===========================================================================
@@ -1244,6 +1343,43 @@ proptest! {
         let target = format!("s3://{bucket}");
         let result = parse_from_args(args(&[&target]));
         prop_assert!(result.is_ok());
+    }
+
+    #[test]
+    fn proptest_target_prefix_is_literal(prefix in "\\PC{1,40}") {
+        // Any UTF-8 string is a valid S3 key, so whatever follows "s3://bucket/" is the prefix,
+        // exactly as given.
+        let target = format!("s3://my-bucket/{prefix}");
+        let config = build_config_from_args(vec!["s3ls".to_string(), target.clone()]).unwrap();
+        prop_assert_eq!(&config.target.bucket, "my-bucket");
+        prop_assert_eq!(config.target.prefix.as_deref(), Some(prefix.as_str()));
+        prop_assert_eq!(config.target.to_string(), target);
+    }
+
+    #[test]
+    fn proptest_target_question_mark_or_hash_after_bucket_is_rejected(
+        bucket in "[a-z][a-z0-9\\-]{2,20}",
+        delimiter in "[?#]",
+        rest in "\\PC{0,40}",
+    ) {
+        // Whatever follows, '?' or '#' directly after the bucket name is never a prefix.
+        let target = format!("s3://{bucket}{delimiter}{rest}");
+        prop_assert!(parse_from_args(args(&[&target])).is_err());
+        prop_assert!(crate::types::S3Target::parse(&target).is_err());
+    }
+
+    #[test]
+    fn proptest_target_value_parser_agrees_with_s3_target_parse(
+        bucket in "[a-z][a-z0-9\\-]{2,20}",
+        rest in "[/?#a-z%. ]{0,20}",
+    ) {
+        // The CLI value parser and S3Target::parse() must accept exactly the same targets.
+        let target = format!("s3://{bucket}{rest}");
+        prop_assert_eq!(
+            check_s3_target(&target).is_ok(),
+            crate::types::S3Target::parse(&target).is_ok(),
+            "target: {}", target
+        );
     }
 
     #[test]
@@ -1453,6 +1589,122 @@ fn config_filter_size_values_are_u64() {
         config.filter_config.smaller_size,
         Some(2 * 1024 * 1024 * 1024)
     );
+}
+
+#[test]
+fn config_filter_size_lowercase_b_suffix_means_bits() {
+    // The last letter of the suffix is case-sensitive: "B" is bytes, "b" is bits.
+    let cases = [
+        ("8MB", 8_000_000_u64),
+        ("8Mb", 1_000_000),
+        ("8mb", 1_000_000),
+        ("8MiB", 8 * 1024 * 1024),
+        ("8Mib", 1024 * 1024),
+        ("5GiB", 5 * 1024 * 1024 * 1024),
+        ("5gib", 671_088_640),
+    ];
+
+    for (value, expected_bytes) in cases {
+        let config = build_config_from_args(vec![
+            "s3ls",
+            "s3://bucket/",
+            "--filter-larger-size",
+            value,
+            "--filter-smaller-size",
+            value,
+        ])
+        .unwrap();
+        assert_eq!(
+            config.filter_config.larger_size,
+            Some(expected_bytes),
+            "value: {value}"
+        );
+        assert_eq!(
+            config.filter_config.smaller_size,
+            Some(expected_bytes),
+            "value: {value}"
+        );
+    }
+}
+
+#[test]
+fn filter_size_long_help_documents_bits_suffix() {
+    use clap::CommandFactory;
+
+    let command = CLIArgs::command();
+    for id in ["filter_smaller_size", "filter_larger_size"] {
+        let long_help = command
+            .get_arguments()
+            .find(|arg| arg.get_id() == id)
+            .unwrap()
+            .get_long_help()
+            .unwrap()
+            .to_string();
+        assert!(
+            long_help.contains("A suffix ending in a lowercase b means bits, not bytes"),
+            "option: {id}, long_help: {long_help}"
+        );
+    }
+}
+
+#[test]
+fn config_target_prefix_with_question_mark_and_hash() {
+    // '?' and '#' are valid in S3 keys and must not be treated as URL query/fragment delimiters.
+    let cases = [
+        ("s3://test-bucket/data#old/", "data#old/"),
+        ("s3://test-bucket/data?old/", "data?old/"),
+        ("s3://test-bucket/data#", "data#"),
+        ("s3://test-bucket/data?", "data?"),
+        ("s3://test-bucket/a?b#c?d#e/", "a?b#c?d#e/"),
+        ("s3://test-bucket/a#b?c/", "a#b?c/"),
+        ("s3://test-bucket/#top", "#top"),
+        ("s3://test-bucket/?top", "?top"),
+        (
+            "s3://test-bucket/dir/こんにちは#☃?x y/",
+            "dir/こんにちは#☃?x y/",
+        ),
+    ];
+
+    for (target, expected_prefix) in cases {
+        let config = build_config_from_args(vec!["s3ls", target]).unwrap();
+        assert_eq!(config.target.bucket, "test-bucket", "target: {target}");
+        assert_eq!(
+            config.target.prefix.as_deref(),
+            Some(expected_prefix),
+            "target: {target}"
+        );
+    }
+}
+
+#[test]
+fn config_target_prefix_is_literal() {
+    // The prefix is used as given: no percent-decoding and no "." / ".." normalization.
+    let cases = [
+        ("s3://test-bucket/a%23b%3Fc#d", Some("a%23b%3Fc#d")),
+        ("s3://test-bucket/%FF", Some("%FF")),
+        ("s3://test-bucket/100%", Some("100%")),
+        ("s3://test-bucket/a%20b c", Some("a%20b c")),
+        ("s3://test-bucket/a/../b", Some("a/../b")),
+        ("s3://test-bucket/./a/./b/", Some("./a/./b/")),
+        (
+            "s3://test-bucket/a?x/../y#%2e%2e/z",
+            Some("a?x/../y#%2e%2e/z"),
+        ),
+        ("s3://test-bucket/dir\\file", Some("dir\\file")),
+        ("s3://test-bucket//", Some("/")),
+        ("s3://test-bucket/", None),
+        ("s3://test-bucket", None),
+    ];
+
+    for (target, expected_prefix) in cases {
+        let config = build_config_from_args(vec!["s3ls", target]).unwrap();
+        assert_eq!(config.target.bucket, "test-bucket", "target: {target}");
+        assert_eq!(
+            config.target.prefix.as_deref(),
+            expected_prefix,
+            "target: {target}"
+        );
+    }
 }
 
 #[test]

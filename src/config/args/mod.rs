@@ -31,12 +31,28 @@ const DEFAULT_MAX_KEYS: i32 = 1000;
 const ERROR_MESSAGE_INVALID_TARGET: &str =
     "target must be an S3 path (e.g. s3://bucket or s3://bucket/prefix)";
 
+const ERROR_MESSAGE_QUERY_OR_FRAGMENT_AFTER_BUCKET: &str = "'?' or '#' directly after the bucket name is not allowed (e.g. use s3://bucket/?prefix for a prefix that starts with '?')";
+
 fn check_s3_target(s: &str) -> Result<String, String> {
-    if s.is_empty() || (s.starts_with("s3://") && s.len() > 5) {
-        Ok(s.to_string())
-    } else {
-        Err(ERROR_MESSAGE_INVALID_TARGET.to_string())
+    if s.is_empty() {
+        return Ok(s.to_string());
     }
+
+    let bucket_and_prefix = match s.strip_prefix("s3://") {
+        Some(rest) if !rest.is_empty() => rest,
+        _ => return Err(ERROR_MESSAGE_INVALID_TARGET.to_string()),
+    };
+
+    // '?' and '#' are part of the prefix only after the '/' that ends the bucket name.
+    // e.g. "s3://bucket?x": '?' or '#' directly after the bucket name is not a prefix.
+    let bucket = bucket_and_prefix
+        .split_once('/')
+        .map_or(bucket_and_prefix, |(bucket, _)| bucket);
+    if bucket.contains(['?', '#']) {
+        return Err(ERROR_MESSAGE_QUERY_OR_FRAGMENT_AFTER_BUCKET.to_string());
+    }
+
+    Ok(s.to_string())
 }
 
 fn parse_human_bytes(s: &str) -> Result<u64, String> {
@@ -189,7 +205,7 @@ pub struct CLIArgs {
         env,
         value_parser = value_parser::human_bytes::check_human_bytes,
         help_heading = "Filtering",
-        long_help = "List only objects smaller than the given size.\nSupported suffixes: KB, KiB, MB, MiB, GB, GiB, TB, TiB"
+        long_help = "List only objects smaller than the given size.\nSupported suffixes: KB, KiB, MB, MiB, GB, GiB, TB, TiB\nA suffix ending in a lowercase b means bits, not bytes (e.g. 8Mb = 1MB)."
     )]
     pub filter_smaller_size: Option<String>,
 
@@ -199,7 +215,7 @@ pub struct CLIArgs {
         env,
         value_parser = value_parser::human_bytes::check_human_bytes,
         help_heading = "Filtering",
-        long_help = "List only objects larger than or equal to the given size.\nSupported suffixes: KB, KiB, MB, MiB, GB, GiB, TB, TiB"
+        long_help = "List only objects larger than or equal to the given size.\nSupported suffixes: KB, KiB, MB, MiB, GB, GiB, TB, TiB\nA suffix ending in a lowercase b means bits, not bytes (e.g. 8Mb = 1MB)."
     )]
     pub filter_larger_size: Option<String>,
 

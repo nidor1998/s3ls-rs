@@ -127,7 +127,15 @@ impl S3Target {
             )));
         }
 
-        let (bucket, prefix) = match without_scheme.find('/') {
+        // Any UTF-8 string is a valid S3 key, so everything after the first '/' is the prefix,
+        // exactly as given. '?' or '#' directly after the bucket name (e.g. "s3://bucket?x") is
+        // neither part of a bucket name nor a prefix, so it is rejected instead of being guessed.
+        let (bucket, prefix) = match without_scheme.find(['/', '?', '#']) {
+            Some(idx) if !without_scheme[idx..].starts_with('/') => {
+                return Err(error::S3lsError::InvalidUri(format!(
+                    "'?' or '#' directly after the bucket name is not allowed: {s3_uri}"
+                )));
+            }
             Some(idx) => {
                 let bucket = &without_scheme[..idx];
                 let prefix = &without_scheme[idx + 1..];
@@ -342,6 +350,118 @@ mod tests {
         let target = S3Target::parse("s3://my-bucket/logs/2023/").unwrap();
         assert_eq!(target.bucket, "my-bucket");
         assert_eq!(target.prefix.as_deref(), Some("logs/2023/"));
+    }
+
+    #[test]
+    fn s3_target_parse_prefix_with_question_mark_and_hash() {
+        // '?' and '#' are valid in S3 keys and must not be treated as URL query/fragment delimiters.
+        let cases = [
+            ("s3://test-bucket/data#old/", "data#old/"),
+            ("s3://test-bucket/data?old/", "data?old/"),
+            ("s3://test-bucket/data#", "data#"),
+            ("s3://test-bucket/data?", "data?"),
+            ("s3://test-bucket/a?b#c?d#e/", "a?b#c?d#e/"),
+            ("s3://test-bucket/a#b?c/", "a#b?c/"),
+            ("s3://test-bucket/#top", "#top"),
+            ("s3://test-bucket/?top", "?top"),
+            (
+                "s3://test-bucket/dir/こんにちは#☃?x y/",
+                "dir/こんにちは#☃?x y/",
+            ),
+        ];
+
+        for (s3_uri, expected_prefix) in cases {
+            let target = S3Target::parse(s3_uri).unwrap();
+            assert_eq!(target.bucket, "test-bucket", "uri: {s3_uri}");
+            assert_eq!(
+                target.prefix.as_deref(),
+                Some(expected_prefix),
+                "uri: {s3_uri}"
+            );
+            assert_eq!(target.to_string(), s3_uri, "uri: {s3_uri}");
+        }
+    }
+
+    #[test]
+    fn s3_target_parse_prefix_is_literal() {
+        // Any UTF-8 string is a valid S3 key, so the prefix is used as given:
+        // no percent-decoding and no "." / ".." normalization.
+        let cases = [
+            ("s3://test-bucket/a%23b%3Fc#d", "a%23b%3Fc#d"),
+            ("s3://test-bucket/%FF", "%FF"),
+            ("s3://test-bucket/100%", "100%"),
+            ("s3://test-bucket/a%20b c", "a%20b c"),
+            ("s3://test-bucket/a/../b", "a/../b"),
+            ("s3://test-bucket/./a/./b/", "./a/./b/"),
+            ("s3://test-bucket/a?x/../y#%2e%2e/z", "a?x/../y#%2e%2e/z"),
+            ("s3://test-bucket/dir\\file", "dir\\file"),
+            ("s3://test-bucket//", "/"),
+        ];
+
+        for (s3_uri, expected_prefix) in cases {
+            let target = S3Target::parse(s3_uri).unwrap();
+            assert_eq!(target.bucket, "test-bucket", "uri: {s3_uri}");
+            assert_eq!(
+                target.prefix.as_deref(),
+                Some(expected_prefix),
+                "uri: {s3_uri}"
+            );
+            assert_eq!(target.to_string(), s3_uri, "uri: {s3_uri}");
+        }
+    }
+
+    #[test]
+    fn s3_target_parse_rejects_question_mark_or_hash_after_bucket() {
+        // Without '/' after the bucket name, there is no prefix to attach '?' or '#' to.
+        for s3_uri in [
+            "s3://my-bucket?old",
+            "s3://my-bucket#old",
+            "s3://my-bucket?",
+            "s3://my-bucket#",
+            "s3://my-bucket?old/",
+            "s3://my-bucket#old/",
+            "s3://my-bucket?a/b#c",
+            "s3://my-bucket#a/b?c",
+            "s3://my-bucket?#",
+            "s3://my-bucket#?",
+            "s3://?",
+            "s3://#",
+            "s3://?old",
+            "s3://#old/",
+        ] {
+            let error = S3Target::parse(s3_uri).unwrap_err();
+            assert!(
+                matches!(error, error::S3lsError::InvalidUri(_)),
+                "uri: {s3_uri}"
+            );
+            assert_eq!(error.exit_code(), 2, "uri: {s3_uri}");
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "Invalid URI: '?' or '#' directly after the bucket name is not allowed: {s3_uri}"
+                ),
+                "uri: {s3_uri}"
+            );
+        }
+    }
+
+    #[test]
+    fn s3_target_parse_accepts_question_mark_or_hash_after_slash() {
+        // The same characters right after the '/' are the first characters of the prefix.
+        for (s3_uri, expected_prefix) in [
+            ("s3://my-bucket/?old", "?old"),
+            ("s3://my-bucket/#old", "#old"),
+            ("s3://my-bucket/?", "?"),
+            ("s3://my-bucket/#", "#"),
+        ] {
+            let target = S3Target::parse(s3_uri).unwrap();
+            assert_eq!(target.bucket, "my-bucket", "uri: {s3_uri}");
+            assert_eq!(
+                target.prefix.as_deref(),
+                Some(expected_prefix),
+                "uri: {s3_uri}"
+            );
+        }
     }
 
     #[test]
