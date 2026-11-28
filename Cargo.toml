@@ -1,6 +1,6 @@
 [package]
 name = "s3ls-rs"
-version = "1.4.1"
+version = "1.4.2"
 edition = "2024"
 authors = ["nidor1998 <nidor1998@gmail.com>"]
 license = "Apache-2.0"
@@ -11,7 +11,7 @@ repository = "https://github.com/nidor1998/s3ls-rs"
 [dependencies]
 anyhow = "1.0.105"
 thiserror = "2.0.21"
-clap = { version = "4.6.9", features = ["derive", "env", "cargo", "string"] }
+clap = { version = "4.6.10", features = ["derive", "env", "cargo", "string"] }
 clap_complete = "4.6.12"
 clap-verbosity-flag = "3.0.4"
 fancy-regex = "0.20.2"
@@ -35,8 +35,8 @@ tokio-util = "0.7.20"
 aws-config = { version = "1.13.3", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio", "credentials-process", "sso"] }
 aws-runtime = "1.10.4"
 aws-sdk-s3 = { version = "1.161.0", default-features = false, features = ["sigv4a", "http-1x", "default-https-client", "rt-tokio"] }
-aws-smithy-runtime-api = "1.22.0"
-aws-smithy-types = "1.9.4"
+aws-smithy-runtime-api = "1.22.1"
+aws-smithy-types = "1.9.5"
 aws-types = "1.7.0"
 
 # Security
