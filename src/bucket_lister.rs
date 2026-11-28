@@ -189,23 +189,42 @@ pub async fn list_buckets(config: &Config) -> Result<()> {
 
     let client = client_config.create_client().await;
 
-    let mut entries = if config.list_express_one_zone_buckets {
-        let mut buckets = list_directory_buckets(&client).await?;
+    let mut entries =
+        fetch_bucket_entries(config, &client, client_config.endpoint_url.is_none()).await?;
+
+    sort_bucket_entries(&mut entries, config);
+
+    let stdout = std::io::stdout();
+    let mut writer = std::io::BufWriter::new(stdout.lock());
+    write_bucket_entries(&mut writer, &entries, config)
+}
+
+/// Fetch the buckets selected by `config`: directory buckets (filtered
+/// client-side by prefix) or general purpose buckets.
+async fn fetch_bucket_entries(
+    config: &Config,
+    client: &Client,
+    use_max_buckets: bool,
+) -> Result<Vec<BucketEntry>> {
+    if config.list_express_one_zone_buckets {
+        let mut buckets = list_directory_buckets(client).await?;
         // ListDirectoryBuckets API does not support prefix filtering,
         // so filter client-side.
         if let Some(ref prefix) = config.bucket_name_prefix {
             buckets.retain(|e| e.name.starts_with(prefix.as_str()));
         }
-        buckets
+        Ok(buckets)
     } else {
         list_general_buckets(
-            &client,
+            client,
             config.bucket_name_prefix.as_deref(),
-            client_config.endpoint_url.is_none(),
+            use_max_buckets,
         )
-        .await?
-    };
+        .await
+    }
+}
 
+fn sort_bucket_entries(entries: &mut [BucketEntry], config: &Config) {
     // Sort (skipped when --no-sort is set)
     if !config.no_sort {
         entries.sort_by(|a, b| {
@@ -221,10 +240,13 @@ pub async fn list_buckets(config: &Config) -> Result<()> {
             if config.reverse { cmp.reverse() } else { cmp }
         });
     }
+}
 
-    let stdout = std::io::stdout();
-    let mut writer = std::io::BufWriter::new(stdout.lock());
-
+fn write_bucket_entries<W: Write>(
+    writer: &mut W,
+    entries: &[BucketEntry],
+    config: &Config,
+) -> Result<()> {
     let show_owner = config.display_config.show_owner;
     let show_bucket_arn = config.display_config.show_bucket_arn;
 
@@ -243,7 +265,7 @@ pub async fn list_buckets(config: &Config) -> Result<()> {
         writeln!(writer, "{}", format_bucket_header(&bopts))?;
     }
 
-    for entry in &entries {
+    for entry in entries {
         if config.display_config.json {
             let mut map = serde_json::Map::new();
             map.insert(
@@ -617,5 +639,512 @@ mod aligned_tests {
             " ".repeat(W_BUCKET_REGION - "REGION".len()),
         );
         assert_eq!(h, expected);
+    }
+}
+
+#[cfg(test)]
+mod listing_tests {
+    use super::*;
+    use crate::test_util::ReplayHttpClient;
+
+    fn bucket_listing_config() -> Config {
+        Config::try_from(crate::parse_from_args(vec!["s3ls"]).unwrap()).unwrap()
+    }
+
+    fn named(name: &str) -> BucketEntry {
+        BucketEntry {
+            name: name.to_string(),
+            creation_date: Some(crate::types::datetime::utc_ymd_hms(2024, 1, 1, 0, 0, 0)),
+            region: Some("us-east-1".to_string()),
+            bucket_arn: Some(format!("arn:aws:s3:::{name}")),
+            owner_display_name: None,
+            owner_id: None,
+        }
+    }
+
+    fn names(entries: &[BucketEntry]) -> Vec<&str> {
+        entries.iter().map(|e| e.name.as_str()).collect()
+    }
+
+    fn general_page(buckets: &[&str], continuation_token: Option<&str>) -> String {
+        let buckets: String = buckets
+            .iter()
+            .map(|name| {
+                format!(
+                    "<Bucket><Name>{name}</Name>\
+                     <CreationDate>2024-01-01T00:00:00.000Z</CreationDate>\
+                     <BucketRegion>us-east-1</BucketRegion>\
+                     <BucketArn>arn:aws:s3:::{name}</BucketArn></Bucket>"
+                )
+            })
+            .collect();
+        let token = continuation_token
+            .map(|t| format!("<ContinuationToken>{t}</ContinuationToken>"))
+            .unwrap_or_default();
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+             <ListAllMyBucketsResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">\
+             <Owner><ID>owner-id</ID><DisplayName>alice</DisplayName></Owner>\
+             <Buckets>{buckets}</Buckets>{token}</ListAllMyBucketsResult>"
+        )
+    }
+
+    fn directory_page(buckets: &[&str], continuation_token: Option<&str>) -> String {
+        let buckets: String = buckets
+            .iter()
+            .map(|name| {
+                format!(
+                    "<Bucket><Name>{name}</Name>\
+                     <CreationDate>2024-01-01T00:00:00.000Z</CreationDate></Bucket>"
+                )
+            })
+            .collect();
+        let token = continuation_token
+            .map(|t| format!("<ContinuationToken>{t}</ContinuationToken>"))
+            .unwrap_or_default();
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+             <ListAllMyDirectoryBucketsResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">\
+             <Buckets>{buckets}</Buckets>{token}</ListAllMyDirectoryBucketsResult>"
+        )
+    }
+
+    // -----------------------------------------------------------------------
+    // list_buckets
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn list_buckets_errors_without_client_config() {
+        let mut config = bucket_listing_config();
+        config.target_client_config = None;
+        let err = list_buckets(&config).await.unwrap_err();
+        assert!(
+            err.to_string().contains("No client configuration"),
+            "got: {err}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // list_general_buckets
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn general_buckets_follow_continuation_token() {
+        let page1 = general_page(&["bucket-a"], Some("tok1"));
+        let page2 = general_page(&["bucket-b"], None);
+        let http = ReplayHttpClient::new(vec![(200, &page1), (200, &page2)]);
+
+        let entries = list_general_buckets(&http.s3_client(), Some("bucket-"), true)
+            .await
+            .unwrap();
+
+        assert_eq!(names(&entries), vec!["bucket-a", "bucket-b"]);
+        assert_eq!(entries[0].owner_display_name.as_deref(), Some("alice"));
+        assert_eq!(entries[0].owner_id.as_deref(), Some("owner-id"));
+        assert_eq!(entries[0].region.as_deref(), Some("us-east-1"));
+        assert_eq!(
+            entries[0].bucket_arn.as_deref(),
+            Some("arn:aws:s3:::bucket-a")
+        );
+        assert!(entries[0].creation_date.is_some());
+
+        let uris = http.request_uris();
+        assert_eq!(uris.len(), 2);
+        assert!(uris[0].contains("max-buckets=1000"), "got: {}", uris[0]);
+        assert!(uris[0].contains("prefix=bucket-"), "got: {}", uris[0]);
+        assert!(
+            !uris[0].contains("continuation-token"),
+            "first request must not carry a token: {}",
+            uris[0]
+        );
+        assert!(
+            uris[1].contains("continuation-token=tok1"),
+            "second request must carry the token: {}",
+            uris[1]
+        );
+    }
+
+    #[tokio::test]
+    async fn general_buckets_omit_max_buckets_and_prefix_when_not_requested() {
+        let page = general_page(&["bucket-a"], None);
+        let http = ReplayHttpClient::new(vec![(200, &page)]);
+
+        let entries = list_general_buckets(&http.s3_client(), None, false)
+            .await
+            .unwrap();
+
+        assert_eq!(names(&entries), vec!["bucket-a"]);
+        let uris = http.request_uris();
+        assert_eq!(uris.len(), 1);
+        assert!(!uris[0].contains("max-buckets"), "got: {}", uris[0]);
+        assert!(!uris[0].contains("prefix="), "got: {}", uris[0]);
+    }
+
+    #[tokio::test]
+    async fn general_buckets_stop_on_empty_continuation_token() {
+        // Some S3-compatible endpoints emit an empty token at the end of
+        // pagination instead of omitting the field.
+        let page = general_page(&["bucket-a"], Some(""));
+        let http = ReplayHttpClient::new(vec![(200, &page)]);
+
+        let entries = list_general_buckets(&http.s3_client(), None, true)
+            .await
+            .unwrap();
+
+        assert_eq!(names(&entries), vec!["bucket-a"]);
+        assert_eq!(http.request_uris().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn general_buckets_bail_on_repeated_continuation_token() {
+        let page1 = general_page(&["bucket-a"], Some("tok1"));
+        let page2 = general_page(&["bucket-b"], Some("tok1"));
+        let http = ReplayHttpClient::new(vec![(200, &page1), (200, &page2)]);
+
+        let err = list_general_buckets(&http.s3_client(), None, true)
+            .await
+            .err()
+            .unwrap();
+
+        assert!(
+            err.to_string()
+                .contains("ListBuckets returned the same continuation token twice"),
+            "got: {err}"
+        );
+        assert_eq!(http.request_uris().len(), 2, "must not loop further");
+    }
+
+    #[tokio::test]
+    async fn general_buckets_report_api_failure() {
+        let body = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+                    <Error><Code>AccessDenied</Code><Message>Access Denied</Message></Error>";
+        let http = ReplayHttpClient::new(vec![(403, body)]);
+
+        let err = list_general_buckets(&http.s3_client(), None, true)
+            .await
+            .err()
+            .unwrap();
+
+        assert!(
+            err.to_string().contains("Failed to list buckets"),
+            "got: {err}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // list_directory_buckets
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn directory_buckets_follow_continuation_token() {
+        let page1 = directory_page(&["a--use1-az4--x-s3"], Some("tok1"));
+        let page2 = directory_page(&["b--use1-az4--x-s3"], None);
+        let http = ReplayHttpClient::new(vec![(200, &page1), (200, &page2)]);
+
+        let entries = list_directory_buckets(&http.s3_client()).await.unwrap();
+
+        assert_eq!(
+            names(&entries),
+            vec!["a--use1-az4--x-s3", "b--use1-az4--x-s3"]
+        );
+        assert!(entries.iter().all(|e| e.owner_id.is_none()));
+        assert!(entries.iter().all(|e| e.owner_display_name.is_none()));
+
+        let uris = http.request_uris();
+        assert_eq!(uris.len(), 2);
+        assert!(!uris[0].contains("continuation-token"), "got: {}", uris[0]);
+        assert!(
+            uris[1].contains("continuation-token=tok1"),
+            "got: {}",
+            uris[1]
+        );
+    }
+
+    #[tokio::test]
+    async fn directory_buckets_stop_on_empty_continuation_token() {
+        let page = directory_page(&["a--use1-az4--x-s3"], Some(""));
+        let http = ReplayHttpClient::new(vec![(200, &page)]);
+
+        let entries = list_directory_buckets(&http.s3_client()).await.unwrap();
+
+        assert_eq!(names(&entries), vec!["a--use1-az4--x-s3"]);
+        assert_eq!(http.request_uris().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn directory_buckets_bail_on_repeated_continuation_token() {
+        let page1 = directory_page(&["a--use1-az4--x-s3"], Some("tok1"));
+        let page2 = directory_page(&["b--use1-az4--x-s3"], Some("tok1"));
+        let http = ReplayHttpClient::new(vec![(200, &page1), (200, &page2)]);
+
+        let err = list_directory_buckets(&http.s3_client())
+            .await
+            .err()
+            .unwrap();
+
+        assert!(
+            err.to_string()
+                .contains("ListDirectoryBuckets returned the same continuation token twice"),
+            "got: {err}"
+        );
+        assert_eq!(http.request_uris().len(), 2, "must not loop further");
+    }
+
+    #[tokio::test]
+    async fn directory_buckets_report_api_failure() {
+        let body = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+                    <Error><Code>AccessDenied</Code><Message>Access Denied</Message></Error>";
+        let http = ReplayHttpClient::new(vec![(403, body)]);
+
+        let err = list_directory_buckets(&http.s3_client())
+            .await
+            .err()
+            .unwrap();
+
+        assert!(
+            err.to_string().contains("Failed to list directory buckets"),
+            "got: {err}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // fetch_bucket_entries
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn fetch_uses_general_buckets_by_default() {
+        let page = general_page(&["bucket-a"], None);
+        let http = ReplayHttpClient::new(vec![(200, &page)]);
+        let mut config = bucket_listing_config();
+        config.bucket_name_prefix = Some("bucket-".to_string());
+
+        let entries = fetch_bucket_entries(&config, &http.s3_client(), false)
+            .await
+            .unwrap();
+
+        assert_eq!(names(&entries), vec!["bucket-a"]);
+        let uris = http.request_uris();
+        assert!(uris[0].contains("prefix=bucket-"), "got: {}", uris[0]);
+        assert!(!uris[0].contains("max-buckets"), "got: {}", uris[0]);
+    }
+
+    #[tokio::test]
+    async fn fetch_filters_directory_buckets_by_prefix_client_side() {
+        let page = directory_page(&["keep--use1-az4--x-s3", "drop--use1-az4--x-s3"], None);
+        let http = ReplayHttpClient::new(vec![(200, &page)]);
+        let mut config = bucket_listing_config();
+        config.list_express_one_zone_buckets = true;
+        config.bucket_name_prefix = Some("keep".to_string());
+
+        let entries = fetch_bucket_entries(&config, &http.s3_client(), true)
+            .await
+            .unwrap();
+
+        assert_eq!(names(&entries), vec!["keep--use1-az4--x-s3"]);
+    }
+
+    #[tokio::test]
+    async fn fetch_returns_all_directory_buckets_without_prefix() {
+        let page = directory_page(&["a--use1-az4--x-s3", "b--use1-az4--x-s3"], None);
+        let http = ReplayHttpClient::new(vec![(200, &page)]);
+        let mut config = bucket_listing_config();
+        config.list_express_one_zone_buckets = true;
+        config.bucket_name_prefix = None;
+
+        let entries = fetch_bucket_entries(&config, &http.s3_client(), true)
+            .await
+            .unwrap();
+
+        assert_eq!(entries.len(), 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // sort_bucket_entries
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn sort_by_bucket_name_and_reverse() {
+        let mut config = bucket_listing_config();
+        config.no_sort = false;
+        config.sort = vec![SortField::Bucket];
+        config.reverse = false;
+
+        let mut entries = vec![named("b"), named("c"), named("a")];
+        sort_bucket_entries(&mut entries, &config);
+        assert_eq!(names(&entries), vec!["a", "b", "c"]);
+
+        config.reverse = true;
+        sort_bucket_entries(&mut entries, &config);
+        assert_eq!(names(&entries), vec!["c", "b", "a"]);
+    }
+
+    #[test]
+    fn sort_by_region_then_date() {
+        let mut config = bucket_listing_config();
+        config.no_sort = false;
+        config.sort = vec![SortField::Region, SortField::Date];
+        config.reverse = false;
+
+        let mut old_west = named("old-west");
+        old_west.region = Some("us-west-2".to_string());
+        old_west.creation_date = Some(crate::types::datetime::utc_ymd_hms(2020, 1, 1, 0, 0, 0));
+        let mut new_west = named("new-west");
+        new_west.region = Some("us-west-2".to_string());
+        let east = named("east");
+
+        let mut entries = vec![new_west, old_west, east];
+        sort_bucket_entries(&mut entries, &config);
+        assert_eq!(names(&entries), vec!["east", "old-west", "new-west"]);
+    }
+
+    #[test]
+    fn sort_by_size_keeps_listing_order() {
+        // Buckets have no size: the field compares equal, so the (stable)
+        // sort leaves the listing order untouched.
+        let mut config = bucket_listing_config();
+        config.no_sort = false;
+        config.sort = vec![SortField::Size];
+        config.reverse = false;
+
+        let mut entries = vec![named("b"), named("c"), named("a")];
+        sort_bucket_entries(&mut entries, &config);
+        assert_eq!(names(&entries), vec!["b", "c", "a"]);
+    }
+
+    #[test]
+    fn no_sort_keeps_listing_order() {
+        let mut config = bucket_listing_config();
+        config.no_sort = true;
+        config.sort = vec![SortField::Bucket];
+
+        let mut entries = vec![named("b"), named("c"), named("a")];
+        sort_bucket_entries(&mut entries, &config);
+        assert_eq!(names(&entries), vec!["b", "c", "a"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // write_bucket_entries
+    // -----------------------------------------------------------------------
+
+    fn write_to_string(entries: &[BucketEntry], config: &Config) -> String {
+        let mut out = Vec::new();
+        write_bucket_entries(&mut out, entries, config).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    fn json_lines(output: &str) -> Vec<serde_json::Value> {
+        output
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn json_includes_owner_display_name_and_id() {
+        let mut config = bucket_listing_config();
+        config.display_config.json = true;
+        config.display_config.show_owner = true;
+
+        let mut entry = named("mybucket");
+        entry.owner_display_name = Some("alice".to_string());
+        entry.owner_id = Some("id-alice".to_string());
+
+        let parsed = json_lines(&write_to_string(&[entry], &config));
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0]["Name"], "mybucket");
+        assert_eq!(parsed[0]["BucketRegion"], "us-east-1");
+        assert_eq!(parsed[0]["BucketArn"], "arn:aws:s3:::mybucket");
+        assert_eq!(parsed[0]["CreationDate"], "2024-01-01T00:00:00Z");
+        assert_eq!(parsed[0]["Owner"]["DisplayName"], "alice");
+        assert_eq!(parsed[0]["Owner"]["ID"], "id-alice");
+    }
+
+    #[test]
+    fn json_owner_with_only_one_of_display_name_or_id() {
+        let mut config = bucket_listing_config();
+        config.display_config.json = true;
+        config.display_config.show_owner = true;
+
+        let mut name_only = named("name-only");
+        name_only.owner_display_name = Some("alice".to_string());
+        let mut id_only = named("id-only");
+        id_only.owner_id = Some("id-alice".to_string());
+
+        let parsed = json_lines(&write_to_string(&[name_only, id_only], &config));
+        assert_eq!(parsed[0]["Owner"]["DisplayName"], "alice");
+        assert!(parsed[0]["Owner"].get("ID").is_none());
+        assert_eq!(parsed[1]["Owner"]["ID"], "id-alice");
+        assert!(parsed[1]["Owner"].get("DisplayName").is_none());
+    }
+
+    #[test]
+    fn json_omits_absent_fields_and_owner() {
+        let mut config = bucket_listing_config();
+        config.display_config.json = true;
+        config.display_config.show_owner = true;
+
+        let bare = BucketEntry {
+            name: "bare".to_string(),
+            creation_date: None,
+            region: None,
+            bucket_arn: None,
+            owner_display_name: None,
+            owner_id: None,
+        };
+
+        let parsed = json_lines(&write_to_string(&[bare], &config));
+        let object = parsed[0].as_object().unwrap();
+        assert_eq!(object.len(), 1, "only Name is present: {object:?}");
+        assert_eq!(parsed[0]["Name"], "bare");
+    }
+
+    #[test]
+    fn json_hides_owner_unless_requested_and_ignores_header() {
+        let mut config = bucket_listing_config();
+        config.display_config.json = true;
+        config.display_config.show_owner = false;
+        config.display_config.header = true;
+
+        let mut entry = named("mybucket");
+        entry.owner_display_name = Some("alice".to_string());
+        entry.owner_id = Some("id-alice".to_string());
+
+        let parsed = json_lines(&write_to_string(&[entry], &config));
+        assert_eq!(parsed.len(), 1, "JSON output has no header line");
+        assert!(parsed[0].get("Owner").is_none());
+    }
+
+    #[test]
+    fn text_output_writes_header_then_rows() {
+        let mut config = bucket_listing_config();
+        config.display_config.json = false;
+        config.display_config.tsv = true;
+        config.display_config.one_line = false;
+        config.display_config.header = true;
+        config.display_config.show_owner = false;
+        config.display_config.show_bucket_arn = false;
+        config.display_config.show_local_time = false;
+
+        let output = write_to_string(&[named("mybucket")], &config);
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(
+            lines,
+            vec![
+                "DATE\tREGION\tBUCKET",
+                "2024-01-01T00:00:00Z\tus-east-1\tmybucket"
+            ]
+        );
+    }
+
+    #[test]
+    fn text_output_without_header() {
+        let mut config = bucket_listing_config();
+        config.display_config.json = false;
+        config.display_config.tsv = false;
+        config.display_config.one_line = true;
+        config.display_config.header = false;
+
+        let output = write_to_string(&[named("a"), named("b")], &config);
+        assert_eq!(output, "a\nb\n");
     }
 }

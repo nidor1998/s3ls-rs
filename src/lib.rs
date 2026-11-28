@@ -12,6 +12,8 @@ pub mod filters;
 pub mod lister;
 pub mod pipeline;
 pub mod storage;
+#[cfg(test)]
+pub(crate) mod test_util;
 pub mod types;
 
 // Core pipeline

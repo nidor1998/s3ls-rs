@@ -374,6 +374,44 @@ mod tests {
     }
 
     #[test]
+    fn format_ndjson_delete_marker_with_owner_display_name_only() {
+        let entry = ListEntry::DeleteMarker {
+            key: "deleted.txt".to_string(),
+            version_info: VersionInfo {
+                version_id: "v1".to_string(),
+                is_latest: true,
+            },
+            last_modified: time::OffsetDateTime::now_utc(),
+            owner_display_name: Some("alice".to_string()),
+            owner_id: None,
+        };
+        let opts = FormatOptions::default();
+        let json = JsonFormatter::new(opts).format_entry(&entry);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["Owner"]["DisplayName"], "alice");
+        assert!(parsed["Owner"].get("ID").is_none());
+    }
+
+    #[test]
+    fn format_ndjson_delete_marker_with_owner_id_only() {
+        let entry = ListEntry::DeleteMarker {
+            key: "deleted.txt".to_string(),
+            version_info: VersionInfo {
+                version_id: "v1".to_string(),
+                is_latest: true,
+            },
+            last_modified: time::OffsetDateTime::now_utc(),
+            owner_display_name: None,
+            owner_id: Some("id123".to_string()),
+        };
+        let opts = FormatOptions::default();
+        let json = JsonFormatter::new(opts).format_entry(&entry);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["Owner"]["ID"], "id123");
+        assert!(parsed["Owner"].get("DisplayName").is_none());
+    }
+
+    #[test]
     fn format_summary_json() {
         let stats = crate::types::ListingStatistics {
             total_objects: 10,

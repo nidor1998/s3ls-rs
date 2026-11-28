@@ -253,6 +253,47 @@ mod tests {
     }
 
     #[test]
+    fn build_timeout_config_sets_only_requested_timeouts() {
+        let mut config = default_client_config();
+        config
+            .cli_timeout_config
+            .operation_attempt_timeout_milliseconds = Some(3000);
+        config.cli_timeout_config.read_timeout_milliseconds = Some(4000);
+
+        let timeout = config.build_timeout_config().unwrap();
+        assert_eq!(timeout.operation_timeout(), None);
+        assert_eq!(
+            timeout.operation_attempt_timeout(),
+            Some(Duration::from_millis(3000))
+        );
+        assert_eq!(timeout.connect_timeout(), None);
+        assert_eq!(timeout.read_timeout(), Some(Duration::from_millis(4000)));
+    }
+
+    #[test]
+    fn build_timeout_config_sets_all_timeouts() {
+        let mut config = default_client_config();
+        config.cli_timeout_config.operation_timeout_milliseconds = Some(1000);
+        config
+            .cli_timeout_config
+            .operation_attempt_timeout_milliseconds = Some(2000);
+        config.cli_timeout_config.connect_timeout_milliseconds = Some(3000);
+        config.cli_timeout_config.read_timeout_milliseconds = Some(4000);
+
+        let timeout = config.build_timeout_config().unwrap();
+        assert_eq!(
+            timeout.operation_timeout(),
+            Some(Duration::from_millis(1000))
+        );
+        assert_eq!(
+            timeout.operation_attempt_timeout(),
+            Some(Duration::from_millis(2000))
+        );
+        assert_eq!(timeout.connect_timeout(), Some(Duration::from_millis(3000)));
+        assert_eq!(timeout.read_timeout(), Some(Duration::from_millis(4000)));
+    }
+
+    #[test]
     fn build_region_provider_explicit() {
         let mut config = default_client_config();
         config.region = Some("us-west-2".to_string());

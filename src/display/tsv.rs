@@ -695,4 +695,34 @@ mod tests {
         let summary = fmt.format_summary(&stats);
         assert!(summary.contains("\t3\tdelete markers"));
     }
+
+    #[test]
+    fn common_prefix_pads_version_id_only_when_is_latest_hidden() {
+        // --all-versions without --show-is-latest: a CommonPrefix row gets a
+        // version_id placeholder but no is_latest placeholder.
+        let prefix = ListEntry::CommonPrefix("logs/".to_string());
+
+        let without_is_latest = TsvFormatter::new(FormatOptions {
+            all_versions: true,
+            show_is_latest: false,
+            ..Default::default()
+        })
+        .format_entry(&prefix);
+        let with_is_latest = TsvFormatter::new(FormatOptions {
+            all_versions: true,
+            show_is_latest: true,
+            ..Default::default()
+        })
+        .format_entry(&prefix);
+        let without_versions = TsvFormatter::new(FormatOptions {
+            all_versions: false,
+            show_is_latest: false,
+            ..Default::default()
+        })
+        .format_entry(&prefix);
+
+        let cols = |line: &str| line.split('\t').count();
+        assert_eq!(cols(&without_is_latest), cols(&without_versions) + 1);
+        assert_eq!(cols(&with_is_latest), cols(&without_is_latest) + 1);
+    }
 }
