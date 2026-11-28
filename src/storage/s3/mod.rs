@@ -3305,4 +3305,418 @@ mod tests {
             other => panic!("expected Object, got {other:?}"),
         }
     }
+
+    // =======================================================================
+    // Owner mapping
+    // =======================================================================
+
+    #[test]
+    fn convert_object_maps_owner() {
+        use aws_sdk_s3::types::{Object, Owner};
+        use aws_smithy_types::DateTime as SmithyDateTime;
+
+        let obj = Object::builder()
+            .key("k.txt")
+            .size(10)
+            .last_modified(SmithyDateTime::from_secs(1_700_000_000))
+            .owner(
+                Owner::builder()
+                    .display_name("alice")
+                    .id("id-alice")
+                    .build(),
+            )
+            .build();
+
+        let entry = convert_object(&obj).expect("object should convert");
+        assert!(matches!(
+            entry,
+            ListEntry::Object(ref o)
+                if o.owner_display_name.as_deref() == Some("alice")
+                    && o.owner_id.as_deref() == Some("id-alice")
+        ));
+    }
+
+    #[test]
+    fn convert_object_version_maps_owner() {
+        use aws_sdk_s3::types::{ObjectVersion, Owner};
+        use aws_smithy_types::DateTime as SmithyDateTime;
+
+        let version = ObjectVersion::builder()
+            .key("k.txt")
+            .version_id("v1")
+            .size(10)
+            .last_modified(SmithyDateTime::from_secs(1_700_000_000))
+            .owner(
+                Owner::builder()
+                    .display_name("alice")
+                    .id("id-alice")
+                    .build(),
+            )
+            .build();
+
+        let entry = convert_object_version(&version).expect("version should convert");
+        assert!(matches!(
+            entry,
+            ListEntry::Object(ref o)
+                if o.owner_display_name.as_deref() == Some("alice")
+                    && o.owner_id.as_deref() == Some("id-alice")
+        ));
+    }
+
+    // =======================================================================
+    // extract_sdk_error_details
+    // =======================================================================
+
+    #[test]
+    fn extract_sdk_error_details_for_non_service_error() {
+        use aws_sdk_s3::operation::list_objects_v2::ListObjectsV2Error;
+
+        let err: SdkError<ListObjectsV2Error> = SdkError::timeout_error("request timed out");
+        let (code, msg) = extract_sdk_error_details(&err);
+        assert_eq!(code, "N/A");
+        assert!(msg.contains("request timed out"), "got: {msg}");
+    }
+
+    // =======================================================================
+    // S3PageFetcher against canned HTTP responses
+    // =======================================================================
+
+    fn replay_fetcher(http: &crate::test_util::ReplayHttpClient) -> S3PageFetcher {
+        S3PageFetcher {
+            client: http.s3_client(),
+            bucket: "test-bucket".to_string(),
+            request_payer: None,
+            fetch_owner: false,
+            fetch_restore_status: false,
+        }
+    }
+
+    const ACCESS_DENIED_BODY: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+        <Error><Code>AccessDenied</Code><Message>Access Denied</Message></Error>";
+
+    #[tokio::test]
+    async fn list_object_versions_failure_names_bucket_and_prefix() {
+        let http = crate::test_util::ReplayHttpClient::new(vec![(403, ACCESS_DENIED_BODY)]);
+        let fetcher = replay_fetcher(&http);
+
+        let err = fetcher
+            .fetch_page(
+                ListingMode::Versions,
+                1000,
+                Some("logs/"),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .err()
+            .expect("403 must surface as an error");
+
+        assert_eq!(
+            err.to_string(),
+            "S3 ListObjectVersions failed for s3://test-bucket/logs/"
+        );
+        let (code, msg) = extract_sdk_error_details(
+            err.downcast_ref::<SdkError<
+                aws_sdk_s3::operation::list_object_versions::ListObjectVersionsError,
+            >>()
+            .expect("the SDK error is preserved as the source"),
+        );
+        assert_eq!(code, "AccessDenied");
+        assert_eq!(msg, "Access Denied");
+    }
+
+    #[tokio::test]
+    async fn list_object_versions_failure_without_prefix() {
+        let http = crate::test_util::ReplayHttpClient::new(vec![(403, ACCESS_DENIED_BODY)]);
+        let fetcher = replay_fetcher(&http);
+
+        let err = fetcher
+            .fetch_page(ListingMode::Versions, 1000, None, None, None, None, None)
+            .await
+            .err()
+            .expect("403 must surface as an error");
+
+        assert_eq!(
+            err.to_string(),
+            "S3 ListObjectVersions failed for s3://test-bucket/"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_objects_v2_failure_names_bucket_and_prefix() {
+        let http = crate::test_util::ReplayHttpClient::new(vec![(403, ACCESS_DENIED_BODY)]);
+        let fetcher = replay_fetcher(&http);
+
+        let err = fetcher
+            .fetch_page(
+                ListingMode::Objects,
+                1000,
+                Some("logs/"),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .err()
+            .expect("403 must surface as an error");
+
+        assert_eq!(
+            err.to_string(),
+            "S3 ListObjectsV2 failed for s3://test-bucket/logs/"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_object_versions_page_maps_versions_markers_and_prefixes() {
+        // One valid version and delete marker, plus one of each without
+        // LastModified, which must be skipped rather than fail the page.
+        let body = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+            <ListVersionsResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">\
+            <Name>test-bucket</Name><Prefix>p/</Prefix><Delimiter>/</Delimiter>\
+            <IsTruncated>true</IsTruncated>\
+            <NextKeyMarker>p/b.txt</NextKeyMarker>\
+            <NextVersionIdMarker>v9</NextVersionIdMarker>\
+            <Version><Key>p/a.txt</Key><VersionId>v1</VersionId><IsLatest>true</IsLatest>\
+            <LastModified>2024-01-01T00:00:00.000Z</LastModified><ETag>\"e\"</ETag>\
+            <Size>10</Size><StorageClass>STANDARD</StorageClass></Version>\
+            <Version><Key>p/no-date.txt</Key><VersionId>v2</VersionId>\
+            <IsLatest>true</IsLatest><Size>10</Size></Version>\
+            <DeleteMarker><Key>p/b.txt</Key><VersionId>v3</VersionId><IsLatest>true</IsLatest>\
+            <LastModified>2024-01-02T00:00:00.000Z</LastModified></DeleteMarker>\
+            <DeleteMarker><Key>p/no-date-marker.txt</Key><VersionId>v4</VersionId>\
+            <IsLatest>true</IsLatest></DeleteMarker>\
+            <CommonPrefixes><Prefix>p/sub/</Prefix></CommonPrefixes>\
+            </ListVersionsResult>";
+        let http = crate::test_util::ReplayHttpClient::new(vec![(200, body)]);
+        let fetcher = replay_fetcher(&http);
+
+        let page = fetcher
+            .fetch_page(
+                ListingMode::Versions,
+                500,
+                Some("p/"),
+                Some("/"),
+                None,
+                Some("p/0"),
+                Some("v0"),
+            )
+            .await
+            .unwrap();
+
+        let keys: Vec<&str> = page.objects.iter().map(|e| e.key()).collect();
+        assert_eq!(keys, vec!["p/a.txt", "p/b.txt"]);
+        assert!(!page.objects[0].is_delete_marker());
+        assert_eq!(page.objects[0].version_id(), Some("v1"));
+        assert!(page.objects[1].is_delete_marker());
+        assert_eq!(page.objects[1].version_id(), Some("v3"));
+        assert_eq!(page.sub_prefixes, vec!["p/sub/".to_string()]);
+        assert!(page.is_truncated);
+        assert_eq!(page.continuation_token, None);
+        assert_eq!(page.key_marker.as_deref(), Some("p/b.txt"));
+        assert_eq!(page.version_id_marker.as_deref(), Some("v9"));
+
+        let uris = http.request_uris();
+        assert_eq!(uris.len(), 1);
+        for expected in [
+            "versions",
+            "max-keys=500",
+            "prefix=p%2F",
+            "delimiter=%2F",
+            "key-marker=p%2F0",
+            "version-id-marker=v0",
+        ] {
+            assert!(
+                uris[0].contains(expected),
+                "missing {expected}: {}",
+                uris[0]
+            );
+        }
+    }
+
+    // =======================================================================
+    // Cancellation while waiting / between pages, and max_depth = 0
+    // =======================================================================
+
+    /// A rate limiter with no tokens that will not refill during a test, so
+    /// `acquire_rate_limit` blocks until the pipeline is cancelled.
+    fn exhausted_rate_limiter() -> Arc<RateLimiter> {
+        Arc::new(
+            RateLimiter::builder()
+                .max(1)
+                .initial(0)
+                .interval(Duration::from_secs(3600))
+                .refill(1)
+                .build(),
+        )
+    }
+
+    /// Runs a listing whose rate limiter never yields a token and cancels it
+    /// shortly after it starts. Returns the number of API calls made.
+    async fn cancel_during_rate_limit_wait(delimiter: Option<&str>, max_parallel: u16) -> u64 {
+        let token = create_pipeline_cancellation_token();
+        let mut engine = make_engine_with_token(
+            MockPageFetcher::from_map(HashMap::new()),
+            "bucket",
+            Some("p/"),
+            delimiter,
+            max_parallel,
+            5,
+            false,
+            token.clone(),
+        );
+        engine.rate_limiter = Some(exhausted_rate_limiter());
+
+        let canceller = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            token.cancel();
+        });
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(10);
+        let result = tokio::time::timeout(
+            Duration::from_secs(30),
+            engine.list_dispatch(ListingMode::Objects, &tx, 1000),
+        )
+        .await
+        .expect("cancellation must interrupt the rate-limit wait");
+        drop(tx);
+        canceller.await.unwrap();
+
+        assert!(result.is_ok(), "cancellation is graceful: {result:?}");
+        assert!(rx.recv().await.is_none(), "no entries are emitted");
+        engine.api_call_counter.load(Ordering::Relaxed)
+    }
+
+    #[tokio::test]
+    async fn sequential_cancelled_while_waiting_for_rate_limit() {
+        let fetched = cancel_during_rate_limit_wait(Some("/"), 1).await;
+        assert_eq!(fetched, 0, "no API call is made without a rate-limit token");
+    }
+
+    #[tokio::test]
+    async fn parallel_cancelled_while_waiting_for_rate_limit() {
+        let fetched = cancel_during_rate_limit_wait(None, 4).await;
+        assert_eq!(fetched, 0, "no API call is made without a rate-limit token");
+    }
+
+    /// Fetcher that cancels the pipeline while serving its page, simulating
+    /// Ctrl+C arriving during an in-flight API call.
+    #[derive(Clone)]
+    struct CancelOnFetch {
+        token: PipelineCancellationToken,
+        calls: Arc<AtomicU64>,
+        sub_prefixes: Vec<String>,
+        is_truncated: bool,
+    }
+
+    #[async_trait]
+    impl PageFetcher for CancelOnFetch {
+        async fn fetch_page(
+            &self,
+            _mode: ListingMode,
+            _max_keys: i32,
+            _prefix: Option<&str>,
+            _delimiter: Option<&str>,
+            _continuation_token: Option<&str>,
+            _key_marker: Option<&str>,
+            _version_id_marker: Option<&str>,
+        ) -> Result<ListPage> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            self.token.cancel();
+            Ok(ListPage {
+                objects: vec![],
+                sub_prefixes: self.sub_prefixes.clone(),
+                is_truncated: self.is_truncated,
+                continuation_token: self.is_truncated.then(|| "next".to_string()),
+                key_marker: None,
+                version_id_marker: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn parallel_stops_paginating_when_cancelled_between_pages() {
+        let token = create_pipeline_cancellation_token();
+        let calls = Arc::new(AtomicU64::new(0));
+        let engine = make_engine_with_token(
+            CancelOnFetch {
+                token: token.clone(),
+                calls: calls.clone(),
+                sub_prefixes: vec![],
+                is_truncated: true,
+            },
+            "bucket",
+            Some("p/"),
+            None,
+            4,
+            5,
+            false,
+            token,
+        );
+
+        let entries = collect_entries(&engine, ListingMode::Objects, 1000)
+            .await
+            .unwrap();
+
+        assert!(entries.is_empty());
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            1,
+            "the truncated page must not be followed after cancellation"
+        );
+    }
+
+    #[tokio::test]
+    async fn parallel_skips_boundary_prefixes_when_cancelled() {
+        // content max_depth = 1 would emit the sub-prefixes as CommonPrefix
+        // entries; cancellation during the fetch must suppress them.
+        let token = create_pipeline_cancellation_token();
+        let calls = Arc::new(AtomicU64::new(0));
+        let mut engine = make_engine_with_token(
+            CancelOnFetch {
+                token: token.clone(),
+                calls: calls.clone(),
+                sub_prefixes: vec!["p/a/".to_string(), "p/b/".to_string()],
+                is_truncated: false,
+            },
+            "bucket",
+            Some("p/"),
+            None,
+            4,
+            5,
+            false,
+            token,
+        );
+        engine.max_depth = Some(1);
+
+        let entries = collect_entries(&engine, ListingMode::Objects, 1000)
+            .await
+            .unwrap();
+
+        assert!(entries.is_empty(), "got: {entries:?}");
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn parallel_with_zero_max_depth_fetches_nothing() {
+        let engine = make_engine_with_max_depth(
+            MockPageFetcher::from_map(HashMap::new()),
+            "bucket",
+            Some("p/"),
+            None,
+            4,
+            5,
+            false,
+            Some(0),
+        );
+
+        let entries = collect_entries(&engine, ListingMode::Objects, 1000)
+            .await
+            .unwrap();
+
+        assert!(entries.is_empty());
+        assert_eq!(engine.api_call_counter.load(Ordering::Relaxed), 0);
+    }
 }

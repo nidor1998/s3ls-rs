@@ -64,6 +64,25 @@ impl ListingPipeline {
         let aggregator_handle = self.spawn_aggregator(lister_rx, display_tx)?;
         let display_writer_handle = self.spawn_display_writer(display_rx)?;
 
+        self.join_stages(lister_handle, aggregator_handle, display_writer_handle)
+            .await?;
+
+        tracing::debug!(
+            api_calls = storage.api_call_count(),
+            "Listing pipeline completed"
+        );
+        Ok(())
+    }
+
+    /// Wait for the three pipeline stages and reduce their outcomes to a
+    /// single result. A failing or panicking downstream stage cancels the
+    /// pipeline so the upstream stages stop producing.
+    async fn join_stages(
+        &self,
+        lister_handle: tokio::task::JoinHandle<Result<()>>,
+        aggregator_handle: tokio::task::JoinHandle<Result<()>>,
+        display_writer_handle: tokio::task::JoinHandle<Result<()>>,
+    ) -> Result<()> {
         // Wait for display writer first (terminal stage).
         let display_writer_err = match display_writer_handle.await {
             Ok(Ok(())) => None,
@@ -104,13 +123,7 @@ impl ListingPipeline {
         if let Some(e) = aggregator_err {
             return Err(e);
         }
-        lister_result?;
-
-        tracing::debug!(
-            api_calls = storage.api_call_count(),
-            "Listing pipeline completed"
-        );
-        Ok(())
+        lister_result
     }
 
     fn spawn_lister(
@@ -304,5 +317,142 @@ mod tests {
             err.to_string().contains("No client configuration"),
             "got: {err}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // join_stages: error propagation and precedence
+    // -----------------------------------------------------------------------
+
+    type StageHandle = tokio::task::JoinHandle<Result<()>>;
+
+    fn test_pipeline() -> (ListingPipeline, PipelineCancellationToken) {
+        let config =
+            Config::try_from(crate::parse_from_args(vec!["s3ls", "s3://test-bucket/"]).unwrap())
+                .unwrap();
+        let token = create_pipeline_cancellation_token();
+        (ListingPipeline::new(config, token.clone()), token)
+    }
+
+    fn stage_ok() -> StageHandle {
+        tokio::spawn(async { Ok(()) })
+    }
+
+    fn stage_err(message: &'static str) -> StageHandle {
+        tokio::spawn(async move { Err(anyhow::anyhow!(message)) })
+    }
+
+    fn stage_panic(message: &'static str) -> StageHandle {
+        tokio::spawn(async move { panic!("{message}") })
+    }
+
+    #[tokio::test]
+    async fn join_stages_ok_when_all_stages_succeed() {
+        let (pipeline, token) = test_pipeline();
+        let result = pipeline
+            .join_stages(stage_ok(), stage_ok(), stage_ok())
+            .await;
+        assert!(result.is_ok());
+        assert!(!token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn join_stages_display_writer_error_cancels_and_is_returned() {
+        let (pipeline, token) = test_pipeline();
+        let err = pipeline
+            .join_stages(stage_ok(), stage_ok(), stage_err("display boom"))
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "display boom");
+        assert!(token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn join_stages_display_writer_panic_cancels_and_is_reported() {
+        let (pipeline, token) = test_pipeline();
+        let err = pipeline
+            .join_stages(stage_ok(), stage_ok(), stage_panic("display panic"))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("DisplayWriter task panicked"),
+            "got: {err}"
+        );
+        assert!(token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn join_stages_aggregator_error_cancels_and_is_returned() {
+        let (pipeline, token) = test_pipeline();
+        let err = pipeline
+            .join_stages(stage_ok(), stage_err("aggregator boom"), stage_ok())
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "aggregator boom");
+        assert!(token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn join_stages_aggregator_panic_cancels_and_is_reported() {
+        let (pipeline, token) = test_pipeline();
+        let err = pipeline
+            .join_stages(stage_ok(), stage_panic("aggregator panic"), stage_ok())
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("Aggregator task panicked"),
+            "got: {err}"
+        );
+        assert!(token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn join_stages_lister_error_is_returned() {
+        let (pipeline, _token) = test_pipeline();
+        let err = pipeline
+            .join_stages(stage_err("lister boom"), stage_ok(), stage_ok())
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "lister boom");
+    }
+
+    #[tokio::test]
+    async fn join_stages_lister_panic_is_reported() {
+        let (pipeline, _token) = test_pipeline();
+        let err = pipeline
+            .join_stages(stage_panic("lister panic"), stage_ok(), stage_ok())
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("Lister+filter task panicked"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn join_stages_display_writer_error_takes_precedence() {
+        let (pipeline, _token) = test_pipeline();
+        let err = pipeline
+            .join_stages(
+                stage_err("lister boom"),
+                stage_err("aggregator boom"),
+                stage_err("display boom"),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "display boom");
+    }
+
+    #[tokio::test]
+    async fn join_stages_aggregator_error_takes_precedence_over_lister() {
+        let (pipeline, _token) = test_pipeline();
+        let err = pipeline
+            .join_stages(
+                stage_err("lister boom"),
+                stage_err("aggregator boom"),
+                stage_ok(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "aggregator boom");
     }
 }
