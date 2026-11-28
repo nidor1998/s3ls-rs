@@ -11,6 +11,8 @@
 //! - UTF-8 prefix listing and regex filters
 //! - Control-character prefix listing and regex filters
 //! - Control-character prefix listing and regex filters
+//! - Literal prefix listing (`?`, `#`, percent escapes, dot segments)
+//! - `?` or `#` directly after the bucket name is rejected
 
 mod common;
 
@@ -440,6 +442,170 @@ async fn e2e_edge_case_control_char_prefix_listing() {
             !output.stdout.contains("data-normal"),
             "control prefix: sibling 'data-normal/' should not appear in output"
         );
+    });
+
+    _guard.cleanup().await;
+}
+
+/// The prefix of the target is used exactly as given.
+///
+/// Any UTF-8 string is a valid S3 key, so `?` and `#` are part of the
+/// prefix (not URL query/fragment delimiters), percent escapes are not
+/// decoded, and `.` / `..` segments are not collapsed. Each literal prefix
+/// must enumerate only its own object, and never the object that a
+/// URL-style interpretation of the same target would address.
+#[tokio::test]
+async fn e2e_edge_case_literal_prefix_listing() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+
+        // (prefix passed to s3ls, the only key expected under it)
+        let cases: Vec<(&str, &str)> = vec![
+            // URL parsing would truncate these to "data".
+            ("data#old/", "data#old/file.txt"),
+            ("data?old/", "data?old/file.txt"),
+            ("a?b#c?d#e/", "a?b#c?d#e/file.txt"),
+            ("#top/", "#top/file.txt"),
+            ("?top/", "?top/file.txt"),
+            // Percent-decoding would turn these into "a b/" and "a#b/".
+            ("a%20b/", "a%20b/file.txt"),
+            ("a%23b/", "a%23b/file.txt"),
+            ("100%/", "100%/file.txt"),
+            // Dot-segment normalization would turn these into "b/" and "c/".
+            ("a/../b/", "a/../b/file.txt"),
+            ("./c/", "./c/file.txt"),
+        ];
+
+        // Objects that a URL-style interpretation of the targets above would address.
+        let decoys = [
+            "data/file.txt",
+            "data",
+            "a b/file.txt",
+            "a#b/file.txt",
+            "b/file.txt",
+            "c/file.txt",
+            "top/file.txt",
+        ];
+
+        let mut fixture: Vec<(String, Vec<u8>)> = cases
+            .iter()
+            .map(|(_, key)| (key.to_string(), b"x".to_vec()))
+            .collect();
+        fixture.extend(decoys.iter().map(|key| (key.to_string(), b"x".to_vec())));
+        helper.put_objects_parallel(&bucket, fixture).await;
+
+        for (prefix, expected_key) in &cases {
+            let target = format!("s3://{bucket}/{prefix}");
+
+            // Sequential and parallel listing build the request differently.
+            for max_parallel_listings in ["1", "16"] {
+                let output = TestHelper::run_s3ls(&[
+                    target.as_str(),
+                    "--recursive",
+                    "--json",
+                    "--max-parallel-listings",
+                    max_parallel_listings,
+                ]);
+                assert!(
+                    output.status.success(),
+                    "s3ls failed for prefix {prefix:?}: {}",
+                    output.stderr
+                );
+
+                assert_json_keys_eq(
+                    &output.stdout,
+                    &[expected_key],
+                    &format!(
+                        "literal prefix {prefix:?} (max-parallel-listings {max_parallel_listings})"
+                    ),
+                );
+            }
+
+            // Non-recursive listing of the same prefix.
+            let output = TestHelper::run_s3ls(&[target.as_str(), "--json"]);
+            assert!(
+                output.status.success(),
+                "s3ls failed for prefix {prefix:?}: {}",
+                output.stderr
+            );
+            assert_json_keys_eq(
+                &output.stdout,
+                &[expected_key],
+                &format!("literal prefix {prefix:?} (non-recursive)"),
+            );
+        }
+    });
+
+    _guard.cleanup().await;
+}
+
+/// `?` or `#` directly after the bucket name is rejected with an argument
+/// error, even when the bucket exists.
+///
+/// A URL-style interpretation would drop the `?...` / `#...` part and list
+/// the whole bucket, so nothing must be listed.
+#[tokio::test]
+async fn e2e_edge_case_query_or_fragment_after_bucket_is_rejected() {
+    let helper = TestHelper::new().await;
+    let bucket = helper.generate_bucket_name();
+    let _guard = helper.bucket_guard(&bucket);
+
+    e2e_timeout!(async {
+        helper.create_bucket(&bucket).await;
+        helper
+            .put_objects_parallel(
+                &bucket,
+                vec![
+                    ("old".to_string(), b"x".to_vec()),
+                    ("?old".to_string(), b"x".to_vec()),
+                    ("#old".to_string(), b"x".to_vec()),
+                ],
+            )
+            .await;
+
+        for suffix in ["?old", "#old", "?", "#", "?old/", "#old/"] {
+            let target = format!("s3://{bucket}{suffix}");
+            let output = TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--json"]);
+
+            assert_eq!(
+                output.status.code(),
+                Some(2),
+                "target {target}: expected exit 2, stderr: {}",
+                output.stderr
+            );
+            assert!(
+                output
+                    .stderr
+                    .contains("'?' or '#' directly after the bucket name is not allowed"),
+                "target {target}: unexpected stderr: {}",
+                output.stderr
+            );
+            assert!(
+                output.stdout.is_empty(),
+                "target {target}: nothing must be listed, stdout: {}",
+                output.stdout
+            );
+        }
+
+        // With the '/' that ends the bucket name, the same characters are the prefix.
+        for (prefix, expected_key) in [("?old", "?old"), ("#old", "#old")] {
+            let target = format!("s3://{bucket}/{prefix}");
+            let output = TestHelper::run_s3ls(&[target.as_str(), "--recursive", "--json"]);
+            assert!(
+                output.status.success(),
+                "s3ls failed for prefix {prefix:?}: {}",
+                output.stderr
+            );
+            assert_json_keys_eq(
+                &output.stdout,
+                &[expected_key],
+                &format!("prefix {prefix:?} after the bucket name"),
+            );
+        }
     });
 
     _guard.cleanup().await;
